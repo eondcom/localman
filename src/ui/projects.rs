@@ -2,7 +2,7 @@ use iced::{
     widget::{button, column, container, row, text, text_input, Space, scrollable},
     Color, Element, Length, Task,
 };
-use crate::system::{VhostProject, list_projects, add_project, remove_project};
+use crate::system::{VhostProject, ProjectType, list_projects, add_project, remove_project};
 use rfd;
 
 #[derive(Debug, Clone)]
@@ -11,6 +11,8 @@ pub enum ProjectsMessage {
     PathSelected(Option<String>),
     NameChanged(String),
     IdChanged(String),
+    TypeSelected(ProjectType),
+    PortChanged(String),
     AddProject,
     RemoveProject(String),
     #[allow(dead_code)]
@@ -22,6 +24,8 @@ pub struct ProjectsState {
     new_name: String,
     new_id: String,
     new_path: String,
+    new_type: ProjectType,
+    new_port: String,
     error: Option<String>,
 }
 
@@ -32,6 +36,8 @@ impl ProjectsState {
             new_name: String::new(),
             new_id: String::new(),
             new_path: String::new(),
+            new_type: ProjectType::Php,
+            new_port: "8000".to_string(),
             error: None,
         }
     }
@@ -53,6 +59,16 @@ impl ProjectsState {
                 self.new_id = v;
                 Task::none()
             }
+            ProjectsMessage::TypeSelected(t) => {
+                self.new_type = t;
+                Task::none()
+            }
+            ProjectsMessage::PortChanged(v) => {
+                if v.chars().all(|c| c.is_ascii_digit()) {
+                    self.new_port = v;
+                }
+                Task::none()
+            }
             ProjectsMessage::OpenFilePicker => {
                 Task::perform(pick_folder(), ProjectsMessage::PathSelected)
             }
@@ -63,16 +79,22 @@ impl ProjectsState {
                 Task::none()
             }
             ProjectsMessage::AddProject => {
-                if self.new_id.is_empty() || self.new_path.is_empty() {
-                    self.error = Some("ID와 경로를 입력하세요.".to_string());
+                if self.new_id.is_empty() {
+                    self.error = Some("ID를 입력하세요.".to_string());
                     return Task::none();
                 }
+                if self.new_type == ProjectType::Php && self.new_path.is_empty() {
+                    self.error = Some("PHP 프로젝트는 경로가 필요합니다.".to_string());
+                    return Task::none();
+                }
+                let port: u16 = self.new_port.parse().unwrap_or(8000);
                 let project = VhostProject {
                     id: self.new_id.clone(),
                     name: self.new_name.clone(),
                     path: self.new_path.clone(),
                     domain: format!("{}.localhost", self.new_id),
-                    port: 80,
+                    project_type: self.new_type.clone(),
+                    port,
                 };
                 match add_project(project) {
                     Ok(_) => {
@@ -80,6 +102,8 @@ impl ProjectsState {
                         self.new_name.clear();
                         self.new_id.clear();
                         self.new_path.clear();
+                        self.new_port = "8000".to_string();
+                        self.new_type = ProjectType::Php;
                         self.projects = list_projects();
                     }
                     Err(e) => self.error = Some(e),
@@ -100,9 +124,51 @@ impl ProjectsState {
     }
 
     pub fn view(&self) -> Element<'_, ProjectsMessage> {
+        let is_python = self.new_type == ProjectType::Python;
+
+        let type_row = row![
+            type_btn("PHP", !is_python, ProjectsMessage::TypeSelected(ProjectType::Php)),
+            Space::with_width(8),
+            type_btn("Python", is_python, ProjectsMessage::TypeSelected(ProjectType::Python)),
+        ];
+
+        let path_row: Element<ProjectsMessage> = if !is_python {
+            column![
+                text("프로젝트 경로").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
+                Space::with_height(4),
+                row![
+                    text_input("/home/user/projects/...", &self.new_path)
+                        .padding(10)
+                        .width(Length::Fill),
+                    Space::with_width(8),
+                    button(text("탐색").size(13))
+                        .on_press(ProjectsMessage::OpenFilePicker)
+                        .padding([10, 16]),
+                ],
+            ].into()
+        } else {
+            column![
+                text("Dev server 포트").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
+                Space::with_height(4),
+                row![
+                    text_input("8000", &self.new_port)
+                        .on_input(ProjectsMessage::PortChanged)
+                        .padding(10)
+                        .width(120),
+                    Space::with_width(12),
+                    text("python app.py 또는 python manage.py runserver 0.0.0.0:포트 로 실행 후 등록")
+                        .size(12)
+                        .color(Color::from_rgb(0.5, 0.7, 0.5)),
+                ]
+                .align_y(iced::Alignment::Center),
+            ].into()
+        };
+
         let add_form = container(
             column![
                 text("새 프로젝트 추가").size(15),
+                Space::with_height(12),
+                type_row,
                 Space::with_height(12),
                 row![
                     column![
@@ -122,21 +188,7 @@ impl ProjectsState {
                     ].width(Length::FillPortion(2)),
                 ],
                 Space::with_height(10),
-                row![
-                    column![
-                        text("프로젝트 경로").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                        Space::with_height(4),
-                        row![
-                            text_input("/home/user/projects/...", &self.new_path)
-                                .padding(10)
-                                .width(Length::Fill),
-                            Space::with_width(8),
-                            button(text("탐색").size(13))
-                                .on_press(ProjectsMessage::OpenFilePicker)
-                                .padding([10, 16]),
-                        ],
-                    ].width(Length::Fill),
-                ],
+                path_row,
                 Space::with_height(14),
                 button(text("프로젝트 추가").size(14))
                     .on_press(ProjectsMessage::AddProject)
@@ -189,16 +241,64 @@ impl ProjectsState {
     }
 }
 
+fn type_btn(label: &str, active: bool, msg: ProjectsMessage) -> Element<'_, ProjectsMessage> {
+    let bg = if active {
+        Color::from_rgb(0.15, 0.35, 0.55)
+    } else {
+        Color::from_rgb(0.13, 0.13, 0.16)
+    };
+    button(text(label).size(13))
+        .on_press(msg)
+        .padding([8, 20])
+        .style(move |_, _| button::Style {
+            background: Some(iced::Background::Color(bg)),
+            border: iced::Border {
+                radius: 6.0.into(),
+                color: Color::from_rgb(0.2, 0.2, 0.25),
+                width: 1.0,
+            },
+            text_color: Color::WHITE,
+            ..Default::default()
+        })
+        .into()
+}
+
 fn project_row(p: &VhostProject) -> Element<'_, ProjectsMessage> {
     let id = p.id.clone();
+    let (type_label, type_color) = match p.project_type {
+        ProjectType::Php => ("PHP", Color::from_rgb(0.5, 0.6, 1.0)),
+        ProjectType::Python => ("Python", Color::from_rgb(0.4, 0.8, 0.5)),
+    };
+    let sub_info = match p.project_type {
+        ProjectType::Php => p.path.clone(),
+        ProjectType::Python => format!("→ 127.0.0.1:{}", p.port),
+    };
+
     container(
         row![
             column![
-                text(&p.name).size(15),
+                row![
+                    text(&p.name).size(15),
+                    Space::with_width(8),
+                    container(text(type_label).size(11))
+                        .padding([2, 8])
+                        .style(move |_| container::Style {
+                            background: Some(iced::Background::Color(Color::from_rgba(
+                                type_color.r, type_color.g, type_color.b, 0.15,
+                            ))),
+                            border: iced::Border {
+                                radius: 4.0.into(),
+                                color: Color::from_rgba(type_color.r, type_color.g, type_color.b, 0.4),
+                                width: 1.0,
+                            },
+                            ..Default::default()
+                        }),
+                ]
+                .align_y(iced::Alignment::Center),
                 Space::with_height(2),
                 text(&p.domain).size(12).color(Color::from_rgb(0.4, 0.7, 1.0)),
                 Space::with_height(2),
-                text(&p.path).size(11).color(Color::from_rgb(0.5,0.5,0.5)),
+                text(sub_info).size(11).color(Color::from_rgb(0.5,0.5,0.5)),
             ].width(Length::Fill),
             button(text("삭제").size(13))
                 .on_press(ProjectsMessage::RemoveProject(id))
