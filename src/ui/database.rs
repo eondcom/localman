@@ -6,6 +6,7 @@ use crate::system::{
     list_databases, create_database, drop_database, backup_database, restore_database,
     list_users, create_user, drop_user, grant_privileges, DbUser,
 };
+use rfd;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SubTab {
@@ -581,39 +582,42 @@ fn user_row<'a>(u: &'a DbUser, _databases: &'a [String]) -> Element<'a, Database
 }
 
 async fn pick_save_file(db_name: String) -> Option<String> {
-    let default = format!("{}.sql", db_name);
-    let output = std::process::Command::new("zenity")
-        .args([
-            "--file-selection",
-            "--save",
-            "--confirm-overwrite",
-            &format!("--filename={}", default),
-            "--title=백업 파일 저장 위치",
-            "--file-filter=SQL files (*.sql) | *.sql",
-        ])
-        .output();
+    let result = rfd::AsyncFileDialog::new()
+        .set_title("백업 파일 저장 위치")
+        .set_file_name(&format!("{db_name}.sql"))
+        .add_filter("SQL", &["sql"])
+        .save_file()
+        .await;
 
-    match output {
-        Ok(out) if out.status.success() => {
-            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    match result {
+        Some(handle) => {
+            let path = handle.path().to_string_lossy().to_string();
+            eprintln!("[localman] 백업 경로 선택: {path}");
+            Some(path)
         }
-        _ => None,
+        None => {
+            eprintln!("[localman] 백업 경로 선택 취소");
+            None
+        }
     }
 }
 
 async fn pick_open_file() -> Option<String> {
-    let output = std::process::Command::new("zenity")
-        .args([
-            "--file-selection",
-            "--title=복원할 SQL 파일 선택",
-            "--file-filter=SQL files (*.sql) | *.sql",
-        ])
-        .output();
+    let result = rfd::AsyncFileDialog::new()
+        .set_title("복원할 SQL 파일 선택")
+        .add_filter("SQL", &["sql"])
+        .pick_file()
+        .await;
 
-    match output {
-        Ok(out) if out.status.success() => {
-            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    match result {
+        Some(handle) => {
+            let path = handle.path().to_string_lossy().to_string();
+            eprintln!("[localman] 복원 파일 선택: {path}");
+            Some(path)
         }
-        _ => None,
+        None => {
+            eprintln!("[localman] 복원 파일 선택 취소");
+            None
+        }
     }
 }

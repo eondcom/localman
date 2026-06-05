@@ -26,11 +26,13 @@ pub fn list_projects() -> Vec<VhostProject> {
 }
 
 pub fn add_project(project: VhostProject) -> Result<(), String> {
+    eprintln!("[localman] 프로젝트 추가: {} ({})", project.id, project.path);
     let mut list = list_projects();
     list.push(project.clone());
     save_projects(&list)?;
     write_vhost(&project)?;
     update_hosts(&project.domain, true)?;
+    eprintln!("[localman] 프로젝트 추가 완료: {}", project.domain);
     Ok(())
 }
 
@@ -56,8 +58,20 @@ fn write_vhost(p: &VhostProject) -> Result<(), String> {
     );
     let conf_path = format!("/etc/apache2/sites-available/{}.conf", p.id);
     let enable_path = format!("/etc/apache2/sites-enabled/{}.conf", p.id);
+    eprintln!("[localman] vhost 파일 작성: {conf_path}");
 
-    fs::write(&conf_path, &conf).map_err(|e| format!("vhost 파일 쓰기 실패: {e}"))?;
+    // /etc/apache2는 root 소유이므로 tmp에 쓴 뒤 pkexec cp
+    let tmp_path = format!("/tmp/localman_vhost_{}.conf", p.id);
+    fs::write(&tmp_path, &conf).map_err(|e| format!("임시 파일 쓰기 실패: {e}"))?;
+    let cp_out = std::process::Command::new("pkexec")
+        .args(["cp", &tmp_path, &conf_path])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !cp_out.status.success() {
+        let err = String::from_utf8_lossy(&cp_out.stderr).to_string();
+        eprintln!("[localman] vhost cp 실패: {err}");
+        return Err(format!("vhost 파일 쓰기 실패: {err}"));
+    }
     std::process::Command::new("pkexec")
         .args(["ln", "-sf", &conf_path, &enable_path])
         .output()

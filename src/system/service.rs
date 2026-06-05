@@ -26,15 +26,18 @@ pub fn get_service_status(name: &str) -> ServiceStatus {
 
 pub fn toggle_service(name: &str, start: bool) -> Result<(), String> {
     let action = if start { "start" } else { "stop" };
+    eprintln!("[localman] 서비스 {action}: {name}");
     let output = Command::new("pkexec")
         .args(["systemctl", action, name])
         .output()
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
+        eprintln!("[localman] 서비스 {action} 완료: {name}");
         Ok(())
     } else {
         let err = String::from_utf8_lossy(&output.stderr).to_string();
+        eprintln!("[localman] 서비스 {action} 실패: {err}");
         Err(err)
     }
 }

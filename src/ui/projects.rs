@@ -3,6 +3,7 @@ use iced::{
     Color, Element, Length, Task,
 };
 use crate::system::{VhostProject, list_projects, add_project, remove_project};
+use rfd;
 
 #[derive(Debug, Clone)]
 pub enum ProjectsMessage {
@@ -231,14 +232,20 @@ fn slugify(s: &str) -> String {
 }
 
 async fn pick_folder() -> Option<String> {
-    let result = std::process::Command::new("zenity")
-        .args(["--file-selection", "--directory", "--title=프로젝트 경로 선택"])
-        .output();
+    let result = rfd::AsyncFileDialog::new()
+        .set_title("프로젝트 경로 선택")
+        .pick_folder()
+        .await;
 
     match result {
-        Ok(out) if out.status.success() => {
-            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        Some(handle) => {
+            let path = handle.path().to_string_lossy().to_string();
+            eprintln!("[localman] 폴더 선택: {path}");
+            Some(path)
         }
-        _ => None,
+        None => {
+            eprintln!("[localman] 폴더 선택 취소");
+            None
+        }
     }
 }
