@@ -1,27 +1,50 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1e3a5f"/>
-      <stop offset="100%" stop-color="#0d1f35"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a3a6a"/>
+      <stop offset="100%" stop-color="#0d1f40"/>
     </linearGradient>
-    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#112233"/>
-      <stop offset="100%" stop-color="#0a1520"/>
+    <linearGradient id="roof" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a8adf"/>
+      <stop offset="100%" stop-color="#2a5aaf"/>
+    </linearGradient>
+    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e3060"/>
+      <stop offset="100%" stop-color="#14234a"/>
+    </linearGradient>
+    <linearGradient id="server" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a2a4a"/>
+      <stop offset="100%" stop-color="#111e38"/>
     </linearGradient>
   </defs>
+
+  <!-- 배경 -->
   <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-  <rect x="7" y="9" width="50" height="34" rx="5" fill="url(#screen)" stroke="#2a5a8a" stroke-width="1.5"/>
-  <rect x="7" y="9" width="50" height="8" rx="5" fill="#1a3a5a"/>
-  <rect x="7" y="13" width="50" height="4" fill="#1a3a5a"/>
-  <circle cx="14" cy="13" r="2.2" fill="#e05555"/>
-  <circle cx="21" cy="13" r="2.2" fill="#e0a830"/>
-  <circle cx="28" cy="13" r="2.2" fill="#30b050"/>
-  <rect x="13" y="22" width="16" height="2.5" rx="1.2" fill="#3a7abf" opacity="0.9"/>
-  <rect x="13" y="27" width="26" height="2.5" rx="1.2" fill="#2a5a8a" opacity="0.7"/>
-  <rect x="13" y="32" width="20" height="2.5" rx="1.2" fill="#3a7abf" opacity="0.6"/>
-  <circle cx="48" cy="27" r="3.5" fill="#1a1a2a" stroke="#30b050" stroke-width="1.2"/>
-  <circle cx="48" cy="27" r="1.8" fill="#30b050"/>
-  <rect x="27" y="43" width="10" height="5" rx="2" fill="#1a3a5a"/>
-  <rect x="21" y="48" width="22" height="3.5" rx="1.8" fill="#1a3a5a" stroke="#2a5a8a" stroke-width="1"/>
-  <text x="32" y="58" font-family="monospace" font-size="6" fill="#4a9adf" text-anchor="middle" font-weight="bold">LocalMan</text>
+
+  <!-- 집 지붕 -->
+  <polygon points="32,8 54,28 10,28" fill="url(#roof)"/>
+  <!-- 지붕 하이라이트 -->
+  <polygon points="32,10 52,28 12,28" fill="none" stroke="#6aaeff" stroke-width="0.8" opacity="0.4"/>
+  <!-- 굴뚝 -->
+  <rect x="40" y="14" width="5" height="10" rx="1" fill="#2a5aaf"/>
+
+  <!-- 집 벽 -->
+  <rect x="12" y="27" width="40" height="26" rx="2" fill="url(#wall)" stroke="#2a4a80" stroke-width="1"/>
+
+  <!-- 서버 랙 (집 안) -->
+  <rect x="18" y="31" width="28" height="18" rx="3" fill="url(#server)" stroke="#1e3a6a" stroke-width="1"/>
+
+  <!-- 서버 슬롯 1 -->
+  <rect x="21" y="34" width="18" height="4" rx="1.5" fill="#1a3a5a" stroke="#2a5a8a" stroke-width="0.8"/>
+  <rect x="23" y="35.5" width="10" height="1" rx="0.5" fill="#3a6aaa" opacity="0.7"/>
+  <circle cx="36" cy="36" r="1.3" fill="#30d060"/>
+
+  <!-- 서버 슬롯 2 -->
+  <rect x="21" y="40" width="18" height="4" rx="1.5" fill="#1a3a5a" stroke="#2a5a8a" stroke-width="0.8"/>
+  <rect x="23" y="41.5" width="8" height="1" rx="0.5" fill="#3a6aaa" opacity="0.7"/>
+  <circle cx="36" cy="42" r="1.3" fill="#30d060"/>
+
+  <!-- 문 -->
+  <rect x="27" y="41" width="10" height="12" rx="2" fill="#0d1830" stroke="#2a4a80" stroke-width="0.8"/>
+  <circle cx="35" cy="47" r="0.9" fill="#4a8adf"/>
 </svg>
