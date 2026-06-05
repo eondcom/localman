@@ -5,7 +5,7 @@ use iced::{application, Font, Settings, Size, Theme};
 use ui::App;
 
 const NANUM_GOTHIC: &[u8] =
-    include_bytes!("/usr/share/fonts/truetype/nanum/NanumGothic.ttf");
+    include_bytes!("../assets/NanumGothic.ttf");
 
 fn main() -> iced::Result {
     application("LocalMan", App::update, App::view)
