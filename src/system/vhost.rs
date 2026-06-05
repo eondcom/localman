@@ -146,6 +146,21 @@ pub fn add_project(project: VhostProject) -> Result<(), String> {
     Ok(())
 }
 
+pub fn update_project(id: &str, name: String, path: String, start_command: String) -> Result<(), String> {
+    let mut list = list_projects();
+    let p = list.iter_mut().find(|p| p.id == id)
+        .ok_or_else(|| "프로젝트를 찾을 수 없습니다.".to_string())?;
+    p.name = name;
+    p.path = path;
+    p.start_command = start_command;
+    let updated = p.clone();
+    save_projects(&list)?;
+    // vhost 파일 재생성 (경로 변경 반영)
+    write_vhost(&updated)?;
+    eprintln!("[localman] 프로젝트 업데이트: {id}");
+    Ok(())
+}
+
 pub fn remove_project(id: &str) -> Result<(), String> {
     let mut list = list_projects();
     if let Some(p) = list.iter().find(|p| p.id == id).cloned() {

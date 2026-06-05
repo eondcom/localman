@@ -4,13 +4,14 @@ use iced::{
 };
 use crate::system::{
     VhostProject, ProjectType, ServerStatus,
-    list_projects, add_project, remove_project,
+    list_projects, add_project, update_project, remove_project,
     start_server, stop_server, server_status, auto_assign_port,
 };
 use rfd;
 
 #[derive(Debug, Clone)]
 pub enum ProjectsMessage {
+    // 신규 추가 폼
     OpenFilePicker,
     PathSelected(Option<String>),
     NameChanged(String),
@@ -18,22 +19,39 @@ pub enum ProjectsMessage {
     TypeSelected(ProjectType),
     StartCommandChanged(String),
     AddProject,
+    // 목록 아이템
     RemoveProject(String),
-    StartServer(String),  // project id
-    StopServer(String),   // project id
+    StartServer(String),
+    StopServer(String),
     ServerStarted(String, Result<u32, String>),
     ServerStopped(String, Result<(), String>),
+    // 인라인 편집
+    EditProject(String),
+    EditNameChanged(String),
+    EditPathChanged(String),
+    EditStartCommandChanged(String),
+    EditPickFolder(String),
+    EditFolderSelected(String, Option<String>), // (id, path)
+    SaveEdit(String),
+    CancelEdit,
     #[allow(dead_code)]
     Refresh,
 }
 
 pub struct ProjectsState {
     projects: Vec<VhostProject>,
+    // 신규 추가 폼
     new_name: String,
     new_id: String,
     new_path: String,
     new_type: ProjectType,
     new_start_command: String,
+    // 인라인 편집 상태
+    editing_id: Option<String>,
+    edit_name: String,
+    edit_path: String,
+    edit_start_command: String,
+    // 메시지
     error: Option<String>,
     server_message: Option<Result<String, String>>,
 }
@@ -47,6 +65,10 @@ impl ProjectsState {
             new_path: String::new(),
             new_type: ProjectType::Php,
             new_start_command: "python app.py".to_string(),
+            editing_id: None,
+            edit_name: String::new(),
+            edit_path: String::new(),
+            edit_start_command: String::new(),
             error: None,
             server_message: None,
         }
@@ -66,14 +88,8 @@ impl ProjectsState {
                 Task::none()
             }
             ProjectsMessage::IdChanged(v) => { self.new_id = v; Task::none() }
-            ProjectsMessage::TypeSelected(t) => {
-                self.new_type = t;
-                Task::none()
-            }
-            ProjectsMessage::StartCommandChanged(v) => {
-                self.new_start_command = v;
-                Task::none()
-            }
+            ProjectsMessage::TypeSelected(t) => { self.new_type = t; Task::none() }
+            ProjectsMessage::StartCommandChanged(v) => { self.new_start_command = v; Task::none() }
             ProjectsMessage::OpenFilePicker => {
                 Task::perform(pick_folder(), ProjectsMessage::PathSelected)
             }
@@ -86,12 +102,8 @@ impl ProjectsState {
                     self.error = Some("ID를 입력하세요.".to_string());
                     return Task::none();
                 }
-                if self.new_type == ProjectType::Php && self.new_path.is_empty() {
-                    self.error = Some("PHP 프로젝트는 경로가 필요합니다.".to_string());
-                    return Task::none();
-                }
-                if self.new_type == ProjectType::Python && self.new_path.is_empty() {
-                    self.error = Some("Python 프로젝트는 경로가 필요합니다.".to_string());
+                if self.new_path.is_empty() {
+                    self.error = Some("경로를 입력하세요.".to_string());
                     return Task::none();
                 }
                 let port = if self.new_type == ProjectType::Python {
@@ -123,13 +135,12 @@ impl ProjectsState {
                 Task::none()
             }
             ProjectsMessage::RemoveProject(id) => {
-                // 실행 중이면 먼저 중지
                 let _ = stop_server(&id);
+                if self.editing_id.as_deref() == Some(&id) {
+                    self.editing_id = None;
+                }
                 match remove_project(&id) {
-                    Ok(_) => {
-                        self.error = None;
-                        self.projects = list_projects();
-                    }
+                    Ok(_) => { self.error = None; self.projects = list_projects(); }
                     Err(e) => self.error = Some(e),
                 }
                 Task::none()
@@ -159,6 +170,43 @@ impl ProjectsState {
             }
             ProjectsMessage::ServerStopped(id, result) => {
                 self.server_message = Some(result.map(|_| format!("{id} 중지됨")));
+                Task::none()
+            }
+            // 인라인 편집
+            ProjectsMessage::EditProject(id) => {
+                if let Some(p) = self.projects.iter().find(|p| p.id == id) {
+                    self.edit_name = p.name.clone();
+                    self.edit_path = p.path.clone();
+                    self.edit_start_command = p.start_command.clone();
+                    self.editing_id = Some(id);
+                    self.error = None;
+                }
+                Task::none()
+            }
+            ProjectsMessage::EditNameChanged(v) => { self.edit_name = v; Task::none() }
+            ProjectsMessage::EditPathChanged(v) => { self.edit_path = v; Task::none() }
+            ProjectsMessage::EditStartCommandChanged(v) => { self.edit_start_command = v; Task::none() }
+            ProjectsMessage::EditPickFolder(id) => {
+                Task::perform(pick_folder(), move |p| ProjectsMessage::EditFolderSelected(id.clone(), p))
+            }
+            ProjectsMessage::EditFolderSelected(_, path) => {
+                if let Some(p) = path { self.edit_path = p; }
+                Task::none()
+            }
+            ProjectsMessage::SaveEdit(id) => {
+                match update_project(&id, self.edit_name.clone(), self.edit_path.clone(), self.edit_start_command.clone()) {
+                    Ok(_) => {
+                        self.editing_id = None;
+                        self.error = None;
+                        self.projects = list_projects();
+                    }
+                    Err(e) => self.error = Some(e),
+                }
+                Task::none()
+            }
+            ProjectsMessage::CancelEdit => {
+                self.editing_id = None;
+                self.error = None;
                 Task::none()
             }
         }
@@ -199,7 +247,6 @@ impl ProjectsState {
         ]
         .spacing(0);
 
-        // 경로 (PHP/Python 공통)
         form_col = form_col.push(
             column![
                 text("프로젝트 경로").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
@@ -219,18 +266,16 @@ impl ProjectsState {
         if is_python {
             form_col = form_col
                 .push(Space::with_height(10))
-                .push(
-                    column![
-                        text("실행 명령어").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                        Space::with_height(4),
-                        text_input("python app.py", &self.new_start_command)
-                            .on_input(ProjectsMessage::StartCommandChanged)
-                            .padding(10),
-                        Space::with_height(4),
-                        text("포트는 자동 할당됩니다 (5001번부터 순서대로)")
-                            .size(11).color(Color::from_rgb(0.4, 0.6, 0.4)),
-                    ]
-                );
+                .push(column![
+                    text("실행 명령어").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
+                    Space::with_height(4),
+                    text_input("python3 app.py", &self.new_start_command)
+                        .on_input(ProjectsMessage::StartCommandChanged)
+                        .padding(10),
+                    Space::with_height(4),
+                    text("포트는 자동 할당됩니다 (5001번부터 순서대로)")
+                        .size(11).color(Color::from_rgb(0.4, 0.6, 0.4)),
+                ]);
         }
 
         form_col = form_col.push(Space::with_height(14)).push(
@@ -254,14 +299,19 @@ impl ProjectsState {
                 ..Default::default()
             });
 
+        let editing_id = self.editing_id.as_deref();
         let project_list: Element<ProjectsMessage> = if self.projects.is_empty() {
             container(
                 text("등록된 프로젝트가 없습니다.").size(14).color(Color::from_rgb(0.5,0.5,0.5))
             ).padding(20).into()
         } else {
-            let items: Vec<Element<ProjectsMessage>> = self.projects.iter()
-                .map(|p| project_row(p))
-                .collect();
+            let items: Vec<Element<ProjectsMessage>> = self.projects.iter().map(|p| {
+                if editing_id == Some(p.id.as_str()) {
+                    project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command)
+                } else {
+                    project_row_view(p, editing_id.is_some())
+                }
+            }).collect();
             scrollable(column(items).spacing(8)).into()
         };
 
@@ -286,43 +336,21 @@ impl ProjectsState {
                 Ok(m) => (m.as_str(), Color::from_rgb(0.2, 0.9, 0.4)),
                 Err(e) => (e.as_str(), Color::from_rgb(1.0, 0.4, 0.4)),
             };
-            col = col.push(Space::with_height(8)).push(
-                text(txt).size(13).color(color)
-            );
+            col = col.push(Space::with_height(8)).push(text(txt).size(13).color(color));
         }
 
         col.into()
     }
 }
 
-fn type_btn(label: &str, active: bool, msg: ProjectsMessage) -> Element<'_, ProjectsMessage> {
-    let bg = if active {
-        Color::from_rgb(0.15, 0.35, 0.55)
-    } else {
-        Color::from_rgb(0.13, 0.13, 0.16)
-    };
-    button(text(label).size(13))
-        .on_press(msg)
-        .padding([8, 20])
-        .style(move |_, _| button::Style {
-            background: Some(iced::Background::Color(bg)),
-            border: iced::Border {
-                radius: 6.0.into(),
-                color: Color::from_rgb(0.2, 0.2, 0.25),
-                width: 1.0,
-            },
-            text_color: Color::WHITE,
-            ..Default::default()
-        })
-        .into()
-}
-
-fn project_row(p: &VhostProject) -> Element<'_, ProjectsMessage> {
+// 일반 보기 모드 카드
+fn project_row_view(p: &VhostProject, any_editing: bool) -> Element<'_, ProjectsMessage> {
     let id = p.id.clone();
-    let id2 = p.id.clone();
+    let id_edit = p.id.clone();
+    let id_srv = p.id.clone();
 
     let (type_label, type_color) = match p.project_type {
-        ProjectType::Php   => ("PHP",    Color::from_rgb(0.5, 0.6, 1.0)),
+        ProjectType::Php    => ("PHP",    Color::from_rgb(0.5, 0.6, 1.0)),
         ProjectType::Python => ("Python", Color::from_rgb(0.4, 0.8, 0.5)),
     };
 
@@ -332,25 +360,16 @@ fn project_row(p: &VhostProject) -> Element<'_, ProjectsMessage> {
     let server_controls: Element<ProjectsMessage> = match p.project_type {
         ProjectType::Python => {
             let (btn_label, btn_color, btn_msg) = if is_running {
-                ("중지", Color::from_rgb(0.7, 0.2, 0.2), ProjectsMessage::StopServer(id2))
+                ("중지", Color::from_rgb(0.7, 0.2, 0.2), ProjectsMessage::StopServer(id_srv))
             } else {
-                ("시작", Color::from_rgb(0.1, 0.5, 0.3), ProjectsMessage::StartServer(id2))
+                ("시작", Color::from_rgb(0.1, 0.5, 0.3), ProjectsMessage::StartServer(id_srv))
             };
-            let status_dot_color = if is_running {
-                Color::from_rgb(0.2, 0.9, 0.4)
-            } else {
-                Color::from_rgb(0.5, 0.5, 0.5)
-            };
-            let pid_str = if let ServerStatus::Running(pid) = status {
-                format!("PID {pid}")
-            } else {
-                "중지됨".to_string()
-            };
+            let dot_color = if is_running { Color::from_rgb(0.2, 0.9, 0.4) } else { Color::from_rgb(0.5, 0.5, 0.5) };
+            let pid_str = if let ServerStatus::Running(pid) = status { format!("PID {pid}") } else { "중지됨".to_string() };
             row![
-                container(Space::with_width(8))
-                    .width(8).height(8)
+                container(Space::with_width(8)).width(8).height(8)
                     .style(move |_| container::Style {
-                        background: Some(iced::Background::Color(status_dot_color)),
+                        background: Some(iced::Background::Color(dot_color)),
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
                         ..Default::default()
                     }),
@@ -366,22 +385,14 @@ fn project_row(p: &VhostProject) -> Element<'_, ProjectsMessage> {
                         text_color: Color::WHITE,
                         ..Default::default()
                     }),
-            ]
-            .align_y(iced::Alignment::Center)
-            .into()
+            ].align_y(iced::Alignment::Center).into()
         }
         ProjectType::Php => {
-            let apache_running = crate::system::get_service_status("apache2")
-                == crate::system::ServiceStatus::Running;
-            let dot_color = if apache_running {
-                Color::from_rgb(0.2, 0.9, 0.4)
-            } else {
-                Color::from_rgb(0.5, 0.5, 0.5)
-            };
+            let apache_running = crate::system::get_service_status("apache2") == crate::system::ServiceStatus::Running;
+            let dot_color = if apache_running { Color::from_rgb(0.2, 0.9, 0.4) } else { Color::from_rgb(0.5, 0.5, 0.5) };
             let label = if apache_running { "Apache 실행 중" } else { "Apache 중지됨" };
             row![
-                container(Space::with_width(8))
-                    .width(8).height(8)
+                container(Space::with_width(8)).width(8).height(8)
                     .style(move |_| container::Style {
                         background: Some(iced::Background::Color(dot_color)),
                         border: iced::Border { radius: 4.0.into(), ..Default::default() },
@@ -389,10 +400,30 @@ fn project_row(p: &VhostProject) -> Element<'_, ProjectsMessage> {
                     }),
                 Space::with_width(6),
                 text(label).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-            ]
-            .align_y(iced::Alignment::Center)
-            .into()
+            ].align_y(iced::Alignment::Center).into()
         }
+    };
+
+    // 다른 항목 편집 중이면 수정 버튼 비활성
+    let edit_btn = if any_editing {
+        button(text("수정").size(12))
+            .padding([6, 14])
+            .style(|_, _| button::Style {
+                background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.2, 0.25))),
+                border: iced::Border { radius: 5.0.into(), ..Default::default() },
+                text_color: Color::from_rgb(0.4, 0.4, 0.4),
+                ..Default::default()
+            })
+    } else {
+        button(text("수정").size(12))
+            .on_press(ProjectsMessage::EditProject(id_edit))
+            .padding([6, 14])
+            .style(|_, _| button::Style {
+                background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.35, 0.5))),
+                border: iced::Border { radius: 5.0.into(), ..Default::default() },
+                text_color: Color::WHITE,
+                ..Default::default()
+            })
     };
 
     container(
@@ -404,48 +435,148 @@ fn project_row(p: &VhostProject) -> Element<'_, ProjectsMessage> {
                     container(text(type_label).size(11))
                         .padding([2, 8])
                         .style(move |_| container::Style {
-                            background: Some(iced::Background::Color(Color::from_rgba(
-                                type_color.r, type_color.g, type_color.b, 0.15,
-                            ))),
-                            border: iced::Border {
-                                radius: 4.0.into(),
-                                color: Color::from_rgba(type_color.r, type_color.g, type_color.b, 0.4),
-                                width: 1.0,
-                            },
+                            background: Some(iced::Background::Color(Color::from_rgba(type_color.r, type_color.g, type_color.b, 0.15))),
+                            border: iced::Border { radius: 4.0.into(), color: Color::from_rgba(type_color.r, type_color.g, type_color.b, 0.4), width: 1.0 },
                             ..Default::default()
                         }),
-                ]
-                .align_y(iced::Alignment::Center),
+                ].align_y(iced::Alignment::Center),
                 Space::with_height(2),
                 text(&p.domain).size(12).color(Color::from_rgb(0.4, 0.7, 1.0)),
                 Space::with_height(2),
                 text(match p.project_type {
                     ProjectType::Php    => p.path.clone(),
                     ProjectType::Python => format!(":{} · {}", p.port, p.start_command),
-                }).size(11).color(Color::from_rgb(0.5,0.5,0.5)),
+                }).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
             ].width(Length::Fill),
             server_controls,
-            Space::with_width(10),
-            button(text("삭제").size(13))
+            Space::with_width(8),
+            edit_btn,
+            Space::with_width(6),
+            button(text("삭제").size(12))
                 .on_press(ProjectsMessage::RemoveProject(id))
                 .padding([6, 14])
                 .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.5,0.1,0.1))),
+                    background: Some(iced::Background::Color(Color::from_rgb(0.5, 0.1, 0.1))),
                     border: iced::Border { radius: 5.0.into(), ..Default::default() },
                     text_color: Color::WHITE,
                     ..Default::default()
                 }),
-        ]
-        .align_y(iced::Alignment::Center)
+        ].align_y(iced::Alignment::Center)
     )
     .padding(16)
     .width(Length::Fill)
     .style(|_| container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.13,0.13,0.16))),
-        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
+        background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
+        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.2, 0.2, 0.25), width: 1.0 },
         ..Default::default()
     })
     .into()
+}
+
+// 편집 모드 카드
+fn project_row_editing<'a>(
+    p: &'a VhostProject,
+    edit_name: &'a str,
+    edit_path: &'a str,
+    edit_start_cmd: &'a str,
+) -> Element<'a, ProjectsMessage> {
+    let id_save   = p.id.clone();
+    let id_folder = p.id.clone();
+    let is_python = p.project_type == ProjectType::Python;
+
+    let mut edit_col = column![
+        row![
+            text(&p.domain).size(12).color(Color::from_rgb(0.4, 0.7, 1.0)),
+            Space::with_width(8),
+            text("편집 중").size(11).color(Color::from_rgb(0.9, 0.7, 0.2)),
+        ],
+        Space::with_height(10),
+        // 이름
+        column![
+            text("이름").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
+            Space::with_height(4),
+            text_input("프로젝트 이름", edit_name)
+                .on_input(ProjectsMessage::EditNameChanged)
+                .padding(9),
+        ],
+        Space::with_height(8),
+        // 경로
+        column![
+            text("경로").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
+            Space::with_height(4),
+            row![
+                text_input("/home/...", edit_path)
+                    .on_input(ProjectsMessage::EditPathChanged)
+                    .padding(9)
+                    .width(Length::Fill),
+                Space::with_width(8),
+                button(text("탐색").size(12))
+                    .on_press(ProjectsMessage::EditPickFolder(id_folder))
+                    .padding([9, 14]),
+            ],
+        ],
+    ]
+    .spacing(0);
+
+    if is_python {
+        edit_col = edit_col
+            .push(Space::with_height(8))
+            .push(column![
+                text("실행 명령어").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
+                Space::with_height(4),
+                text_input("python3 run_server.py 5001", edit_start_cmd)
+                    .on_input(ProjectsMessage::EditStartCommandChanged)
+                    .padding(9),
+            ]);
+    }
+
+    edit_col = edit_col.push(Space::with_height(12)).push(
+        row![
+            button(text("저장").size(13))
+                .on_press(ProjectsMessage::SaveEdit(id_save))
+                .padding([8, 20])
+                .style(|_, _| button::Style {
+                    background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.5, 0.3))),
+                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                    text_color: Color::WHITE,
+                    ..Default::default()
+                }),
+            Space::with_width(8),
+            button(text("취소").size(13))
+                .on_press(ProjectsMessage::CancelEdit)
+                .padding([8, 20])
+                .style(|_, _| button::Style {
+                    background: Some(iced::Background::Color(Color::from_rgb(0.25, 0.25, 0.3))),
+                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
+                    text_color: Color::WHITE,
+                    ..Default::default()
+                }),
+        ]
+    );
+
+    container(edit_col)
+        .padding(16)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.14, 0.16, 0.20))),
+            border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.3, 0.5, 0.7), width: 1.5 },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn type_btn(label: &str, active: bool, msg: ProjectsMessage) -> Element<'_, ProjectsMessage> {
+    let bg = if active { Color::from_rgb(0.15, 0.35, 0.55) } else { Color::from_rgb(0.13, 0.13, 0.16) };
+    button(text(label).size(13))
+        .on_press(msg)
+        .padding([8, 20])
+        .style(move |_, _| button::Style {
+            background: Some(iced::Background::Color(bg)),
+            border: iced::Border { radius: 6.0.into(), color: Color::from_rgb(0.2, 0.2, 0.25), width: 1.0 },
+            text_color: Color::WHITE,
+            ..Default::default()
+        })
+        .into()
 }
 
 fn slugify(s: &str) -> String {
