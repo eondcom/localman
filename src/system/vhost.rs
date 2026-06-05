@@ -61,15 +61,114 @@ pub fn server_status(id: &str) -> ServerStatus {
     ServerStatus::Stopped
 }
 
-pub fn start_server(project: &VhostProject) -> Result<u32, String> {
-    if project.start_command.is_empty() {
-        return Err("실행 명령어가 비어 있습니다.".to_string());
+/// 경로를 보고 entry point 파일과 명령어를 자동 감지
+pub fn auto_detect_start_command(path: &str, port: u16) -> String {
+    let candidates = [
+        ("run_server.py",  format!("venv/bin/python3 run_server.py {port}")),
+        ("manage.py",      format!("venv/bin/python3 manage.py runserver 0.0.0.0:{port}")),
+        ("app.py",         "venv/bin/python3 app.py".to_string()),
+        ("main.py",        "venv/bin/python3 main.py".to_string()),
+        ("server.py",      "venv/bin/python3 server.py".to_string()),
+        ("wsgi.py",        format!("venv/bin/python3 -m uvicorn wsgi:app --host 0.0.0.0 --port {port}")),
+        ("asgi.py",        format!("venv/bin/python3 -m uvicorn asgi:app --host 0.0.0.0 --port {port}")),
+    ];
+    for (file, cmd) in &candidates {
+        if std::path::Path::new(&format!("{path}/{file}")).exists() {
+            return cmd.clone();
+        }
     }
-    let parts: Vec<&str> = project.start_command.split_whitespace().collect();
+    format!("venv/bin/python3 app.py")
+}
+
+/// venv 생성 + 패키지 설치 (동기, 시간이 걸릴 수 있음)
+pub fn setup_venv(project: &VhostProject) -> Result<String, String> {
+    let venv = format!("{}/venv", project.path);
+    let venv_python = format!("{venv}/bin/python3");
+    let pip = format!("{venv}/bin/pip");
+
+    // venv 생성
+    if !std::path::Path::new(&venv_python).exists() {
+        eprintln!("[localman] venv 생성 중: {venv}");
+        let r = std::process::Command::new("python3")
+            .args(["-m", "venv", &venv])
+            .output()
+            .map_err(|e| format!("venv 생성 실패: {e}"))?;
+        if !r.status.success() {
+            return Err(format!("venv 생성 실패:\n{}", String::from_utf8_lossy(&r.stderr)));
+        }
+        eprintln!("[localman] venv 생성 완료");
+    } else {
+        eprintln!("[localman] venv 이미 존재");
+    }
+
+    // pip 업그레이드
+    let _ = std::process::Command::new(&pip)
+        .args(["install", "--upgrade", "pip"])
+        .output();
+
+    // requirements.txt 우선
+    let req = format!("{}/requirements.txt", project.path);
+    if std::path::Path::new(&req).exists() {
+        eprintln!("[localman] pip install -r requirements.txt");
+        let r = std::process::Command::new(&pip)
+            .args(["install", "-r", &req])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !r.status.success() {
+            return Err(format!("패키지 설치 실패:\n{}", String::from_utf8_lossy(&r.stderr)));
+        }
+        return Ok(format!("패키지 설치 완료 (requirements.txt)"));
+    }
+
+    // pyproject.toml (poetry/pip editable)
+    let pyproject = format!("{}/pyproject.toml", project.path);
+    if std::path::Path::new(&pyproject).exists() {
+        eprintln!("[localman] pip install -e .");
+        // poetry 의존성이 있으면 pip install 가능하도록 먼저 pip install poetry-core
+        let _ = std::process::Command::new(&pip)
+            .args(["install", "pip-tools", "setuptools", "wheel"])
+            .output();
+        let r = std::process::Command::new(&pip)
+            .args(["install", "-e", "."])
+            .current_dir(&project.path)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !r.status.success() {
+            // poetry인 경우 pip install . 로도 시도
+            let r2 = std::process::Command::new(&pip)
+                .args(["install", "."])
+                .current_dir(&project.path)
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !r2.status.success() {
+                return Err(format!("패키지 설치 실패:\n{}", String::from_utf8_lossy(&r2.stderr)));
+            }
+        }
+        return Ok("패키지 설치 완료 (pyproject.toml)".to_string());
+    }
+
+    Ok("venv 생성 완료 (설치할 패키지 파일 없음)".to_string())
+}
+
+pub fn start_server(project: &VhostProject) -> Result<u32, String> {
+    // venv가 없으면 자동 설치
+    let venv_python = format!("{}/venv/bin/python3", project.path);
+    if !std::path::Path::new(&venv_python).exists() {
+        eprintln!("[localman] venv 없음 → 자동 설치");
+        setup_venv(project)?;
+    }
+
+    let command = if project.start_command.is_empty() {
+        auto_detect_start_command(&project.path, project.port)
+    } else {
+        project.start_command.clone()
+    };
+
+    let parts: Vec<&str> = command.split_whitespace().collect();
     if parts.is_empty() {
         return Err("실행 명령어가 올바르지 않습니다.".to_string());
     }
-    eprintln!("[localman] 서버 시작: {} in {}", project.start_command, project.path);
+    eprintln!("[localman] 서버 시작: {command} in {}", project.path);
     let child = std::process::Command::new(parts[0])
         .args(&parts[1..])
         .current_dir(&project.path)

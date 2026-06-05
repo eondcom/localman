@@ -6,6 +6,7 @@ use crate::system::{
     VhostProject, ProjectType, ServerStatus,
     list_projects, add_project, update_project, remove_project,
     start_server, stop_server, server_status, auto_assign_port,
+    setup_venv, auto_detect_start_command,
 };
 use rfd;
 
@@ -34,6 +35,9 @@ pub enum ProjectsMessage {
     EditFolderSelected(String, Option<String>), // (id, path)
     SaveEdit(String),
     CancelEdit,
+    // venv 자동 설치
+    SetupVenv(String),
+    VenvSetupDone(String, Result<String, String>),
     #[allow(dead_code)]
     Refresh,
 }
@@ -51,6 +55,8 @@ pub struct ProjectsState {
     edit_name: String,
     edit_path: String,
     edit_start_command: String,
+    // venv 설치 중인 project id 목록
+    setting_up: std::collections::HashSet<String>,
     // 메시지
     error: Option<String>,
     server_message: Option<Result<String, String>>,
@@ -69,6 +75,7 @@ impl ProjectsState {
             edit_name: String::new(),
             edit_path: String::new(),
             edit_start_command: String::new(),
+            setting_up: std::collections::HashSet::new(),
             error: None,
             server_message: None,
         }
@@ -94,7 +101,15 @@ impl ProjectsState {
                 Task::perform(pick_folder(), ProjectsMessage::PathSelected)
             }
             ProjectsMessage::PathSelected(path) => {
-                if let Some(p) = path { self.new_path = p; }
+                if let Some(p) = path {
+                    // 경로 선택 시 start_command 자동 감지
+                    if self.new_type == ProjectType::Python {
+                        let port = auto_assign_port();
+                        let detected = auto_detect_start_command(&p, port);
+                        self.new_start_command = detected;
+                    }
+                    self.new_path = p;
+                }
                 Task::none()
             }
             ProjectsMessage::AddProject => {
@@ -120,6 +135,8 @@ impl ProjectsState {
                     port,
                     start_command: self.new_start_command.clone(),
                 };
+                let added_id = project.id.clone();
+                let is_python = project.project_type == ProjectType::Python;
                 match add_project(project) {
                     Ok(_) => {
                         self.error = None;
@@ -129,6 +146,10 @@ impl ProjectsState {
                         self.new_start_command = "python app.py".to_string();
                         self.new_type = ProjectType::Php;
                         self.projects = list_projects();
+                        // Python이면 venv 자동 설치 시작
+                        if is_python {
+                            return Task::done(ProjectsMessage::SetupVenv(added_id));
+                        }
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -207,6 +228,28 @@ impl ProjectsState {
             ProjectsMessage::CancelEdit => {
                 self.editing_id = None;
                 self.error = None;
+                Task::none()
+            }
+            ProjectsMessage::SetupVenv(id) => {
+                let project = self.projects.iter().find(|p| p.id == id).cloned();
+                if let Some(p) = project {
+                    self.setting_up.insert(id.clone());
+                    self.server_message = Some(Ok(format!("{id}: 패키지 설치 중...")));
+                    Task::perform(
+                        async move { setup_venv(&p) },
+                        move |r| ProjectsMessage::VenvSetupDone(id.clone(), r),
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            ProjectsMessage::VenvSetupDone(id, result) => {
+                self.setting_up.remove(&id);
+                self.projects = list_projects();
+                match result {
+                    Ok(msg) => self.server_message = Some(Ok(format!("{id}: {msg}"))),
+                    Err(e) => self.server_message = Some(Err(format!("{id}: {e}"))),
+                }
                 Task::none()
             }
         }
@@ -309,7 +352,8 @@ impl ProjectsState {
                 if editing_id == Some(p.id.as_str()) {
                     project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command)
                 } else {
-                    project_row_view(p, editing_id.is_some())
+                    let is_setting_up = self.setting_up.contains(&p.id);
+                    project_row_view_with_state(p, editing_id.is_some(), is_setting_up)
                 }
             }).collect();
             scrollable(column(items).spacing(8)).into()
@@ -345,6 +389,10 @@ impl ProjectsState {
 
 // 일반 보기 모드 카드
 fn project_row_view(p: &VhostProject, any_editing: bool) -> Element<'_, ProjectsMessage> {
+    project_row_view_with_state(p, any_editing, false)
+}
+
+fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: bool) -> Element<'_, ProjectsMessage> {
     let id = p.id.clone();
     let id_edit = p.id.clone();
     let id_srv = p.id.clone();
@@ -359,33 +407,55 @@ fn project_row_view(p: &VhostProject, any_editing: bool) -> Element<'_, Projects
 
     let server_controls: Element<ProjectsMessage> = match p.project_type {
         ProjectType::Python => {
-            let (btn_label, btn_color, btn_msg) = if is_running {
-                ("중지", Color::from_rgb(0.7, 0.2, 0.2), ProjectsMessage::StopServer(id_srv))
+            if setting_up {
+                row![
+                    text("⏳ 패키지 설치 중...").size(12).color(Color::from_rgb(0.8, 0.7, 0.2)),
+                ].align_y(iced::Alignment::Center).into()
             } else {
-                ("시작", Color::from_rgb(0.1, 0.5, 0.3), ProjectsMessage::StartServer(id_srv))
-            };
-            let dot_color = if is_running { Color::from_rgb(0.2, 0.9, 0.4) } else { Color::from_rgb(0.5, 0.5, 0.5) };
-            let pid_str = if let ServerStatus::Running(pid) = status { format!("PID {pid}") } else { "중지됨".to_string() };
-            row![
-                container(Space::with_width(8)).width(8).height(8)
-                    .style(move |_| container::Style {
-                        background: Some(iced::Background::Color(dot_color)),
-                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                        ..Default::default()
-                    }),
-                Space::with_width(6),
-                text(pid_str).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-                Space::with_width(10),
-                button(text(btn_label).size(12))
-                    .on_press(btn_msg)
-                    .padding([6, 14])
-                    .style(move |_, _| button::Style {
-                        background: Some(iced::Background::Color(btn_color)),
-                        border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                        text_color: Color::WHITE,
-                        ..Default::default()
-                    }),
-            ].align_y(iced::Alignment::Center).into()
+                let venv_ok = std::path::Path::new(&format!("{}/venv/bin/python3", p.path)).exists();
+                let (btn_label, btn_color, btn_msg) = if is_running {
+                    ("중지", Color::from_rgb(0.7, 0.2, 0.2), ProjectsMessage::StopServer(id_srv))
+                } else {
+                    ("시작", Color::from_rgb(0.1, 0.5, 0.3), ProjectsMessage::StartServer(id_srv))
+                };
+                let dot_color = if is_running { Color::from_rgb(0.2, 0.9, 0.4) } else { Color::from_rgb(0.5, 0.5, 0.5) };
+                let pid_str = if let ServerStatus::Running(pid) = status { format!("PID {pid}") } else { "중지됨".to_string() };
+                let id_setup = p.id.clone();
+                let mut r = row![
+                    container(Space::with_width(8)).width(8).height(8)
+                        .style(move |_| container::Style {
+                            background: Some(iced::Background::Color(dot_color)),
+                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                            ..Default::default()
+                        }),
+                    Space::with_width(6),
+                    text(pid_str).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
+                    Space::with_width(8),
+                    button(text(btn_label).size(12))
+                        .on_press(btn_msg)
+                        .padding([6, 14])
+                        .style(move |_, _| button::Style {
+                            background: Some(iced::Background::Color(btn_color)),
+                            border: iced::Border { radius: 5.0.into(), ..Default::default() },
+                            text_color: Color::WHITE,
+                            ..Default::default()
+                        }),
+                ].align_y(iced::Alignment::Center);
+                if !venv_ok {
+                    r = r.push(Space::with_width(6)).push(
+                        button(text("패키지설치").size(11))
+                            .on_press(ProjectsMessage::SetupVenv(id_setup))
+                            .padding([6, 10])
+                            .style(|_, _| button::Style {
+                                background: Some(iced::Background::Color(Color::from_rgb(0.35, 0.25, 0.0))),
+                                border: iced::Border { radius: 5.0.into(), ..Default::default() },
+                                text_color: Color::from_rgb(1.0, 0.85, 0.3),
+                                ..Default::default()
+                            })
+                    );
+                }
+                r.into()
+            }
         }
         ProjectType::Php => {
             let apache_running = crate::system::get_service_status("apache2") == crate::system::ServiceStatus::Running;
