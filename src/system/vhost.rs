@@ -117,6 +117,7 @@ pub fn setup_venv(project: &VhostProject) -> Result<String, String> {
         if !r.status.success() {
             return Err(format!("패키지 설치 실패:\n{}", String::from_utf8_lossy(&r.stderr)));
         }
+        build_frontend_if_needed(project)?;
         return Ok(format!("패키지 설치 완료 (requirements.txt)"));
     }
 
@@ -144,10 +145,47 @@ pub fn setup_venv(project: &VhostProject) -> Result<String, String> {
                 return Err(format!("패키지 설치 실패:\n{}", String::from_utf8_lossy(&r2.stderr)));
             }
         }
+        build_frontend_if_needed(project)?;
         return Ok("패키지 설치 완료 (pyproject.toml)".to_string());
     }
 
+    // web/ 디렉토리가 있으면 프론트엔드 빌드
+    build_frontend_if_needed(project)?;
+
     Ok("venv 생성 완료 (설치할 패키지 파일 없음)".to_string())
+}
+
+/// web/ 디렉토리에 package.json이 있으면 npm install + npm run build
+pub fn build_frontend_if_needed(project: &VhostProject) -> Result<(), String> {
+    let web_dir = format!("{}/web", project.path);
+    let pkg_json = format!("{web_dir}/package.json");
+    if !std::path::Path::new(&pkg_json).exists() {
+        return Ok(());
+    }
+    eprintln!("[localman] 프론트엔드 빌드 시작: {web_dir}");
+
+    // npm install
+    let install = std::process::Command::new("npm")
+        .args(["install", "--legacy-peer-deps"])
+        .current_dir(&web_dir)
+        .output()
+        .map_err(|e| format!("npm install 실패: {e}"))?;
+    if !install.status.success() {
+        return Err(format!("npm install 실패:\n{}", String::from_utf8_lossy(&install.stderr)));
+    }
+
+    // npm run build
+    let build = std::process::Command::new("npm")
+        .args(["run", "build"])
+        .current_dir(&web_dir)
+        .output()
+        .map_err(|e| format!("npm run build 실패: {e}"))?;
+    if !build.status.success() {
+        return Err(format!("npm run build 실패:\n{}", String::from_utf8_lossy(&build.stderr)));
+    }
+
+    eprintln!("[localman] 프론트엔드 빌드 완료");
+    Ok(())
 }
 
 pub fn start_server(project: &VhostProject) -> Result<u32, String> {
