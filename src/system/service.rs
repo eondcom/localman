@@ -27,8 +27,8 @@ pub fn get_service_status(name: &str) -> ServiceStatus {
 pub fn toggle_service(name: &str, start: bool) -> Result<(), String> {
     let action = if start { "start" } else { "stop" };
     eprintln!("[localman] 서비스 {action}: {name}");
-    let output = Command::new("pkexec")
-        .args(["systemctl", action, name])
+    let output = Command::new("sudo")
+        .args(["-n", "systemctl", action, name])
         .output()
         .map_err(|e| e.to_string())?;
 
