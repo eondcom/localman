@@ -6,6 +6,12 @@ pub struct DbInfo {
     pub name: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct DbUser {
+    pub username: String,
+    pub host: String,
+}
+
 pub fn list_databases(user: &str, password: &str) -> Vec<DbInfo> {
     let output = Command::new("mysql")
         .args([
@@ -78,6 +84,84 @@ pub fn backup_database(user: &str, password: &str, db_name: &str, output_path: &
 
     if output.status.success() {
         std::fs::write(output_path, &output.stdout).map_err(|e| e.to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+pub fn list_users(user: &str, password: &str) -> Vec<DbUser> {
+    let output = Command::new("mysql")
+        .args([
+            &format!("-u{user}"),
+            &format!("-p{password}"),
+            "-e",
+            "SELECT User, Host FROM mysql.user WHERE User != '' ORDER BY User, Host;",
+            "--skip-column-names",
+        ])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|l| {
+                    let parts: Vec<&str> = l.splitn(2, '\t').collect();
+                    if parts.len() == 2 {
+                        Some(DbUser {
+                            username: parts[0].to_string(),
+                            host: parts[1].to_string(),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        _ => vec![],
+    }
+}
+
+pub fn create_user(admin: &str, admin_pw: &str, new_user: &str, new_pw: &str, host: &str) -> Result<(), String> {
+    let sql = format!(
+        "CREATE USER '{new_user}'@'{host}' IDENTIFIED BY '{new_pw}'; FLUSH PRIVILEGES;"
+    );
+    let output = Command::new("mysql")
+        .args([&format!("-u{admin}"), &format!("-p{admin_pw}"), "-e", &sql])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+pub fn drop_user(admin: &str, admin_pw: &str, target_user: &str, host: &str) -> Result<(), String> {
+    let sql = format!("DROP USER '{target_user}'@'{host}'; FLUSH PRIVILEGES;");
+    let output = Command::new("mysql")
+        .args([&format!("-u{admin}"), &format!("-p{admin_pw}"), "-e", &sql])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+pub fn grant_privileges(admin: &str, admin_pw: &str, target_user: &str, host: &str, db_name: &str) -> Result<(), String> {
+    let sql = format!(
+        "GRANT ALL PRIVILEGES ON `{db_name}`.* TO '{target_user}'@'{host}'; FLUSH PRIVILEGES;"
+    );
+    let output = Command::new("mysql")
+        .args([&format!("-u{admin}"), &format!("-p{admin_pw}"), "-e", &sql])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
