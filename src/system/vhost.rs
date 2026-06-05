@@ -131,14 +131,17 @@ pub fn auto_assign_port() -> u16 {
 
 pub fn add_project(project: VhostProject) -> Result<(), String> {
     eprintln!("[localman] 프로젝트 추가: {} ({:?})", project.id, project.project_type);
-    let mut list = list_projects();
-    list.push(project.clone());
-    save_projects(&list)?;
+    // vhost/hosts 먼저 성공한 뒤 projects.json 저장 (실패 시 반쪽 상태 방지)
     if project.project_type == ProjectType::Python {
         ensure_proxy_module()?;
     }
     write_vhost(&project)?;
     update_hosts(&project.domain, true)?;
+    let mut list = list_projects();
+    // 중복 방지
+    list.retain(|p| p.id != project.id);
+    list.push(project.clone());
+    save_projects(&list)?;
     eprintln!("[localman] 프로젝트 추가 완료: {}", project.domain);
     Ok(())
 }
@@ -168,17 +171,27 @@ fn ensure_proxy_module() -> Result<(), String> {
         return Ok(());
     }
     eprintln!("[localman] proxy_http 모듈 활성화 중...");
+    // a2enmod는 /usr/sbin에 위치
     let r = std::process::Command::new("sudo")
-        .args(["a2enmod", "proxy", "proxy_http"])
+        .args(["-n", "/usr/sbin/a2enmod", "proxy", "proxy_http"])
         .output()
         .map_err(|e| e.to_string())?;
     if !r.status.success() {
-        return Err(format!("a2enmod 실패: {}", String::from_utf8_lossy(&r.stderr)));
+        let err = String::from_utf8_lossy(&r.stderr).to_string();
+        eprintln!("[localman] a2enmod 실패: {err}");
+        return Err(
+            "Apache proxy 모듈 활성화 실패.\n\
+             터미널에서 한 번 실행 후 재시도하세요:\n\
+             sudo a2enmod proxy proxy_http && sudo systemctl reload apache2".to_string()
+        );
     }
-    std::process::Command::new("sudo")
-        .args(["systemctl", "reload", "apache2"])
+    let reload = std::process::Command::new("sudo")
+        .args(["-n", "systemctl", "reload", "apache2"])
         .output()
         .map_err(|e| e.to_string())?;
+    if !reload.status.success() {
+        return Err(format!("Apache reload 실패: {}", String::from_utf8_lossy(&reload.stderr)));
+    }
     Ok(())
 }
 
