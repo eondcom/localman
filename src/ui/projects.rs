@@ -31,6 +31,7 @@ pub enum ProjectsMessage {
     EditNameChanged(String),
     EditPathChanged(String),
     EditStartCommandChanged(String),
+    EditTypeSelected(ProjectType),
     EditPickFolder(String),
     EditFolderSelected(String, Option<String>), // (id, path)
     SaveEdit(String),
@@ -55,6 +56,7 @@ pub struct ProjectsState {
     edit_name: String,
     edit_path: String,
     edit_start_command: String,
+    edit_type: ProjectType,
     // venv 설치 중인 project id 목록
     setting_up: std::collections::HashSet<String>,
     // 메시지
@@ -75,6 +77,7 @@ impl ProjectsState {
             edit_name: String::new(),
             edit_path: String::new(),
             edit_start_command: String::new(),
+            edit_type: ProjectType::Php,
             setting_up: std::collections::HashSet::new(),
             error: None,
             server_message: None,
@@ -199,6 +202,7 @@ impl ProjectsState {
                     self.edit_name = p.name.clone();
                     self.edit_path = p.path.clone();
                     self.edit_start_command = p.start_command.clone();
+                    self.edit_type = p.project_type.clone();
                     self.editing_id = Some(id);
                     self.error = None;
                 }
@@ -207,6 +211,20 @@ impl ProjectsState {
             ProjectsMessage::EditNameChanged(v) => { self.edit_name = v; Task::none() }
             ProjectsMessage::EditPathChanged(v) => { self.edit_path = v; Task::none() }
             ProjectsMessage::EditStartCommandChanged(v) => { self.edit_start_command = v; Task::none() }
+            ProjectsMessage::EditTypeSelected(t) => {
+                // 타입 변경 시: Python으로 가면서 명령어가 PHP 디폴트이면 자동 감지로 교체
+                if t == ProjectType::Python && self.edit_type == ProjectType::Php {
+                    if self.edit_start_command.trim().is_empty()
+                        || self.edit_start_command == "python app.py"
+                    {
+                        // 정확한 포트는 저장 시 update_project 가 할당하므로, 자동 감지엔 임시값 사용
+                        self.edit_start_command =
+                            auto_detect_start_command(&self.edit_path, 5001);
+                    }
+                }
+                self.edit_type = t;
+                Task::none()
+            }
             ProjectsMessage::EditPickFolder(id) => {
                 Task::perform(pick_folder(), move |p| ProjectsMessage::EditFolderSelected(id.clone(), p))
             }
@@ -215,7 +233,13 @@ impl ProjectsState {
                 Task::none()
             }
             ProjectsMessage::SaveEdit(id) => {
-                match update_project(&id, self.edit_name.clone(), self.edit_path.clone(), self.edit_start_command.clone()) {
+                match update_project(
+                    &id,
+                    self.edit_name.clone(),
+                    self.edit_path.clone(),
+                    self.edit_start_command.clone(),
+                    self.edit_type.clone(),
+                ) {
                     Ok(_) => {
                         self.editing_id = None;
                         self.error = None;
@@ -350,7 +374,7 @@ impl ProjectsState {
         } else {
             let items: Vec<Element<ProjectsMessage>> = self.projects.iter().map(|p| {
                 if editing_id == Some(p.id.as_str()) {
-                    project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command)
+                    project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command, &self.edit_type)
                 } else {
                     let is_setting_up = self.setting_up.contains(&p.id);
                     project_row_view_with_state(p, editing_id.is_some(), is_setting_up)
@@ -549,10 +573,12 @@ fn project_row_editing<'a>(
     edit_name: &'a str,
     edit_path: &'a str,
     edit_start_cmd: &'a str,
+    edit_type: &'a ProjectType,
 ) -> Element<'a, ProjectsMessage> {
     let id_save   = p.id.clone();
     let id_folder = p.id.clone();
-    let is_python = p.project_type == ProjectType::Python;
+    let is_python = *edit_type == ProjectType::Python;
+    let type_changed = *edit_type != p.project_type;
 
     let mut edit_col = column![
         row![
@@ -585,8 +611,31 @@ fn project_row_editing<'a>(
                     .padding([9, 14]),
             ],
         ],
+        Space::with_height(8),
+        // 타입 선택
+        column![
+            text("타입").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
+            Space::with_height(4),
+            row![
+                type_btn("PHP",    !is_python, ProjectsMessage::EditTypeSelected(ProjectType::Php)),
+                Space::with_width(8),
+                type_btn("Python",  is_python, ProjectsMessage::EditTypeSelected(ProjectType::Python)),
+            ],
+        ],
     ]
     .spacing(0);
+
+    if type_changed {
+        edit_col = edit_col.push(Space::with_height(6)).push(
+            text(if is_python {
+                "→ 저장 시 새 포트가 할당되고 vhost가 Proxy 형태로 다시 작성됩니다"
+            } else {
+                "→ 저장 시 포트가 80으로 리셋되고 vhost가 DocumentRoot 형태로 다시 작성됩니다"
+            })
+            .size(11)
+            .color(Color::from_rgb(0.9, 0.7, 0.2)),
+        );
+    }
 
     if is_python {
         edit_col = edit_col

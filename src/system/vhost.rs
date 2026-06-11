@@ -283,18 +283,37 @@ pub fn add_project(project: VhostProject) -> Result<(), String> {
     Ok(())
 }
 
-pub fn update_project(id: &str, name: String, path: String, start_command: String) -> Result<(), String> {
+pub fn update_project(
+    id: &str,
+    name: String,
+    path: String,
+    start_command: String,
+    project_type: ProjectType,
+) -> Result<(), String> {
     let mut list = list_projects();
+    // 충돌 방지를 위해 mutable borrow 전에 다른 프로젝트 포트 수집
+    let used_ports: Vec<u16> = list.iter().filter(|x| x.id != id).map(|x| x.port).collect();
     let p = list.iter_mut().find(|p| p.id == id)
         .ok_or_else(|| "프로젝트를 찾을 수 없습니다.".to_string())?;
+    let type_changed = p.project_type != project_type;
     p.name = name;
     p.path = path;
     p.start_command = start_command;
+    if type_changed {
+        p.project_type = project_type.clone();
+        p.port = match project_type {
+            ProjectType::Python => {
+                let mut candidate: u16 = 5001;
+                while used_ports.contains(&candidate) { candidate += 1; }
+                candidate
+            }
+            ProjectType::Php => 80,
+        };
+    }
     let updated = p.clone();
     save_projects(&list)?;
-    // vhost 파일 재생성 (경로 변경 반영)
     write_vhost(&updated)?;
-    eprintln!("[localman] 프로젝트 업데이트: {id}");
+    eprintln!("[localman] 프로젝트 업데이트: {id} (type_changed={type_changed})");
     Ok(())
 }
 
