@@ -36,13 +36,14 @@ pub struct App {
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
+        let (database, db_task) = database::DatabaseState::new();
         let app = Self {
             active_tab: Tab::Services,
             services: services::ServicesState::new(),
             projects: projects::ProjectsState::new(),
-            database: database::DatabaseState::new(),
+            database,
         };
-        (app, Task::none())
+        (app, db_task.map(Message::Database))
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -244,6 +244,65 @@ pub fn stop_server(id: &str) -> Result<(), String> {
     }
 }
 
+/// pma.localhost 에 Adminer(단일 PHP 파일 DB 관리도구)를 설치하고 URL을 반환한다.
+/// 이미 설치돼 있으면 vhost/hosts만 보장하고 그대로 반환한다(멱등).
+pub fn ensure_adminer_site() -> Result<String, String> {
+    // 1) pma 디렉토리 + adminer 파일 준비
+    let mut dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    dir.push("localman");
+    dir.push("pma");
+    fs::create_dir_all(&dir).map_err(|e| format!("pma 디렉토리 생성 실패: {e}"))?;
+
+    let index = dir.join("index.php");
+    if !index.exists() {
+        download_adminer(&index)?;
+    }
+
+    // 2) pma.localhost vhost (PHP, DocumentRoot = pma 디렉토리)
+    let pma = VhostProject {
+        id: "pma".to_string(),
+        name: "Adminer".to_string(),
+        path: dir.to_string_lossy().to_string(),
+        domain: "pma.localhost".to_string(),
+        project_type: ProjectType::Php,
+        port: 80,
+        start_command: String::new(),
+    };
+    write_vhost(&pma)?;
+    update_hosts(&pma.domain, true)?;
+
+    Ok(format!("http://{}", pma.domain))
+}
+
+/// adminer.org에서 최신 Adminer를 내려받아 dest에 저장한다(curl 우선, 실패 시 wget).
+fn download_adminer(dest: &Path) -> Result<(), String> {
+    let url = "https://www.adminer.org/latest.php";
+    let dest_str = dest.to_str().ok_or_else(|| "경로 변환 실패".to_string())?;
+
+    let curl = std::process::Command::new("curl")
+        .args(["-fsSL", url, "-o", dest_str])
+        .output();
+    if let Ok(o) = curl {
+        if o.status.success() && dest.exists() {
+            return Ok(());
+        }
+    }
+    let wget = std::process::Command::new("wget")
+        .args(["-q", url, "-O", dest_str])
+        .output();
+    if let Ok(o) = wget {
+        if o.status.success() && dest.exists() {
+            return Ok(());
+        }
+    }
+    Err("Adminer 다운로드 실패 (curl/wget·인터넷 연결 확인)".to_string())
+}
+
+/// 기본 브라우저로 URL을 연다.
+pub fn open_url(url: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
 fn data_path() -> PathBuf {
     let mut p = dirs::data_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     p.push("localman");
@@ -376,9 +435,12 @@ fn build_vhost_conf(p: &VhostProject) -> String {
              \x20       AllowOverride All\n\
              \x20       Require all granted\n\
              \x20   </Directory>\n\
+             \x20   ErrorLog ${{APACHE_LOG_DIR}}/{id}.error.log\n\
+             \x20   CustomLog ${{APACHE_LOG_DIR}}/{id}.access.log combined\n\
              </VirtualHost>\n",
             domain = p.domain,
             path = p.path,
+            id = p.id,
         ),
         ProjectType::Python => format!(
             "<VirtualHost *:80>\n\
@@ -386,9 +448,12 @@ fn build_vhost_conf(p: &VhostProject) -> String {
              \x20   ProxyPreserveHost On\n\
              \x20   ProxyPass / http://127.0.0.1:{port}/\n\
              \x20   ProxyPassReverse / http://127.0.0.1:{port}/\n\
+             \x20   ErrorLog ${{APACHE_LOG_DIR}}/{id}.error.log\n\
+             \x20   CustomLog ${{APACHE_LOG_DIR}}/{id}.access.log combined\n\
              </VirtualHost>\n",
             domain = p.domain,
             port = p.port,
+            id = p.id,
         ),
     }
 }

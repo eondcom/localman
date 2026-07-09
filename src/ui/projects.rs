@@ -7,8 +7,17 @@ use crate::system::{
     list_projects, add_project, update_project, remove_project,
     start_server, stop_server, server_status, auto_assign_port,
     setup_venv, auto_detect_start_command,
+    error_log_path, read_log, clear_log,
 };
 use rfd;
+
+/// 프로젝트별 에러 로그 뷰 상태
+struct LogView {
+    id: String,
+    name: String,
+    content: String,
+    error: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub enum ProjectsMessage {
@@ -39,6 +48,14 @@ pub enum ProjectsMessage {
     // venv 자동 설치
     SetupVenv(String),
     VenvSetupDone(String, Result<String, String>),
+    // 에러 로그
+    ViewLog(String),
+    LogLoaded(String, Result<String, String>),
+    CopyLog,
+    CopyText(String),
+    ClearLog(String),
+    LogCleared(String, Result<(), String>),
+    CloseLog,
     #[allow(dead_code)]
     Refresh,
 }
@@ -59,6 +76,8 @@ pub struct ProjectsState {
     edit_type: ProjectType,
     // venv 설치 중인 project id 목록
     setting_up: std::collections::HashSet<String>,
+    // 에러 로그 뷰 (열려 있으면 Some)
+    log_view: Option<LogView>,
     // 메시지
     error: Option<String>,
     server_message: Option<Result<String, String>>,
@@ -79,6 +98,7 @@ impl ProjectsState {
             edit_start_command: String::new(),
             edit_type: ProjectType::Php,
             setting_up: std::collections::HashSet::new(),
+            log_view: None,
             error: None,
             server_message: None,
         }
@@ -276,6 +296,75 @@ impl ProjectsState {
                 }
                 Task::none()
             }
+            ProjectsMessage::ViewLog(id) => {
+                let name = self.projects.iter().find(|p| p.id == id)
+                    .map(|p| p.name.clone()).unwrap_or_else(|| id.clone());
+                // 로그 패널을 즉시 열고 "불러오는 중" 표시
+                self.log_view = Some(LogView {
+                    id: id.clone(),
+                    name,
+                    content: String::new(),
+                    error: None,
+                });
+                let path = error_log_path(&id);
+                Task::perform(
+                    async move { read_log(&path, 500) },
+                    move |r| ProjectsMessage::LogLoaded(id.clone(), r),
+                )
+            }
+            ProjectsMessage::LogLoaded(id, result) => {
+                if let Some(lv) = self.log_view.as_mut() {
+                    if lv.id == id {
+                        match result {
+                            Ok(content) => {
+                                // 빈 내용은 그대로 두고, 표시는 log_panel에서 기본 폰트로 처리
+                                lv.content = content;
+                                lv.error = None;
+                            }
+                            Err(e) => {
+                                lv.content = String::new();
+                                lv.error = Some(e);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            ProjectsMessage::CopyLog => {
+                if let Some(lv) = self.log_view.as_ref() {
+                    let content = lv.content.clone();
+                    self.server_message = Some(Ok("로그를 클립보드에 복사했습니다.".to_string()));
+                    return iced::clipboard::write(content);
+                }
+                Task::none()
+            }
+            ProjectsMessage::ClearLog(id) => {
+                let path = error_log_path(&id);
+                Task::perform(
+                    async move { clear_log(&path) },
+                    move |r| ProjectsMessage::LogCleared(id.clone(), r),
+                )
+            }
+            ProjectsMessage::LogCleared(id, result) => {
+                match result {
+                    Ok(_) => {
+                        self.server_message = Some(Ok("로그를 비웠습니다.".to_string()));
+                        // 비운 뒤 다시 로드해 빈 상태 반영
+                        return Task::done(ProjectsMessage::ViewLog(id));
+                    }
+                    Err(e) => {
+                        self.server_message = Some(Err(e));
+                    }
+                }
+                Task::none()
+            }
+            ProjectsMessage::CopyText(s) => {
+                return iced::clipboard::write(s);
+            }
+            ProjectsMessage::CloseLog => {
+                self.log_view = None;
+                Task::none()
+            }
         }
     }
 
@@ -383,6 +472,11 @@ impl ProjectsState {
             scrollable(column(items).spacing(8)).into()
         };
 
+        let log_section: Element<ProjectsMessage> = match &self.log_view {
+            Some(lv) => column![log_panel(lv), Space::with_height(20)].into(),
+            None => Space::with_height(0).into(),
+        };
+
         let mut col = column![
             text("프로젝트").size(22),
             Space::with_height(8),
@@ -391,12 +485,18 @@ impl ProjectsState {
             Space::with_height(20),
             add_form,
             Space::with_height(20),
+            log_section,
             project_list,
         ];
 
         if let Some(err) = &self.error {
+            let full = format!("오류: {err}");
             col = col.push(Space::with_height(8)).push(
-                text(format!("오류: {err}")).size(13).color(Color::from_rgb(1.0, 0.4, 0.4))
+                row![
+                    text(full.clone()).size(13).color(Color::from_rgb(1.0, 0.4, 0.4)).width(Length::Fill),
+                    Space::with_width(8),
+                    msg_copy_btn(full),
+                ].align_y(iced::Alignment::Center)
             );
         }
         if let Some(msg) = &self.server_message {
@@ -404,7 +504,13 @@ impl ProjectsState {
                 Ok(m) => (m.as_str(), Color::from_rgb(0.2, 0.9, 0.4)),
                 Err(e) => (e.as_str(), Color::from_rgb(1.0, 0.4, 0.4)),
             };
-            col = col.push(Space::with_height(8)).push(text(txt).size(13).color(color));
+            col = col.push(Space::with_height(8)).push(
+                row![
+                    text(txt).size(13).color(color).width(Length::Fill),
+                    Space::with_width(8),
+                    msg_copy_btn(txt.to_string()),
+                ].align_y(iced::Alignment::Center)
+            );
         }
 
         col.into()
@@ -420,6 +526,7 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
     let id = p.id.clone();
     let id_edit = p.id.clone();
     let id_srv = p.id.clone();
+    let id_log = p.id.clone();
 
     let (type_label, type_color) = match p.project_type {
         ProjectType::Php    => ("PHP",    Color::from_rgb(0.5, 0.6, 1.0)),
@@ -544,6 +651,16 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
             ].width(Length::Fill),
             server_controls,
             Space::with_width(8),
+            button(text("로그").size(12))
+                .on_press(ProjectsMessage::ViewLog(id_log))
+                .padding([6, 14])
+                .style(|_, _| button::Style {
+                    background: Some(iced::Background::Color(Color::from_rgb(0.3, 0.3, 0.18))),
+                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
+                    text_color: Color::from_rgb(1.0, 0.9, 0.5),
+                    ..Default::default()
+                }),
+            Space::with_width(6),
             edit_btn,
             Space::with_width(6),
             button(text("삭제").size(12))
@@ -679,6 +796,97 @@ fn project_row_editing<'a>(
         .style(|_| container::Style {
             background: Some(iced::Background::Color(Color::from_rgb(0.14, 0.16, 0.20))),
             border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.3, 0.5, 0.7), width: 1.5 },
+            ..Default::default()
+        })
+        .into()
+}
+
+// 에러 로그 패널
+fn log_panel(lv: &LogView) -> Element<'_, ProjectsMessage> {
+    let id_clear = lv.id.clone();
+    let id_refresh = lv.id.clone();
+
+    let header = row![
+        column![
+            text(format!("에러 로그 · {}", lv.name)).size(15),
+            Space::with_height(2),
+            text(crate::system::error_log_path(&lv.id))
+                .size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
+        ].width(Length::Fill),
+        log_btn("복사", Color::from_rgb(0.2, 0.35, 0.5), ProjectsMessage::CopyLog),
+        Space::with_width(6),
+        log_btn("새로고침", Color::from_rgb(0.2, 0.4, 0.3), ProjectsMessage::ViewLog(id_refresh)),
+        Space::with_width(6),
+        log_btn("지우기", Color::from_rgb(0.5, 0.2, 0.1), ProjectsMessage::ClearLog(id_clear)),
+        Space::with_width(6),
+        log_btn("닫기", Color::from_rgb(0.25, 0.25, 0.3), ProjectsMessage::CloseLog),
+    ].align_y(iced::Alignment::Center);
+
+    let body: Element<ProjectsMessage> = if let Some(err) = &lv.error {
+        // 에러/안내 메시지: 한글 포함 → 기본 폰트
+        text(err).size(12).color(Color::from_rgb(1.0, 0.6, 0.4)).into()
+    } else if lv.content.trim().is_empty() {
+        // 빈 로그 안내: 한글 → 기본 폰트(모노스페이스 강제 시 한글이 깨짐)
+        text("(로그가 비어 있습니다)").size(12).color(Color::from_rgb(0.5, 0.5, 0.5)).into()
+    } else {
+        // 실제 로그 본문만 모노스페이스
+        scrollable(
+            text(&lv.content)
+                .size(12)
+                .font(iced::Font::MONOSPACE)
+                .color(Color::from_rgb(0.8, 0.85, 0.8))
+        )
+        .height(Length::Fixed(320.0))
+        .width(Length::Fill)
+        .into()
+    };
+
+    container(
+        column![
+            header,
+            Space::with_height(12),
+            container(body)
+                .padding(12)
+                .width(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(iced::Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
+                    border: iced::Border { radius: 6.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
+                    ..Default::default()
+                }),
+        ]
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
+        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.35, 0.35, 0.2), width: 1.0 },
+        ..Default::default()
+    })
+    .into()
+}
+
+// 하단 상태/오류 메시지 복사 버튼
+fn msg_copy_btn(text_to_copy: String) -> Element<'static, ProjectsMessage> {
+    button(text("복사").size(11))
+        .on_press(ProjectsMessage::CopyText(text_to_copy))
+        .padding([4, 10])
+        .style(|_, _| button::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.35, 0.5))),
+            border: iced::Border { radius: 5.0.into(), ..Default::default() },
+            text_color: Color::WHITE,
+            ..Default::default()
+        })
+        .into()
+}
+
+fn log_btn(label: &str, color: Color, msg: ProjectsMessage) -> Element<'_, ProjectsMessage> {
+    button(text(label).size(12))
+        .on_press(msg)
+        .padding([6, 14])
+        .style(move |_, _| button::Style {
+            background: Some(iced::Background::Color(color)),
+            border: iced::Border { radius: 5.0.into(), ..Default::default() },
+            text_color: Color::WHITE,
             ..Default::default()
         })
         .into()
