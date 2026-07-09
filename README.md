@@ -1,6 +1,6 @@
 # LocalMan
 
-로컬 개발 환경 관리자 — PHP/Python 프로젝트를 Apache vhost + MariaDB로 관리합니다.
+로컬 개발 환경 관리자 — PHP/Python 프로젝트를 Apache vhost + MariaDB/PostgreSQL로 관리합니다.
 
 ## 기능
 
@@ -10,8 +10,8 @@
   - Python 프로젝트: ProxyPass로 dev server 포트로 포워드
 - **Python 환경 자동 설정**: venv 생성, `requirements.txt` / `pyproject.toml` 자동 감지, npm 프론트엔드 빌드 포함
 - **서버 제어**: Python dev server 시작/중지 (포트 자동 할당 5001~6000)
-- **서비스 제어**: Apache2, MariaDB systemctl 시작/중지
-- **데이터베이스 관리**: DB 생성/삭제, 백업/복원, 사용자 관리
+- **서비스 제어**: Apache2, MariaDB, PostgreSQL systemctl 시작/중지
+- **데이터베이스 관리**: MariaDB/PostgreSQL DB 생성/삭제, 백업/복원, 사용자 관리
 
 ## 프로젝트 데이터
 
@@ -37,6 +37,7 @@
 
 - Apache2 (`sudo apt install apache2`)
 - MariaDB (`sudo apt install mariadb-server`)
+- PostgreSQL (`sudo apt install postgresql postgresql-client`)
 - Python3, Node.js/npm
 - sudoers 설정 (Apache 제어용)
 
@@ -62,4 +63,4 @@ cargo build --release
 
 - Rust + [Iced](https://github.com/iced-rs/iced) GUI
 - Apache2 vhost 기반 로컬 도메인
-- MariaDB CLI 래핑
+- MariaDB/PostgreSQL CLI 래핑

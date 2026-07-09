@@ -14,6 +14,7 @@ pub enum ServicesMessage {
 pub struct ServicesState {
     apache_status: ServiceStatus,
     mariadb_status: ServiceStatus,
+    postgresql_status: ServiceStatus,
     error: Option<String>,
 }
 
@@ -22,6 +23,7 @@ impl ServicesState {
         let mut s = Self {
             apache_status: ServiceStatus::Unknown,
             mariadb_status: ServiceStatus::Unknown,
+            postgresql_status: ServiceStatus::Unknown,
             error: None,
         };
         s.refresh();
@@ -31,6 +33,7 @@ impl ServicesState {
     pub fn refresh(&mut self) {
         self.apache_status = get_service_status("apache2");
         self.mariadb_status = get_service_status("mariadb");
+        self.postgresql_status = get_service_status("postgresql");
     }
 
     pub fn update(&mut self, msg: ServicesMessage) -> Task<ServicesMessage> {
@@ -53,6 +56,7 @@ impl ServicesState {
                         match name.as_str() {
                             "apache2" => self.apache_status = get_service_status("apache2"),
                             "mariadb" => self.mariadb_status = get_service_status("mariadb"),
+                            "postgresql" => self.postgresql_status = get_service_status("postgresql"),
                             _ => {}
                         }
                     }
@@ -78,6 +82,13 @@ impl ServicesState {
             "mariadb",
         );
 
+        let postgresql = service_card(
+            "PostgreSQL",
+            "데이터베이스 서버",
+            &self.postgresql_status,
+            "postgresql",
+        );
+
         let refresh_btn = button(text("새로고침").size(13))
             .on_press(ServicesMessage::Refresh)
             .padding([8, 16]);
@@ -85,11 +96,13 @@ impl ServicesState {
         let mut col = column![
             text("서비스 관리").size(22),
             Space::with_height(8),
-            text("Apache와 MariaDB 서비스를 제어합니다.").size(13).color(Color::from_rgb(0.6, 0.6, 0.6)),
+            text("Apache, MariaDB, PostgreSQL 서비스를 제어합니다.").size(13).color(Color::from_rgb(0.6, 0.6, 0.6)),
             Space::with_height(24),
             apache,
             Space::with_height(12),
             mariadb,
+            Space::with_height(12),
+            postgresql,
             Space::with_height(20),
             refresh_btn,
         ]
