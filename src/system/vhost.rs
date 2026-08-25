@@ -5,15 +5,115 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-// 실행 중인 Python dev server PID 목록 (id → pid)
-static RUNNING_PIDS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
+/// 실행 중인 dev server 한 건.
+///
+/// 예전에는 PID 하나만 메모리 HashMap 에 들고 있었다. 그 탓에
+/// (1) localman 이 죽으면 목록이 통째로 증발해 서버들이 관리 불가능한 고아가 되고
+/// (2) 다시 켜도 그 사실을 몰라 같은 서버를 또 띄웠으며
+/// (3) `kill <pid>` 로는 npm→vite, uvicorn→chromedriver 같은 손자 프로세스가 살아남았다.
+///
+/// 실제로 2026-07-28 에 이 세 가지가 겹쳐, 6일간 방치된 freethread 크롤러가
+/// Chrome 임시 프로필 5,074개(약 220G)를 쌓아 디스크를 100% 채웠다.
+/// 그래서 pgid 를 함께 기록해 그룹째 죽이고, 파일로 남겨 재시작 후에도 회수한다.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RunningProc {
+    pid: u32,
+    /// 프로세스 그룹 ID. `process_group(0)` 으로 띄우므로 최초에는 pid 와 같다.
+    pgid: u32,
+    /// `/proc/<pid>/stat` 의 starttime(22번째 필드).
+    /// PID 는 재사용되므로 이것까지 맞아야 같은 프로세스로 인정한다.
+    /// 이 검증이 없으면 재사용된 PID 를 죽여 엉뚱한 프로세스를 날릴 수 있다.
+    starttime: u64,
+}
 
-fn pids() -> std::sync::MutexGuard<'static, Option<HashMap<String, u32>>> {
+// id → RunningProc. 디스크(running.json)가 원본이고 이 맵은 캐시다.
+static RUNNING_PIDS: Mutex<Option<HashMap<String, RunningProc>>> = Mutex::new(None);
+
+fn running_state_path() -> PathBuf {
+    let mut p = dirs::data_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    p.push("localman");
+    let _ = fs::create_dir_all(&p);
+    p.push("running.json");
+    p
+}
+
+fn load_running() -> HashMap<String, RunningProc> {
+    let Ok(s) = fs::read_to_string(running_state_path()) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&s).unwrap_or_default()
+}
+
+fn save_running(map: &HashMap<String, RunningProc>) {
+    let path = running_state_path();
+    match serde_json::to_string_pretty(map) {
+        Ok(s) => {
+            if let Err(e) = fs::write(&path, s) {
+                eprintln!("[localman] 실행 상태 저장 실패 {}: {e}", path.display());
+            }
+        }
+        Err(e) => eprintln!("[localman] 실행 상태 직렬화 실패: {e}"),
+    }
+}
+
+fn pids() -> std::sync::MutexGuard<'static, Option<HashMap<String, RunningProc>>> {
     let mut g = RUNNING_PIDS.lock().unwrap();
     if g.is_none() {
-        *g = Some(HashMap::new());
+        // 첫 접근 때 디스크에서 읽어온다. 이전 localman 세션이 띄워둔 서버를
+        // 여기서 회수하므로, 재시작해도 고아가 생기지 않는다.
+        *g = Some(load_running());
     }
     g
+}
+
+/// `/proc/<pid>/stat` 에서 (pgrp, starttime) 을 읽는다.
+///
+/// comm 필드는 괄호로 감싸여 있고 그 안에 공백·괄호가 들어갈 수 있어
+/// 앞에서부터 자르면 깨진다. 마지막 ')' 뒤부터 파싱한다.
+fn proc_stat_fields(pid: u32) -> Option<(u32, u64)> {
+    let s = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let close = s.rfind(')')?;
+    let rest = s.get(close + 2..)?; // ") S ..." 에서 state 부터
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    // stat 필드 번호(1-based): 3=state … 5=pgrp … 22=starttime
+    // rest 는 3번 필드부터이므로 index = 번호 - 3
+    let pgrp = f.get(2)?.parse().ok()?;
+    let starttime = f.get(19)?.parse().ok()?;
+    Some((pgrp, starttime))
+}
+
+/// 기록된 프로세스가 "그때 그 프로세스" 그대로 살아 있는지.
+///
+/// 두 가지를 모두 본다.
+/// - starttime 이 같은가: PID 는 재사용되므로 이게 없으면 엉뚱한 프로세스를 죽일 수 있다.
+/// - 좀비가 아닌가: localman 은 자식을 wait 하지 않아 종료된 서버가 좀비로 남는데,
+///   좀비도 /proc/<pid>/stat 이 그대로 있어 starttime 만 보면 "실행 중"으로 오판한다.
+fn is_alive(rec: &RunningProc) -> bool {
+    process_alive(rec.pid)
+        && proc_stat_fields(rec.pid).is_some_and(|(_, starttime)| starttime == rec.starttime)
+}
+
+/// 프로세스 그룹 전체에 시그널을 보낸다 (`kill -SIG -- -PGID`).
+///
+/// 단일 PID 로는 `npm run dev` 가 띄운 vite, uvicorn 이 띄운 chromedriver 처럼
+/// 손자 프로세스가 남는다. 그룹째 보내야 실제로 정리된다.
+fn signal_group(pgid: u32, sig: &str) -> Result<(), String> {
+    let out = std::process::Command::new("kill")
+        .arg(format!("-{sig}"))
+        .arg("--")
+        .arg(format!("-{pgid}"))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    // 이미 다 죽어서 그룹이 없는 경우는 성공으로 친다.
+    if err.contains("No such process") {
+        Ok(())
+    } else {
+        Err(err)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -79,21 +179,26 @@ pub enum ServerStatus {
 }
 
 pub fn server_status(id: &str) -> ServerStatus {
-    let g = pids();
-    if let Some(map) = g.as_ref() {
-        if let Some(&pid) = map.get(id) {
-            if process_alive(pid) {
-                return ServerStatus::Running(pid);
-            }
+    let mut g = pids();
+    let map = g.as_mut().unwrap();
+    if let Some(rec) = map.get(id).cloned() {
+        // PID 존재만으로는 부족하다. PID 는 재사용되므로 starttime 까지 맞아야
+        // "그때 띄운 그 서버"다.
+        if is_alive(&rec) {
+            return ServerStatus::Running(rec.pid);
         }
+        // 죽은 기록은 남겨두지 않는다.
+        map.remove(id);
+        save_running(map);
     }
     ServerStatus::Stopped
 }
 
-/// 프로세스가 실제로 살아있는지 확인한다.
+/// 프로세스가 존재하고 좀비가 아닌지 확인한다.
+///
 /// localman은 자식을 detach(mem::forget)하고 wait하지 않으므로, 종료된 자식은 좀비로 남아
-/// /proc/PID 가 계속 존재한다. 그것만 보면 이미 죽은 서버가 "실행 중"으로 표시되므로
-/// /proc/PID/stat 의 상태 문자가 Z(좀비)인지까지 확인한다.
+/// /proc/PID 가 계속 존재한다. 그것만 보면 이미 죽은 서버가 "실행 중"으로 표시된다.
+/// (같은 프로세스인지까지 확인하려면 starttime을 함께 보는 `is_alive`를 쓸 것)
 pub fn process_alive(pid: u32) -> bool {
     let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(s) => s,
@@ -508,6 +613,15 @@ pub fn build_frontend_if_needed(project: &VhostProject) -> Result<(), String> {
 }
 
 pub fn start_server(project: &VhostProject) -> Result<u32, String> {
+    // 이미 떠 있으면 또 띄우지 않는다.
+    // 예전에는 localman 이 재시작되면 기존 서버를 기억하지 못해 같은 프로젝트를
+    // 중복 실행했다(실제로 redholics viewer 가 7/28·7/30 두 벌 떠 있었다).
+    // 이제 running.json 에서 회수하므로 여기서 걸러진다.
+    if let ServerStatus::Running(pid) = server_status(&project.id) {
+        eprintln!("[localman] 이미 실행 중 PID={pid} — 중복 실행하지 않음");
+        return Ok(pid);
+    }
+
     let dir = project.work_dir();
     if !std::path::Path::new(&dir).is_dir() {
         return Err(format!("디렉토리가 없습니다: {dir}"));
@@ -539,56 +653,84 @@ pub fn start_server(project: &VhostProject) -> Result<u32, String> {
         return Err("실행 명령어가 올바르지 않습니다.".to_string());
     }
     eprintln!("[localman] 서버 시작: {command} in {dir}");
-    // npx/npm 같은 래퍼는 실제 dev server를 자식 프로세스로 띄운다. 자식을 새 프로세스
-    // 그룹의 리더로 만들면(PGID = 자식 PID) 중지할 때 손자까지 한 번에 정리할 수 있다.
-    // 그러지 않으면 래퍼만 죽고 dev server가 포트를 계속 물고 있어 재시작이 실패한다.
     let child = std::process::Command::new(parts[0])
         .args(&parts[1..])
         .current_dir(&dir)
+        // 자식을 새 프로세스 그룹의 리더로 만든다(pgid == 자식 pid).
+        // 그래야 나중에 `kill -- -pgid` 한 방으로 그 서버가 파생시킨
+        // vite·chromedriver·Chrome, npx 가 띄운 next-server 까지 통째로 정리할 수 있다.
+        // 그러지 않으면 래퍼만 죽고 dev server 가 포트를 계속 물고 있어 재시작이 실패한다.
         .process_group(0)
         .spawn()
         .map_err(|e| format!("실행 실패: {e}"))?;
     let pid = child.id();
     // child를 drop해도 프로세스는 계속 실행됨 (detach)
     std::mem::forget(child);
+
+    // starttime 을 즉시 읽어 기록한다. 이후 이 값이 PID 재사용을 걸러낸다.
+    // 못 읽으면(이미 즉사한 경우 등) 0 으로 둔다 — is_alive 가 false 가 되어
+    // "죽은 것"으로 취급되므로 안전한 쪽으로 기운다.
+    let (pgid, starttime) = proc_stat_fields(pid).unwrap_or((pid, 0));
+    let rec = RunningProc { pid, pgid, starttime };
+
     let mut g = pids();
-    g.as_mut().unwrap().insert(project.id.clone(), pid);
-    eprintln!("[localman] 서버 시작됨 PID={pid}");
+    let map = g.as_mut().unwrap();
+    map.insert(project.id.clone(), rec);
+    // 메모리에만 두면 localman 이 죽는 순간 사라진다. 반드시 디스크에 남긴다.
+    save_running(map);
+
+    eprintln!("[localman] 서버 시작됨 PID={pid} PGID={pgid}");
     Ok(pid)
 }
 
+/// 서버를 프로세스 그룹째 정지한다.
+///
+/// SIGTERM 으로 정상 종료를 먼저 시도하고, 유예 시간이 지나도 살아 있으면
+/// SIGKILL 로 확실히 끝낸다. 단일 PID 가 아니라 그룹에 보내므로
+/// `npm run dev` → vite → esbuild, uvicorn → chromedriver → Chrome 처럼
+/// 손자까지 함께 정리된다.
 pub fn stop_server(id: &str) -> Result<(), String> {
-    let pid = {
+    let rec = {
         let g = pids();
-        g.as_ref().and_then(|m| m.get(id).copied())
+        g.as_ref().and_then(|m| m.get(id).cloned())
     };
-    if let Some(pid) = pid {
-        eprintln!("[localman] 서버 중지 PID={pid}");
-        // start_server가 process_group(0)으로 띄웠으므로 PGID = PID 이다. 그룹 전체를
-        // 종료해 npx가 만든 실제 dev server까지 함께 정리한다. 그룹이 없으면 단일 PID로 재시도.
-        //
-        // `--`가 없으면 procps의 kill이 "-<pid>"를 옵션으로 오해해 아무것도 죽이지 않으면서
-        // 종료코드 0을 돌려준다(조용한 실패). 옵션 종료를 반드시 명시해야 한다.
-        let group = std::process::Command::new("kill")
-            .args(["-TERM", "--", &format!("-{pid}")])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !group.status.success() {
-            let r = std::process::Command::new("kill")
-                .arg(pid.to_string())
-                .output()
-                .map_err(|e| e.to_string())?;
-            if !r.status.success() {
-                let err = String::from_utf8_lossy(&r.stderr).to_string();
-                return Err(format!("kill 실패: {err}"));
-            }
-        }
+    let Some(rec) = rec else {
+        return Err("실행 중인 서버가 없습니다.".to_string());
+    };
+
+    // 기록만 남고 실제로는 이미 죽은 경우. 기록만 지우고 정상 처리한다.
+    if !is_alive(&rec) {
         let mut g = pids();
-        g.as_mut().unwrap().remove(id);
-        Ok(())
-    } else {
-        Err("실행 중인 서버가 없습니다.".to_string())
+        let map = g.as_mut().unwrap();
+        map.remove(id);
+        save_running(map);
+        return Ok(());
     }
+
+    eprintln!("[localman] 서버 중지 PID={} PGID={}", rec.pid, rec.pgid);
+    signal_group(rec.pgid, "TERM").map_err(|e| format!("kill 실패: {e}"))?;
+
+    // 정상 종료를 최대 5초 기다린다.
+    let mut terminated = false;
+    for _ in 0..50 {
+        if !is_alive(&rec) {
+            terminated = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    if !terminated {
+        eprintln!("[localman] SIGTERM 무응답 → SIGKILL PGID={}", rec.pgid);
+        signal_group(rec.pgid, "KILL").map_err(|e| format!("kill -9 실패: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+
+    let mut g = pids();
+    let map = g.as_mut().unwrap();
+    map.remove(id);
+    save_running(map);
+    Ok(())
 }
 
 /// pma.localhost 에 Adminer(단일 PHP 파일 DB 관리도구)를 설치하고 URL을 반환한다.
