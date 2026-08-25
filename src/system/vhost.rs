@@ -297,9 +297,10 @@ pub fn setup_node_modules(project: &VhostProject) -> Result<String, String> {
     eprintln!("[localman] {program} {} 실행", args.join(" "));
     let r = std::process::Command::new(program)
         .args(&args)
-        // corepack이 최초 실행 시 대화형 다운로드 동의를 물으면 GUI에서 멈추므로 비활성화
+        // corepack이 최초 실행 시 대화형 다운로드 동의를 물으면 GUI에서 멈추므로 비활성화.
+        // CI=1은 설정하지 않는다 — pnpm/yarn이 그걸 보고 frozen-lockfile을 강제해서,
+        // lockfile이 package.json보다 오래되면 설치가 통째로 실패한다.
         .env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
-        .env("CI", "1")
         .current_dir(&dir)
         .output()
         .map_err(|e| format!("{program} 실행 실패: {e}\nPATH에 Node.js가 있는지 확인하세요."))?;
@@ -312,7 +313,70 @@ pub fn setup_node_modules(project: &VhostProject) -> Result<String, String> {
     }
 
     let via = if program == "corepack" { format!("corepack {pm}") } else { program.to_string() };
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&r.stdout),
+        String::from_utf8_lossy(&r.stderr)
+    );
+    if let Some(pkgs) = ignored_build_scripts(&out) {
+        // 설치는 성공했지만 반쪽이다. postinstall로 실제 코드를 받아오는 패키지
+        // (@heroui-pro/react 등)가 여기 걸리면 import가 조용히 깨진다.
+        return Ok(format!(
+            "의존성 설치 완료 ({via}) — 다만 빌드 스크립트가 차단된 패키지가 있습니다: {pkgs}\n\
+             postinstall로 코드를 받아오는 패키지면 import가 실패합니다. \
+             해당 폴더에서 `pnpm approve-builds` 실행 후 다시 설치하세요."
+        ));
+    }
     Ok(format!("의존성 설치 완료 ({via})"))
+}
+
+/// pnpm이 "빌드 스크립트를 무시했다"고 알릴 때 그 패키지 목록을 뽑는다.
+/// 설치는 성공(exit 0)으로 끝나므로 이 경고를 놓치면 반쪽 설치를 모른 채 넘어간다.
+fn ignored_build_scripts(output: &str) -> Option<String> {
+    let plain = strip_ansi(output);
+    let lower = plain.to_lowercase();
+    if !lower.contains("ignored build scripts") && !lower.contains("build scripts were ignored") {
+        return None;
+    }
+    // 경고 줄 뒤에 붙는 패키지 이름들을 모은다 (형식이 버전마다 달라 느슨하게 훑는다)
+    let names: Vec<&str> = plain
+        .lines()
+        .skip_while(|l| !l.to_lowercase().contains("ignored build scripts")
+            && !l.to_lowercase().contains("build scripts were ignored"))
+        .take(4)
+        .flat_map(|l| l.split(|c: char| c == ',' || c == ':'))
+        .map(|s| s.trim().trim_end_matches('.'))
+        .filter(|s| {
+            !s.is_empty()
+                && (s.starts_with('@') || s.chars().next().is_some_and(|c| c.is_ascii_lowercase()))
+                && !s.contains(' ')
+                && s.len() < 60
+        })
+        .collect();
+    if names.is_empty() {
+        Some("(이름 확인 불가 — 설치 로그를 확인하세요)".to_string())
+    } else {
+        Some(names.join(", "))
+    }
+}
+
+/// 터미널 색상 escape sequence 제거 (pnpm 출력엔 ANSI 코드가 섞여 있다)
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // ESC [ ... <최종 바이트> 형태를 통째로 건너뛴다
+            for c2 in chars.by_ref() {
+                if c2.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// 타입에 맞는 의존성 설치 진입점
@@ -1094,6 +1158,36 @@ mod tests {
 
         // 실패에 대비한 정리
         let _ = std::process::Command::new("kill").arg(child.to_string()).output();
+    }
+
+    /// pnpm은 빌드 스크립트를 차단해도 설치를 성공(exit 0)으로 끝낸다.
+    /// 이 경고를 놓치면 @heroui-pro/react처럼 postinstall로 코드를 받아오는 패키지가
+    /// 껍데기만 설치된 채 넘어가 import가 깨진다. (실제 pnpm 11 출력으로 검증)
+    #[test]
+    fn detects_pnpm_ignored_build_scripts() {
+        let real = "\u{1b}[41m\u{1b}[31m[\u{1b}[39m\u{1b}[49m\u{1b}[41m\u{1b}[30mERR_PNPM_IGNORED_BUILDS\u{1b}[39m\u{1b}[49m\u{1b}[41m\u{1b}[31m]\u{1b}[39m\u{1b}[49m \u{1b}[31mIgnored build scripts: esbuild@0.28.2\u{1b}[39m\n\nRun \"pnpm approve-builds\" to pick which dependencies should be allowed to run scripts.\n";
+        assert_eq!(ignored_build_scripts(real).as_deref(), Some("esbuild@0.28.2"));
+    }
+
+    #[test]
+    fn lists_every_ignored_package() {
+        let out = "Ignored build scripts: @heroui-pro/react@1.0.0-beta.8, unrs-resolver@1.7.2.\n\
+                   Run \"pnpm approve-builds\" to pick which dependencies should be allowed.\n";
+        let got = ignored_build_scripts(out).unwrap();
+        assert!(got.contains("@heroui-pro/react@1.0.0-beta.8"), "got: {got}");
+        assert!(got.contains("unrs-resolver@1.7.2"), "got: {got}");
+    }
+
+    #[test]
+    fn no_warning_on_clean_install() {
+        let out = "Packages: +2\ndependencies:\n+ esbuild 0.28.2\nDone in 3.6s using pnpm v11.23.0\n";
+        assert_eq!(ignored_build_scripts(out), None);
+    }
+
+    #[test]
+    fn strips_ansi_escape_codes() {
+        assert_eq!(strip_ansi("\u{1b}[32m✓\u{1b}[39m ok"), "✓ ok");
+        assert_eq!(strip_ansi("plain"), "plain");
     }
 
     /// 기존 projects.json(= app_dir 필드가 없는 형식)이 그대로 읽혀야 한다
