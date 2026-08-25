@@ -6,10 +6,21 @@ use crate::system::{
     VhostProject, ProjectType, ServerStatus,
     list_projects, add_project, update_project, remove_project,
     start_server, stop_server, server_status, auto_assign_port,
-    setup_venv, auto_detect_start_command,
+    setup_project, deps_ready, auto_detect_start_command, auto_detect_next_command,
+    detect_next_app_dir, join_dir,
     error_log_path, read_log, clear_log,
 };
 use rfd;
+
+/// 타입에 맞는 실행 명령어를 자동 감지한다.
+fn detect_command_for(t: &ProjectType, path: &str, app_dir: &str, port: u16) -> String {
+    let dir = join_dir(path, app_dir);
+    match t {
+        ProjectType::NextJs => auto_detect_next_command(&dir, port),
+        ProjectType::Python => auto_detect_start_command(&dir, port),
+        ProjectType::Php => String::new(),
+    }
+}
 
 /// 프로젝트별 에러 로그 뷰 상태
 struct LogView {
@@ -28,6 +39,7 @@ pub enum ProjectsMessage {
     IdChanged(String),
     TypeSelected(ProjectType),
     StartCommandChanged(String),
+    AppDirChanged(String),
     AddProject,
     // 목록 아이템
     RemoveProject(String),
@@ -40,14 +52,15 @@ pub enum ProjectsMessage {
     EditNameChanged(String),
     EditPathChanged(String),
     EditStartCommandChanged(String),
+    EditAppDirChanged(String),
     EditTypeSelected(ProjectType),
     EditPickFolder(String),
     EditFolderSelected(String, Option<String>), // (id, path)
     SaveEdit(String),
     CancelEdit,
-    // venv 자동 설치
-    SetupVenv(String),
-    VenvSetupDone(String, Result<String, String>),
+    // 의존성 자동 설치 (Python: venv, Next.js: node_modules)
+    SetupDeps(String),
+    DepsSetupDone(String, Result<String, String>),
     // 에러 로그
     ViewLog(String),
     LogLoaded(String, Result<String, String>),
@@ -68,13 +81,15 @@ pub struct ProjectsState {
     new_path: String,
     new_type: ProjectType,
     new_start_command: String,
+    new_app_dir: String,
     // 인라인 편집 상태
     editing_id: Option<String>,
     edit_name: String,
     edit_path: String,
     edit_start_command: String,
+    edit_app_dir: String,
     edit_type: ProjectType,
-    // venv 설치 중인 project id 목록
+    // 의존성 설치 중인 project id 목록
     setting_up: std::collections::HashSet<String>,
     // 에러 로그 뷰 (열려 있으면 Some)
     log_view: Option<LogView>,
@@ -92,10 +107,12 @@ impl ProjectsState {
             new_path: String::new(),
             new_type: ProjectType::Php,
             new_start_command: "python app.py".to_string(),
+            new_app_dir: String::new(),
             editing_id: None,
             edit_name: String::new(),
             edit_path: String::new(),
             edit_start_command: String::new(),
+            edit_app_dir: String::new(),
             edit_type: ProjectType::Php,
             setting_up: std::collections::HashSet::new(),
             log_view: None,
@@ -118,18 +135,42 @@ impl ProjectsState {
                 Task::none()
             }
             ProjectsMessage::IdChanged(v) => { self.new_id = v; Task::none() }
-            ProjectsMessage::TypeSelected(t) => { self.new_type = t; Task::none() }
+            ProjectsMessage::TypeSelected(t) => {
+                if self.new_type != t {
+                    self.new_type = t.clone();
+                    let port = auto_assign_port();
+                    self.new_start_command = if self.new_path.is_empty() {
+                        match t {
+                            ProjectType::NextJs => auto_detect_next_command("", port),
+                            ProjectType::Python => "python app.py".to_string(),
+                            ProjectType::Php => String::new(),
+                        }
+                    } else {
+                        detect_command_for(&t, &self.new_path, &self.new_app_dir, port)
+                    };
+                }
+                Task::none()
+            }
             ProjectsMessage::StartCommandChanged(v) => { self.new_start_command = v; Task::none() }
+            ProjectsMessage::AppDirChanged(v) => { self.new_app_dir = v; Task::none() }
             ProjectsMessage::OpenFilePicker => {
                 Task::perform(pick_folder(), ProjectsMessage::PathSelected)
             }
             ProjectsMessage::PathSelected(path) => {
                 if let Some(p) = path {
+                    // 루트 또는 하위에 Next.js 앱이 있으면 타입·하위 디렉토리를 자동으로 맞춘다
+                    // (아직 타입을 고르지 않은 기본 상태이거나 이미 Next.js를 고른 경우만)
+                    if self.new_type == ProjectType::Php || self.new_type == ProjectType::NextJs {
+                        if let Some(sub) = detect_next_app_dir(&p) {
+                            self.new_type = ProjectType::NextJs;
+                            self.new_app_dir = sub;
+                        }
+                    }
                     // 경로 선택 시 start_command 자동 감지
-                    if self.new_type == ProjectType::Python {
+                    if self.new_type != ProjectType::Php {
                         let port = auto_assign_port();
-                        let detected = auto_detect_start_command(&p, port);
-                        self.new_start_command = detected;
+                        self.new_start_command =
+                            detect_command_for(&self.new_type, &p, &self.new_app_dir, port);
                     }
                     self.new_path = p;
                 }
@@ -144,7 +185,7 @@ impl ProjectsState {
                     self.error = Some("경로를 입력하세요.".to_string());
                     return Task::none();
                 }
-                let port = if self.new_type == ProjectType::Python {
+                let port = if self.new_type.is_proxied() {
                     auto_assign_port()
                 } else {
                     80
@@ -157,21 +198,23 @@ impl ProjectsState {
                     project_type: self.new_type.clone(),
                     port,
                     start_command: self.new_start_command.clone(),
+                    app_dir: self.new_app_dir.clone(),
                 };
                 let added_id = project.id.clone();
-                let is_python = project.project_type == ProjectType::Python;
+                let needs_deps = project.project_type.is_proxied();
                 match add_project(project) {
                     Ok(_) => {
                         self.error = None;
                         self.new_name.clear();
                         self.new_id.clear();
                         self.new_path.clear();
+                        self.new_app_dir.clear();
                         self.new_start_command = "python app.py".to_string();
                         self.new_type = ProjectType::Php;
                         self.projects = list_projects();
-                        // Python이면 venv 자동 설치 시작
-                        if is_python {
-                            return Task::done(ProjectsMessage::SetupVenv(added_id));
+                        // Python/Next.js면 의존성 자동 설치 시작
+                        if needs_deps {
+                            return Task::done(ProjectsMessage::SetupDeps(added_id));
                         }
                     }
                     Err(e) => self.error = Some(e),
@@ -222,6 +265,7 @@ impl ProjectsState {
                     self.edit_name = p.name.clone();
                     self.edit_path = p.path.clone();
                     self.edit_start_command = p.start_command.clone();
+                    self.edit_app_dir = p.app_dir.clone();
                     self.edit_type = p.project_type.clone();
                     self.editing_id = Some(id);
                     self.error = None;
@@ -231,15 +275,17 @@ impl ProjectsState {
             ProjectsMessage::EditNameChanged(v) => { self.edit_name = v; Task::none() }
             ProjectsMessage::EditPathChanged(v) => { self.edit_path = v; Task::none() }
             ProjectsMessage::EditStartCommandChanged(v) => { self.edit_start_command = v; Task::none() }
+            ProjectsMessage::EditAppDirChanged(v) => { self.edit_app_dir = v; Task::none() }
             ProjectsMessage::EditTypeSelected(t) => {
-                // 타입 변경 시: Python으로 가면서 명령어가 PHP 디폴트이면 자동 감지로 교체
-                if t == ProjectType::Python && self.edit_type == ProjectType::Php {
-                    if self.edit_start_command.trim().is_empty()
+                // 타입이 바뀌었는데 명령어가 비었거나 이전 타입의 기본값이면 자동 감지로 교체
+                if t != self.edit_type && t != ProjectType::Php {
+                    let stale = self.edit_start_command.trim().is_empty()
                         || self.edit_start_command == "python app.py"
-                    {
+                        || self.edit_type == ProjectType::Php;
+                    if stale {
                         // 정확한 포트는 저장 시 update_project 가 할당하므로, 자동 감지엔 임시값 사용
                         self.edit_start_command =
-                            auto_detect_start_command(&self.edit_path, 5001);
+                            detect_command_for(&t, &self.edit_path, &self.edit_app_dir, 5001);
                     }
                 }
                 self.edit_type = t;
@@ -249,7 +295,16 @@ impl ProjectsState {
                 Task::perform(pick_folder(), move |p| ProjectsMessage::EditFolderSelected(id.clone(), p))
             }
             ProjectsMessage::EditFolderSelected(_, path) => {
-                if let Some(p) = path { self.edit_path = p; }
+                if let Some(p) = path {
+                    // 신규 폼과 동일하게 Next.js 앱 위치를 자동 감지
+                    if self.edit_type == ProjectType::Php || self.edit_type == ProjectType::NextJs {
+                        if let Some(sub) = detect_next_app_dir(&p) {
+                            self.edit_type = ProjectType::NextJs;
+                            self.edit_app_dir = sub;
+                        }
+                    }
+                    self.edit_path = p;
+                }
                 Task::none()
             }
             ProjectsMessage::SaveEdit(id) => {
@@ -259,6 +314,7 @@ impl ProjectsState {
                     self.edit_path.clone(),
                     self.edit_start_command.clone(),
                     self.edit_type.clone(),
+                    self.edit_app_dir.clone(),
                 ) {
                     Ok(_) => {
                         self.editing_id = None;
@@ -274,20 +330,20 @@ impl ProjectsState {
                 self.error = None;
                 Task::none()
             }
-            ProjectsMessage::SetupVenv(id) => {
+            ProjectsMessage::SetupDeps(id) => {
                 let project = self.projects.iter().find(|p| p.id == id).cloned();
                 if let Some(p) = project {
                     self.setting_up.insert(id.clone());
                     self.server_message = Some(Ok(format!("{id}: 패키지 설치 중...")));
                     Task::perform(
-                        async move { setup_venv(&p) },
-                        move |r| ProjectsMessage::VenvSetupDone(id.clone(), r),
+                        async move { setup_project(&p) },
+                        move |r| ProjectsMessage::DepsSetupDone(id.clone(), r),
                     )
                 } else {
                     Task::none()
                 }
             }
-            ProjectsMessage::VenvSetupDone(id, result) => {
+            ProjectsMessage::DepsSetupDone(id, result) => {
                 self.setting_up.remove(&id);
                 self.projects = list_projects();
                 match result {
@@ -369,12 +425,17 @@ impl ProjectsState {
     }
 
     pub fn view(&self) -> Element<'_, ProjectsMessage> {
-        let is_python = self.new_type == ProjectType::Python;
+        let needs_server = self.new_type.is_proxied();
 
         let type_row = row![
-            type_btn("PHP", !is_python, ProjectsMessage::TypeSelected(ProjectType::Php)),
+            type_btn("PHP", self.new_type == ProjectType::Php,
+                ProjectsMessage::TypeSelected(ProjectType::Php)),
             Space::with_width(8),
-            type_btn("Python", is_python, ProjectsMessage::TypeSelected(ProjectType::Python)),
+            type_btn("Python", self.new_type == ProjectType::Python,
+                ProjectsMessage::TypeSelected(ProjectType::Python)),
+            Space::with_width(8),
+            type_btn("Next.js", self.new_type == ProjectType::NextJs,
+                ProjectsMessage::TypeSelected(ProjectType::NextJs)),
         ];
 
         let mut form_col = column![
@@ -419,18 +480,44 @@ impl ProjectsState {
             ]
         );
 
-        if is_python {
+        form_col = form_col
+            .push(Space::with_height(10))
+            .push(column![
+                text("하위 디렉토리 (선택)").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
+                Space::with_height(4),
+                text_input("예: app — 비우면 프로젝트 경로를 그대로 사용", &self.new_app_dir)
+                    .on_input(ProjectsMessage::AppDirChanged)
+                    .padding(10),
+                Space::with_height(4),
+                text(if self.new_type == ProjectType::Php {
+                    "PHP: DocumentRoot로 사용됩니다 (예: public)"
+                } else {
+                    "앱이 하위 폴더에 있을 때 (예: easyhost/app). 폴더 선택 시 자동 감지됩니다"
+                })
+                .size(11).color(Color::from_rgb(0.45, 0.55, 0.65)),
+            ]);
+
+        if needs_server {
+            let placeholder = if self.new_type == ProjectType::NextJs {
+                "npx next dev --port 5001"
+            } else {
+                "python3 app.py"
+            };
             form_col = form_col
                 .push(Space::with_height(10))
                 .push(column![
                     text("실행 명령어").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
                     Space::with_height(4),
-                    text_input("python3 app.py", &self.new_start_command)
+                    text_input(placeholder, &self.new_start_command)
                         .on_input(ProjectsMessage::StartCommandChanged)
                         .padding(10),
                     Space::with_height(4),
-                    text("포트는 자동 할당됩니다 (5001번부터 순서대로)")
-                        .size(11).color(Color::from_rgb(0.4, 0.6, 0.4)),
+                    text(if self.new_type == ProjectType::NextJs {
+                        "포트는 자동 할당되며, --port 값도 거기에 맞춰집니다 (5001번부터)"
+                    } else {
+                        "포트는 자동 할당됩니다 (5001번부터 순서대로)"
+                    })
+                    .size(11).color(Color::from_rgb(0.4, 0.6, 0.4)),
                 ]);
         }
 
@@ -463,7 +550,7 @@ impl ProjectsState {
         } else {
             let items: Vec<Element<ProjectsMessage>> = self.projects.iter().map(|p| {
                 if editing_id == Some(p.id.as_str()) {
-                    project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command, &self.edit_type)
+                    project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command, &self.edit_app_dir, &self.edit_type)
                 } else {
                     let is_setting_up = self.setting_up.contains(&p.id);
                     project_row_view_with_state(p, editing_id.is_some(), is_setting_up)
@@ -529,21 +616,22 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
     let id_log = p.id.clone();
 
     let (type_label, type_color) = match p.project_type {
-        ProjectType::Php    => ("PHP",    Color::from_rgb(0.5, 0.6, 1.0)),
-        ProjectType::Python => ("Python", Color::from_rgb(0.4, 0.8, 0.5)),
+        ProjectType::Php    => ("PHP",     Color::from_rgb(0.5, 0.6, 1.0)),
+        ProjectType::Python => ("Python",  Color::from_rgb(0.4, 0.8, 0.5)),
+        ProjectType::NextJs => ("Next.js", Color::from_rgb(0.8, 0.8, 0.85)),
     };
 
     let status = server_status(&p.id);
     let is_running = matches!(status, ServerStatus::Running(_));
 
-    let server_controls: Element<ProjectsMessage> = match p.project_type {
-        ProjectType::Python => {
+    let server_controls: Element<ProjectsMessage> = {
+        if p.project_type.is_proxied() {
             if setting_up {
                 row![
                     text("⏳ 패키지 설치 중...").size(12).color(Color::from_rgb(0.8, 0.7, 0.2)),
                 ].align_y(iced::Alignment::Center).into()
             } else {
-                let venv_ok = std::path::Path::new(&format!("{}/venv/bin/python3", p.path)).exists();
+                let deps_ok = deps_ready(p);
                 let (btn_label, btn_color, btn_msg) = if is_running {
                     ("중지", Color::from_rgb(0.7, 0.2, 0.2), ProjectsMessage::StopServer(id_srv))
                 } else {
@@ -572,10 +660,10 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
                             ..Default::default()
                         }),
                 ].align_y(iced::Alignment::Center);
-                if !venv_ok {
+                if !deps_ok {
                     r = r.push(Space::with_width(6)).push(
                         button(text("패키지설치").size(11))
-                            .on_press(ProjectsMessage::SetupVenv(id_setup))
+                            .on_press(ProjectsMessage::SetupDeps(id_setup))
                             .padding([6, 10])
                             .style(|_, _| button::Style {
                                 background: Some(iced::Background::Color(Color::from_rgb(0.35, 0.25, 0.0))),
@@ -587,8 +675,7 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
                 }
                 r.into()
             }
-        }
-        ProjectType::Php => {
+        } else {
             let apache_running = crate::system::get_service_status("apache2") == crate::system::ServiceStatus::Running;
             let dot_color = if apache_running { Color::from_rgb(0.2, 0.9, 0.4) } else { Color::from_rgb(0.5, 0.5, 0.5) };
             let label = if apache_running { "Apache 실행 중" } else { "Apache 중지됨" };
@@ -644,9 +731,12 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
                 Space::with_height(2),
                 text(&p.domain).size(12).color(Color::from_rgb(0.4, 0.7, 1.0)),
                 Space::with_height(2),
-                text(match p.project_type {
-                    ProjectType::Php    => p.path.clone(),
-                    ProjectType::Python => format!(":{} · {}", p.port, p.start_command),
+                text(if p.project_type == ProjectType::Php {
+                    p.work_dir()
+                } else if p.app_dir.is_empty() {
+                    format!(":{} · {}", p.port, p.start_command)
+                } else {
+                    format!(":{} · {}/ · {}", p.port, p.app_dir, p.start_command)
                 }).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
             ].width(Length::Fill),
             server_controls,
@@ -690,11 +780,12 @@ fn project_row_editing<'a>(
     edit_name: &'a str,
     edit_path: &'a str,
     edit_start_cmd: &'a str,
+    edit_app_dir: &'a str,
     edit_type: &'a ProjectType,
 ) -> Element<'a, ProjectsMessage> {
     let id_save   = p.id.clone();
     let id_folder = p.id.clone();
-    let is_python = *edit_type == ProjectType::Python;
+    let needs_server = edit_type.is_proxied();
     let type_changed = *edit_type != p.project_type;
 
     let mut edit_col = column![
@@ -729,14 +820,28 @@ fn project_row_editing<'a>(
             ],
         ],
         Space::with_height(8),
+        // 하위 디렉토리
+        column![
+            text("하위 디렉토리 (선택)").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
+            Space::with_height(4),
+            text_input("예: app — 비우면 경로를 그대로 사용", edit_app_dir)
+                .on_input(ProjectsMessage::EditAppDirChanged)
+                .padding(9),
+        ],
+        Space::with_height(8),
         // 타입 선택
         column![
             text("타입").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
             Space::with_height(4),
             row![
-                type_btn("PHP",    !is_python, ProjectsMessage::EditTypeSelected(ProjectType::Php)),
+                type_btn("PHP", *edit_type == ProjectType::Php,
+                    ProjectsMessage::EditTypeSelected(ProjectType::Php)),
                 Space::with_width(8),
-                type_btn("Python",  is_python, ProjectsMessage::EditTypeSelected(ProjectType::Python)),
+                type_btn("Python", *edit_type == ProjectType::Python,
+                    ProjectsMessage::EditTypeSelected(ProjectType::Python)),
+                Space::with_width(8),
+                type_btn("Next.js", *edit_type == ProjectType::NextJs,
+                    ProjectsMessage::EditTypeSelected(ProjectType::NextJs)),
             ],
         ],
     ]
@@ -744,7 +849,7 @@ fn project_row_editing<'a>(
 
     if type_changed {
         edit_col = edit_col.push(Space::with_height(6)).push(
-            text(if is_python {
+            text(if needs_server {
                 "→ 저장 시 새 포트가 할당되고 vhost가 Proxy 형태로 다시 작성됩니다"
             } else {
                 "→ 저장 시 포트가 80으로 리셋되고 vhost가 DocumentRoot 형태로 다시 작성됩니다"
@@ -754,13 +859,18 @@ fn project_row_editing<'a>(
         );
     }
 
-    if is_python {
+    if needs_server {
+        let placeholder = if *edit_type == ProjectType::NextJs {
+            "npx next dev --port 5001"
+        } else {
+            "python3 run_server.py 5001"
+        };
         edit_col = edit_col
             .push(Space::with_height(8))
             .push(column![
                 text("실행 명령어").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
                 Space::with_height(4),
-                text_input("python3 run_server.py 5001", edit_start_cmd)
+                text_input(placeholder, edit_start_cmd)
                     .on_input(ProjectsMessage::EditStartCommandChanged)
                     .padding(9),
             ]);
