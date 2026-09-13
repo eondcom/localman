@@ -2,19 +2,22 @@ use iced::{
     widget::{button, column, container, row, text, Space},
     Color, Element, Length, Task,
 };
-use crate::system::{ServiceStatus, get_service_status, toggle_service};
+use crate::system::{ServiceStatus, get_service_status, install_service, toggle_service};
 
 #[derive(Debug, Clone)]
 pub enum ServicesMessage {
     Toggle(String, bool),
+    Install(String),
     Refresh,
     Toggled(String, Result<(), String>),
+    Installed(String, Result<(), String>),
 }
 
 pub struct ServicesState {
     apache_status: ServiceStatus,
     mariadb_status: ServiceStatus,
     postgresql_status: ServiceStatus,
+    installing: Option<String>,
     error: Option<String>,
 }
 
@@ -24,6 +27,7 @@ impl ServicesState {
             apache_status: ServiceStatus::Unknown,
             mariadb_status: ServiceStatus::Unknown,
             postgresql_status: ServiceStatus::Unknown,
+            installing: None,
             error: None,
         };
         s.refresh();
@@ -49,6 +53,14 @@ impl ServicesState {
                     move |r| ServicesMessage::Toggled(name.clone(), r),
                 )
             }
+            ServicesMessage::Install(name) => {
+                self.installing = Some(name.clone());
+                let service = name.clone();
+                Task::perform(
+                    async move { install_service(&service) },
+                    move |result| ServicesMessage::Installed(name.clone(), result),
+                )
+            }
             ServicesMessage::Toggled(name, result) => {
                 match result {
                     Ok(_) => {
@@ -64,6 +76,21 @@ impl ServicesState {
                 }
                 Task::none()
             }
+            ServicesMessage::Installed(name, result) => {
+                // 설치 중이던 그 서비스의 응답일 때만 잠금을 푼다. 순서가 엇갈려도
+                // GUI 가 죽어서는 안 되므로 단언하지 않고 조용히 넘긴다.
+                if self.installing.as_deref() == Some(name.as_str()) {
+                    self.installing = None;
+                }
+                match result {
+                    Ok(_) => {
+                        self.error = None;
+                        self.refresh();
+                    }
+                    Err(error) => self.error = Some(error),
+                }
+                Task::none()
+            }
         }
     }
 
@@ -73,6 +100,7 @@ impl ServicesState {
             "웹 서버",
             &self.apache_status,
             "apache2",
+            self.installing.as_deref() == Some("apache2"),
         );
 
         let mariadb = service_card(
@@ -80,6 +108,7 @@ impl ServicesState {
             "데이터베이스 서버",
             &self.mariadb_status,
             "mariadb",
+            self.installing.as_deref() == Some("mariadb"),
         );
 
         let postgresql = service_card(
@@ -87,6 +116,7 @@ impl ServicesState {
             "데이터베이스 서버",
             &self.postgresql_status,
             "postgresql",
+            self.installing.as_deref() == Some("postgresql"),
         );
 
         let refresh_btn = button(text("새로고침").size(13))
@@ -124,18 +154,28 @@ fn service_card<'a>(
     desc: &'a str,
     status: &'a ServiceStatus,
     service_id: &'a str,
+    installing: bool,
 ) -> Element<'a, ServicesMessage> {
     let (status_text, status_color, is_running) = match status {
         ServiceStatus::Running => ("실행 중", Color::from_rgb(0.2, 0.9, 0.4), true),
         ServiceStatus::Stopped => ("중지됨", Color::from_rgb(0.9, 0.3, 0.3), false),
+        ServiceStatus::NotInstalled => ("설치되지 않음", Color::from_rgb(0.85, 0.6, 0.2), false),
         ServiceStatus::Unknown => ("알 수 없음", Color::from_rgb(0.6, 0.6, 0.6), false),
     };
 
-    let toggle_label = if is_running { "중지" } else { "시작" };
+    let is_not_installed = matches!(status, ServiceStatus::NotInstalled);
+    let toggle_label = if installing {
+        "설치 중…"
+    } else if is_not_installed {
+        "설치하기"
+    } else if is_running {
+        "중지"
+    } else {
+        "시작"
+    };
     let sid = service_id.to_string();
 
-    let toggle_btn = button(text(toggle_label).size(13))
-        .on_press(ServicesMessage::Toggle(sid, !is_running))
+    let mut toggle_btn = button(text(toggle_label).size(13))
         .padding([8, 20])
         .style(move |_, _| button::Style {
             background: Some(iced::Background::Color(if is_running {
@@ -150,6 +190,15 @@ fn service_card<'a>(
             text_color: Color::WHITE,
             ..Default::default()
         });
+
+    if !installing {
+        let message = if is_not_installed {
+            ServicesMessage::Install(sid)
+        } else {
+            ServicesMessage::Toggle(sid, !is_running)
+        };
+        toggle_btn = toggle_btn.on_press(message);
+    }
 
     let dot = container(Space::with_width(10))
         .width(10)
