@@ -129,17 +129,32 @@ impl DatabaseState {
                 self.databases.clear();
                 self.db_users.clear();
                 self.status = None;
-                if self.user == "root" && engine == DbEngine::PostgreSql {
-                    self.user = "postgres".to_string();
-                } else if self.user == "postgres" && engine == DbEngine::MariaDb {
-                    self.user = "root".to_string();
+                // 바꾼 엔진으로 저장된 접속이 있으면 그 자격증명을 쓴다. 없으면 기본 관리자명으로
+                // 되돌리고, 다른 엔진의 비밀번호를 그대로 들고 가지 않는다.
+                match self.saved_connections.iter().find(|c| c.engine == engine && !c.user.is_empty()) {
+                    Some(saved) => {
+                        self.user = saved.user.clone();
+                        self.password = saved.password.clone();
+                    }
+                    None => {
+                        self.user = match engine {
+                            DbEngine::PostgreSql => "postgres".to_string(),
+                            DbEngine::MariaDb => "root".to_string(),
+                        };
+                        self.password.clear();
+                    }
                 }
                 self.new_user_host = if engine == DbEngine::PostgreSql {
                     "local".to_string()
                 } else {
                     "localhost".to_string()
                 };
-                Task::none()
+                // 자격증명이 갖춰졌으면 Connect 를 누르지 않아도 바로 목록을 불러온다.
+                if self.password.is_empty() {
+                    Task::none()
+                } else {
+                    Task::done(DatabaseMessage::Connect)
+                }
             }
             DatabaseMessage::SavedConnectionSelected(index) => {
                 if let Some(saved) = self.saved_connections.get(index).cloned() {
@@ -155,6 +170,10 @@ impl DatabaseState {
                     } else {
                         "localhost".to_string()
                     };
+                    // 고른 접속으로 바로 연결한다.
+                    if !self.password.is_empty() {
+                        return Task::done(DatabaseMessage::Connect);
+                    }
                 }
                 Task::none()
             }
@@ -186,9 +205,17 @@ impl DatabaseState {
                     if let Ok(list) = save_db_connection(self.engine, &self.user, &self.password) {
                         self.saved_connections = list;
                     }
-                    Some(Ok("연결 성공 (접속 목록에 저장됨)".to_string()))
+                    Some(Ok(format!(
+                        "{} / {} 연결 성공 (접속 목록에 저장됨)",
+                        self.engine.label(),
+                        self.user
+                    )))
                 } else {
-                    Some(Err("연결 실패 또는 DB 없음".to_string()))
+                    Some(Err(format!(
+                        "{} / {} 연결 실패 또는 DB 없음",
+                        self.engine.label(),
+                        self.user
+                    )))
                 };
                 Task::none()
             }
