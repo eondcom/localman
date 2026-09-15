@@ -19,6 +19,7 @@ fn main() -> iced::Result {
     }
 
     application("LocalMan", App::update, App::view)
+        .subscription(App::subscription)
         .theme(|_| Theme::Dark)
         .window(window::Settings {
             size: Size::new(1100.0, 700.0),

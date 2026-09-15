@@ -3,7 +3,9 @@ mod projects;
 mod database;
 
 use iced::{
-    widget::{button, column, container, row, text, Space}, Color, Element, Length, Task,
+    keyboard,
+    widget::{button, column, container, row, text, Space},
+    Color, Element, Length, Subscription, Task,
 };
 
 pub use services::ServicesMessage;
@@ -25,6 +27,8 @@ pub enum Message {
     Database(DatabaseMessage),
     #[allow(dead_code)]
     RefreshServices,
+    FocusNext,
+    FocusPrevious,
 }
 
 pub struct App {
@@ -65,7 +69,25 @@ impl App {
             Message::Database(msg) => {
                 self.database.update(msg).map(Message::Database)
             }
+            Message::FocusNext => iced::widget::focus_next(),
+            Message::FocusPrevious => iced::widget::focus_previous(),
         }
+    }
+
+    /// Tab/Shift+Tab으로 입력창 간 포커스 이동.
+    /// text_input이 키를 소비하지 않을 때만(Status::Ignored) 들어오므로
+    /// 입력 중인 텍스트를 가로채지 않는다.
+    pub fn subscription(&self) -> Subscription<Message> {
+        keyboard::on_key_press(|key, modifiers| match key {
+            keyboard::Key::Named(keyboard::key::Named::Tab) => {
+                if modifiers.shift() {
+                    Some(Message::FocusPrevious)
+                } else {
+                    Some(Message::FocusNext)
+                }
+            }
+            _ => None,
+        })
     }
 
     pub fn view(&self) -> Element<'_, Message> {
