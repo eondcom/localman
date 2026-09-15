@@ -9,6 +9,7 @@ use crate::system::{
     setup_project, deps_ready, auto_detect_start_command, auto_detect_next_command,
     detect_next_app_dir, join_dir,
     error_log_path, read_log, clear_log,
+    is_rhymix_project, rx_reset_admin_password,
 };
 use rfd;
 
@@ -28,6 +29,16 @@ struct LogView {
     name: String,
     content: String,
     error: Option<String>,
+}
+
+/// 라이믹스 관리자 비번 변경 모달 상태
+struct RxPasswordModal {
+    project_id: String,
+    project_name: String,
+    user_id: String,
+    new_password: String,
+    running: bool,
+    message: Option<Result<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +82,13 @@ pub enum ProjectsMessage {
     CloseLog,
     #[allow(dead_code)]
     Refresh,
+    // 라이믹스 관리자 비번 변경
+    OpenRxPasswordModal(String),
+    RxUserIdChanged(String),
+    RxNewPasswordChanged(String),
+    RxResetPassword,
+    RxResetPasswordDone(Result<String, String>),
+    CloseRxPasswordModal,
 }
 
 pub struct ProjectsState {
@@ -93,6 +111,8 @@ pub struct ProjectsState {
     setting_up: std::collections::HashSet<String>,
     // 에러 로그 뷰 (열려 있으면 Some)
     log_view: Option<LogView>,
+    // 라이믹스 관리자 비번 변경 모달 (열려 있으면 Some)
+    rx_password_modal: Option<RxPasswordModal>,
     // 메시지
     error: Option<String>,
     server_message: Option<Result<String, String>>,
@@ -116,6 +136,7 @@ impl ProjectsState {
             edit_type: ProjectType::Php,
             setting_up: std::collections::HashSet::new(),
             log_view: None,
+            rx_password_modal: None,
             error: None,
             server_message: None,
         }
@@ -421,6 +442,60 @@ impl ProjectsState {
                 self.log_view = None;
                 Task::none()
             }
+            ProjectsMessage::OpenRxPasswordModal(id) => {
+                let name = self.projects.iter().find(|p| p.id == id)
+                    .map(|p| p.name.clone()).unwrap_or_else(|| id.clone());
+                self.rx_password_modal = Some(RxPasswordModal {
+                    project_id: id,
+                    project_name: name,
+                    user_id: "admin".to_string(),
+                    new_password: String::new(),
+                    running: false,
+                    message: None,
+                });
+                Task::none()
+            }
+            ProjectsMessage::RxUserIdChanged(v) => {
+                if let Some(m) = self.rx_password_modal.as_mut() { m.user_id = v; }
+                Task::none()
+            }
+            ProjectsMessage::RxNewPasswordChanged(v) => {
+                if let Some(m) = self.rx_password_modal.as_mut() { m.new_password = v; }
+                Task::none()
+            }
+            ProjectsMessage::RxResetPassword => {
+                let Some(m) = self.rx_password_modal.as_mut() else { return Task::none(); };
+                let user_id = m.user_id.trim().to_string();
+                let new_password = m.new_password.clone();
+                if user_id.is_empty() {
+                    m.message = Some(Err("관리자 ID를 입력하세요.".to_string()));
+                    return Task::none();
+                }
+                if new_password.is_empty() {
+                    m.message = Some(Err("새 비밀번호를 입력하세요.".to_string()));
+                    return Task::none();
+                }
+                let Some(project) = self.projects.iter().find(|p| p.id == m.project_id).cloned() else {
+                    return Task::none();
+                };
+                m.running = true;
+                m.message = None;
+                Task::perform(
+                    async move { rx_reset_admin_password(&project, &user_id, &new_password) },
+                    ProjectsMessage::RxResetPasswordDone,
+                )
+            }
+            ProjectsMessage::RxResetPasswordDone(result) => {
+                if let Some(m) = self.rx_password_modal.as_mut() {
+                    m.running = false;
+                    m.message = Some(result);
+                }
+                Task::none()
+            }
+            ProjectsMessage::CloseRxPasswordModal => {
+                self.rx_password_modal = None;
+                Task::none()
+            }
         }
     }
 
@@ -564,6 +639,11 @@ impl ProjectsState {
             None => Space::with_height(0).into(),
         };
 
+        let rx_modal_section: Element<ProjectsMessage> = match &self.rx_password_modal {
+            Some(m) => column![rx_password_panel(m), Space::with_height(20)].into(),
+            None => Space::with_height(0).into(),
+        };
+
         let mut col = column![
             text("프로젝트").size(22),
             Space::with_height(8),
@@ -573,6 +653,7 @@ impl ProjectsState {
             add_form,
             Space::with_height(20),
             log_section,
+            rx_modal_section,
             project_list,
         ];
 
@@ -614,6 +695,8 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
     let id_edit = p.id.clone();
     let id_srv = p.id.clone();
     let id_log = p.id.clone();
+    let id_rx = p.id.clone();
+    let is_rhymix = is_rhymix_project(p);
 
     let (type_label, type_color) = match p.project_type {
         ProjectType::Php    => ("PHP",     Color::from_rgb(0.5, 0.6, 1.0)),
@@ -714,6 +797,24 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
             })
     };
 
+    let mut controls_row = row![
+        server_controls,
+        Space::with_width(8),
+    ];
+    if is_rhymix {
+        controls_row = controls_row.push(
+            button(text("관리자 비번").size(12))
+                .on_press(ProjectsMessage::OpenRxPasswordModal(id_rx))
+                .padding([6, 14])
+                .style(|_, _| button::Style {
+                    background: Some(iced::Background::Color(Color::from_rgb(0.35, 0.25, 0.0))),
+                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
+                    text_color: Color::from_rgb(1.0, 0.85, 0.3),
+                    ..Default::default()
+                }),
+        ).push(Space::with_width(6));
+    }
+
     container(
         row![
             column![
@@ -739,8 +840,7 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
                     format!(":{} · {}/ · {}", p.port, p.app_dir, p.start_command)
                 }).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
             ].width(Length::Fill),
-            server_controls,
-            Space::with_width(8),
+            controls_row,
             button(text("로그").size(12))
                 .on_press(ProjectsMessage::ViewLog(id_log))
                 .padding([6, 14])
@@ -912,6 +1012,78 @@ fn project_row_editing<'a>(
 }
 
 // 에러 로그 패널
+fn rx_password_panel(m: &RxPasswordModal) -> Element<'_, ProjectsMessage> {
+    let header = row![
+        text(format!("라이믹스 관리자 비번 변경 · {}", m.project_name)).size(15).width(Length::Fill),
+        log_btn("닫기", Color::from_rgb(0.25, 0.25, 0.3), ProjectsMessage::CloseRxPasswordModal),
+    ].align_y(iced::Alignment::Center);
+
+    let form = row![
+        column![
+            text("관리자 ID").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
+            Space::with_height(4),
+            text_input("admin", &m.user_id)
+                .on_input(ProjectsMessage::RxUserIdChanged)
+                .padding(10),
+        ].width(160),
+        Space::with_width(10),
+        column![
+            text("새 비밀번호").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
+            Space::with_height(4),
+            text_input("새 비밀번호", &m.new_password)
+                .on_input(ProjectsMessage::RxNewPasswordChanged)
+                .secure(true)
+                .padding(10),
+        ].width(Length::Fill),
+        Space::with_width(10),
+        column![
+            Space::with_height(18),
+            button(text(if m.running { "변경 중..." } else { "변경" }).size(13))
+                .on_press_maybe(if m.running { None } else { Some(ProjectsMessage::RxResetPassword) })
+                .padding([10, 16])
+                .style(|_, _| button::Style {
+                    background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.5, 0.3))),
+                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
+                    text_color: Color::WHITE,
+                    ..Default::default()
+                }),
+        ],
+    ];
+
+    let mut body = column![
+        text("rx-cli(rx member reset-password)로 라이믹스 코어의 비밀번호 변경 로직을 그대로 호출합니다. 사이트 구분 없는 전역 회원 계정이니 ID를 정확히 입력하세요.")
+            .size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
+        Space::with_height(10),
+        form,
+    ];
+
+    if let Some(msg) = &m.message {
+        let (txt, color) = match msg {
+            Ok(m) => (m.as_str(), Color::from_rgb(0.2, 0.9, 0.4)),
+            Err(e) => (e.as_str(), Color::from_rgb(1.0, 0.4, 0.4)),
+        };
+        body = body.push(Space::with_height(10)).push(
+            text(txt).size(12).color(color)
+        );
+    }
+
+    container(
+        column![
+            header,
+            Space::with_height(12),
+            body,
+        ]
+    )
+    .padding(16)
+    .width(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
+        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.35, 0.25, 0.2), width: 1.0 },
+        ..Default::default()
+    })
+    .into()
+}
+
 fn log_panel(lv: &LogView) -> Element<'_, ProjectsMessage> {
     let id_clear = lv.id.clone();
     let id_refresh = lv.id.clone();
