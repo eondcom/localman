@@ -9,6 +9,8 @@ const NANUM_GOTHIC: &[u8] =
 const APP_ICON: &[u8] = include_bytes!("../assets/localman.png");
 
 fn main() -> iced::Result {
+    ignore_sigchld();
+
     if !acquire_single_instance() {
         rfd::MessageDialog::new()
             .set_title("LocalMan")
@@ -37,6 +39,23 @@ fn main() -> iced::Result {
             ..Settings::default()
         })
         .run_with(App::new)
+}
+
+/// SIGCHLD를 SIG_IGN으로 설정한다.
+///
+/// vhost::spawn_server가 자식(dev server)을 detach(mem::forget)하므로
+/// 아무도 wait()를 호출하지 않는다. 커널 기본 동작은 자식이 죽어도
+/// 부모가 reap할 때까지 좀비로 남기는 것인데, SIGCHLD를 SIG_IGN으로
+/// 두면 POSIX 규정에 따라 커널이 종료된 자식을 즉시 자동 회수한다.
+fn ignore_sigchld() {
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    const SIGCHLD: i32 = 17;
+    const SIG_IGN: usize = 1;
+    unsafe {
+        signal(SIGCHLD, SIG_IGN);
+    }
 }
 
 /// 중복 실행 방지: abstract unix socket을 잠금으로 사용 (프로세스 종료 시 커널이 자동 해제)
