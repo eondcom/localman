@@ -664,8 +664,14 @@ pub fn start_server(project: &VhostProject) -> Result<u32, String> {
         .spawn()
         .map_err(|e| format!("실행 실패: {e}"))?;
     let pid = child.id();
-    // child를 drop해도 프로세스는 계속 실행됨 (detach)
-    std::mem::forget(child);
+    // 서버가 끝나면 바로 회수해 좀비로 남지 않게 한다.
+    // (전역 SIGCHLD=SIG_IGN 은 쓰면 안 된다 — 커널이 모든 자식을 자동 회수해
+    //  Command::output() 이 ECHILD 로 실패하고, mysql·psql·sudo 호출이 전부 깨진다.
+    //  2026-09-30 실제로 DB 연결과 편집 저장이 모두 이렇게 실패했다.)
+    let mut child = child;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 
     // starttime 을 즉시 읽어 기록한다. 이후 이 값이 PID 재사용을 걸러낸다.
     // 못 읽으면(이미 즉사한 경우 등) 0 으로 둔다 — is_alive 가 false 가 되어
