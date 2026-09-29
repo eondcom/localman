@@ -48,8 +48,8 @@ fn save_running(map: &HashMap<String, RunningProc>) {
     let path = running_state_path();
     match serde_json::to_string_pretty(map) {
         Ok(s) => {
-            if let Err(e) = fs::write(&path, s) {
-                eprintln!("[localman] 실행 상태 저장 실패 {}: {e}", path.display());
+            if let Err(e) = super::write_atomic(&path, s.as_bytes()) {
+                eprintln!("[localman] 실행 상태 저장 실패: {e}");
             }
         }
         Err(e) => eprintln!("[localman] 실행 상태 직렬화 실패: {e}"),
@@ -896,8 +896,15 @@ pub fn update_project(
     let mut list = list_projects();
     // 충돌 방지를 위해 mutable borrow 전에 다른 프로젝트 포트 수집
     let used_ports: Vec<u16> = list.iter().filter(|x| x.id != id).map(|x| x.port).collect();
-    let p = list.iter_mut().find(|p| p.id == id)
-        .ok_or_else(|| "프로젝트를 찾을 수 없습니다.".to_string())?;
+    let empty = list.is_empty();
+    let p = list.iter_mut().find(|p| p.id == id).ok_or_else(|| {
+        if empty {
+            // 화면엔 목록이 있는데 파일이 비었다 = 저장 파일이 날아간 것(예: 디스크 꽉 참)
+            format!("프로젝트를 찾을 수 없습니다 — {} 가 비었거나 깨졌습니다 (디스크 공간·백업 확인)", data_path().display())
+        } else {
+            "프로젝트를 찾을 수 없습니다.".to_string()
+        }
+    })?;
     let type_changed = p.project_type != project_type;
     p.name = name;
     p.path = path;
@@ -940,7 +947,7 @@ pub fn remove_project(id: &str) -> Result<(), String> {
 
 fn save_projects(list: &[VhostProject]) -> Result<(), String> {
     let data = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
-    fs::write(data_path(), data).map_err(|e| e.to_string())
+    super::write_atomic(&data_path(), data.as_bytes())
 }
 
 /// 프록시에 필요한 Apache 모듈을 보장한다.
@@ -1069,14 +1076,29 @@ fn write_vhost(p: &VhostProject) -> Result<(), String> {
         eprintln!("[localman] vhost cp 실패: {err}");
         return Err(format!("vhost 파일 쓰기 실패: {err}"));
     }
-    std::process::Command::new("sudo")
+    let ln_out = std::process::Command::new("sudo")
         .args(["ln", "-sf", &conf_path, &enable_path])
         .output()
         .map_err(|e| e.to_string())?;
-    std::process::Command::new("sudo")
+    if !ln_out.status.success() {
+        let err = String::from_utf8_lossy(&ln_out.stderr).trim().to_string();
+        return Err(format!("vhost 활성화(ln) 실패: {err}"));
+    }
+    // reload 가 실패하면 설정 파일은 바뀌었어도 Apache 에 반영되지 않는다.
+    // 예전엔 종료 코드를 무시해서 "저장됐는데 반영이 안 되는" 상태가 조용히 생겼다.
+    let reload_out = std::process::Command::new("sudo")
         .args(["systemctl", "reload", "apache2"])
         .output()
         .map_err(|e| e.to_string())?;
+    if !reload_out.status.success() {
+        let err = String::from_utf8_lossy(&reload_out.stderr).trim().to_string();
+        let configtest = std::process::Command::new("apache2ctl")
+            .arg("configtest")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+            .unwrap_or_default();
+        return Err(format!("Apache 재적용(reload) 실패 — 저장됐지만 반영 안 됨: {err} {configtest}"));
+    }
     Ok(())
 }
 

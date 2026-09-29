@@ -116,6 +116,8 @@ pub struct ProjectsState {
     // 메시지
     error: Option<String>,
     server_message: Option<Result<String, String>>,
+    // App 이 꺼내 토스트로 띄울 알림
+    toasts: Vec<Result<String, String>>,
 }
 
 impl ProjectsState {
@@ -139,7 +141,19 @@ impl ProjectsState {
             rx_password_modal: None,
             error: None,
             server_message: None,
+            toasts: Vec::new(),
         }
+    }
+
+    pub fn take_toasts(&mut self) -> Vec<Result<String, String>> {
+        std::mem::take(&mut self.toasts)
+    }
+
+    /// 인라인 오류 표시와 함께 토스트도 띄운다.
+    /// 오류 문구는 목록 맨 아래에 찍혀, 목록이 길면 편집 중인 행에서 보이지 않는다.
+    fn set_error(&mut self, e: String) {
+        self.toasts.push(Err(e.clone()));
+        self.error = Some(e);
     }
 
     pub fn update(&mut self, msg: ProjectsMessage) -> Task<ProjectsMessage> {
@@ -238,7 +252,7 @@ impl ProjectsState {
                             return Task::done(ProjectsMessage::SetupDeps(added_id));
                         }
                     }
-                    Err(e) => self.error = Some(e),
+                    Err(e) => self.set_error(e),
                 }
                 Task::none()
             }
@@ -249,7 +263,7 @@ impl ProjectsState {
                 }
                 match remove_project(&id) {
                     Ok(_) => { self.error = None; self.projects = list_projects(); }
-                    Err(e) => self.error = Some(e),
+                    Err(e) => self.set_error(e),
                 }
                 Task::none()
             }
@@ -273,10 +287,16 @@ impl ProjectsState {
                 )
             }
             ProjectsMessage::ServerStarted(id, result) => {
+                if let Err(e) = &result {
+                    self.toasts.push(Err(format!("{id} 시작 실패: {e}")));
+                }
                 self.server_message = Some(result.map(|pid| format!("{id} 시작됨 (PID {pid})")));
                 Task::none()
             }
             ProjectsMessage::ServerStopped(id, result) => {
+                if let Err(e) = &result {
+                    self.toasts.push(Err(format!("{id} 중지 실패: {e}")));
+                }
                 self.server_message = Some(result.map(|_| format!("{id} 중지됨")));
                 Task::none()
             }
@@ -341,8 +361,15 @@ impl ProjectsState {
                         self.editing_id = None;
                         self.error = None;
                         self.projects = list_projects();
+                        // vhost 는 바로 반영되지만, 이미 떠 있는 dev 서버는 옛 설정(명령어·포트)으로 돈다.
+                        let msg = if matches!(server_status(&id), ServerStatus::Running(_)) {
+                            format!("{id} 저장됨 — 실행 중인 서버는 중지 후 다시 시작해야 반영됩니다")
+                        } else {
+                            format!("{id} 저장·반영 완료")
+                        };
+                        self.toasts.push(Ok(msg));
                     }
-                    Err(e) => self.error = Some(e),
+                    Err(e) => self.set_error(format!("{id} 편집 저장 실패: {e}")),
                 }
                 Task::none()
             }
@@ -369,7 +396,10 @@ impl ProjectsState {
                 self.projects = list_projects();
                 match result {
                     Ok(msg) => self.server_message = Some(Ok(format!("{id}: {msg}"))),
-                    Err(e) => self.server_message = Some(Err(format!("{id}: {e}"))),
+                    Err(e) => {
+                        self.toasts.push(Err(format!("{id}: {e}")));
+                        self.server_message = Some(Err(format!("{id}: {e}")));
+                    }
                 }
                 Task::none()
             }
