@@ -4,7 +4,7 @@ use iced::{
 };
 use crate::platform::{ServiceStatus, get_service_status, install_service, toggle_service};
 use super::theme::{self, Icon, Kind, Tone, btn, card, chip, group, icon, muted, p, page_header, result_line, section_label, setting_row};
-use crate::domain::tools::{TOOLS, Tool, install as install_tool, installed_version, latest_lts};
+use crate::domain::tools::{NodeSupport, TOOLS, Tool, install as install_tool, installed_version, latest_lts, node_schedule, node_support, today};
 
 #[derive(Debug, Clone)]
 pub enum ServicesMessage {
@@ -14,7 +14,7 @@ pub enum ServicesMessage {
     Toggled(String, Result<(), String>),
     Installed(String, Result<(), String>),
     ToolsChecked(Vec<(Tool, Option<String>)>),
-    LtsFetched(Option<(String, String)>),
+    LtsFetched(Option<(String, String)>, Option<serde_json::Value>),
     InstallTool(Tool),
     ToolInstalled(Result<String, String>),
 }
@@ -28,6 +28,8 @@ pub struct ServicesState {
     tools: Vec<(Tool, Option<String>)>,
     /// nodejs.org 의 지금 LTS (버전, 이름)
     lts: Option<(String, String)>,
+    /// nodejs/Release 의 릴리스 일정 (설치된 Node 가 지원 중인지 판단)
+    node_schedule: Option<serde_json::Value>,
     tool_installing: Option<Tool>,
     tool_log: Vec<String>,
 }
@@ -39,10 +41,6 @@ fn check_tools() -> Task<ServicesMessage> {
     )
 }
 
-/// "24.21.0" 의 24
-fn major(v: &str) -> Option<u32> {
-    v.trim_start_matches('v').split('.').next()?.parse().ok()
-}
 
 /// (UI 이름, 서비스 id, 설명, 아이콘)
 const SERVICES: [(&str, &str, &str, Icon); 3] = [
@@ -70,6 +68,7 @@ impl ServicesState {
             error: None,
             tools: Vec::new(),
             lts: None,
+            node_schedule: None,
             tool_installing: None,
             tool_log: Vec::new(),
         };
@@ -82,8 +81,12 @@ impl ServicesState {
         Task::batch([
             check_tools(),
             Task::perform(
-                async { tokio::task::spawn_blocking(|| latest_lts().ok()).await.ok().flatten() },
-                ServicesMessage::LtsFetched,
+                async {
+                    tokio::task::spawn_blocking(|| (latest_lts().ok(), node_schedule().ok()))
+                        .await
+                        .unwrap_or((None, None))
+                },
+                |(lts, sch)| ServicesMessage::LtsFetched(lts, sch),
             ),
         ])
     }
@@ -147,8 +150,9 @@ impl ServicesState {
                 self.tools = list;
                 Task::none()
             }
-            ServicesMessage::LtsFetched(lts) => {
+            ServicesMessage::LtsFetched(lts, sch) => {
                 self.lts = lts;
+                self.node_schedule = sch;
                 Task::none()
             }
             ServicesMessage::InstallTool(t) => {
@@ -213,25 +217,36 @@ impl ServicesState {
         let mut rows: Vec<Element<ServicesMessage>> = Vec::new();
         for (t, ver) in &self.tools {
             let lts = self.lts.as_ref().filter(|_| *t == Tool::Node);
-            // Node 는 LTS 보다 오래된 판이면 LTS 설치를 권한다
-            let outdated = match (lts, ver) {
-                (Some((l, _)), Some(v)) => major(v).zip(major(l)).is_some_and(|(a, b)| a < b),
-                _ => false,
+            // Node 는 공식 릴리스 일정으로 지원 상태를 본다 (일정을 못 받으면 버전만 보여준다)
+            let support = match (t, ver, &self.node_schedule) {
+                (Tool::Node, Some(v), Some(sch)) => Some(node_support(sch, v, &today())),
+                _ => None,
             };
-            let status: Element<ServicesMessage> = match ver {
-                Some(v) if outdated => chip(format!("v{v} · LTS 아님"), Tone::Warning),
-                Some(v) => chip(format!("v{v}"), Tone::Success),
-                None => chip("미설치", Tone::Warning),
+            let status: Element<ServicesMessage> = match (ver, &support) {
+                (None, _) => chip("미설치", Tone::Warning),
+                (Some(v), Some(NodeSupport::ActiveLts(n))) => chip(format!("v{v} · {n} LTS"), Tone::Success),
+                (Some(v), Some(NodeSupport::MaintenanceLts(n, end))) => {
+                    chip(format!("v{v} · {n} 유지보수 LTS ({} 종료)", &end[..end.len().min(7)]), Tone::Warning)
+                }
+                (Some(v), Some(NodeSupport::Current)) => chip(format!("v{v} · LTS 아님"), Tone::Warning),
+                (Some(v), Some(NodeSupport::Eol)) => chip(format!("v{v} · 지원 종료"), Tone::Danger),
+                (Some(v), _) => chip(format!("v{v}"), Tone::Success),
             };
             let label: String = match (t, lts) {
                 (Tool::Node, Some((l, name))) => format!("{l} {name} LTS 설치"),
                 (Tool::Node, None) => "LTS 설치".into(),
                 _ => "설치".into(),
             };
+            // 없거나·지원 종료·LTS 아님 → 주 버튼, 유지보수 LTS → 보조 버튼
+            let kind = match (ver, &support) {
+                (None, _) | (_, Some(NodeSupport::Eol | NodeSupport::Current)) => Some(Kind::Primary),
+                (_, Some(NodeSupport::MaintenanceLts(..))) => Some(Kind::Flat),
+                _ => None,
+            };
             let action: Element<ServicesMessage> = if self.tool_installing == Some(*t) {
                 theme::status("설치 중…", Tone::Primary)
-            } else if ver.is_none() || outdated {
-                let b = btn(label, Some(Icon::Download), Kind::Primary);
+            } else if let Some(kind) = kind {
+                let b = btn(label, Some(Icon::Download), kind);
                 if self.tool_installing.is_none() { b.on_press(ServicesMessage::InstallTool(*t)).into() } else { b.into() }
             } else {
                 Space::with_width(0).into()

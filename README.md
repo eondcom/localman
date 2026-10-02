@@ -86,7 +86,8 @@ sudo ./scripts/macos/install-sudoers.sh
 서비스 탭 아래 [개발 도구]에서 버전을 보고, 없거나 오래됐으면 설치한다.
 
 - Node.js: nodejs.org 배포 목록에서 **그때의 LTS**를 골라 공식 SHA-256으로 검증한 뒤 `<데이터 폴더>/tools/node`에 푼다.
-  sudo가 필요 없고 맥·리눅스가 같으며, 앱이 시작할 때 PATH 맨 앞에 둔다. 깔린 Node가 LTS보다 오래됐으면 "LTS 아님"으로 알린다
+  sudo가 필요 없고 맥·리눅스가 같으며, 앱이 시작할 때 PATH 맨 앞에 둔다. 깔린 Node는 공식 릴리스 일정
+  (nodejs/Release `schedule.json`)으로 Active LTS · 유지보수 LTS(종료 시기) · LTS 아님 · 지원 종료를 구분해 보여준다
 - Python 3, PHP, rsync: 맥은 Homebrew, 리눅스는 apt (`install-sudoers.sh`에 고정된 패키지만 허용). PHP를 깔면 Apache에 mod_php를 연결한다
 
 ## 사이트 찾기·용량
@@ -163,6 +164,12 @@ cargo build --release
 
 ```bash
 ./scripts/linux/run.sh
+```
+
+맥 앱으로 설치 (`/Applications/LocalMan.app`, 아이콘·임시 서명 포함, 다시 실행하면 덮어쓴다):
+
+```bash
+./scripts/macos/make-app.sh
 ```
 
 맥에서 리눅스 대상 타입 검사: `./scripts/check-linux.sh`

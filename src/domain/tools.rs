@@ -125,6 +125,50 @@ fn pick_lts(index: &serde_json::Value) -> Option<(String, String)> {
     })
 }
 
+/// 설치된 Node 의 지원 상태 (nodejs/Release 의 schedule.json 기준)
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeSupport {
+    /// 활발히 지원되는 LTS
+    ActiveLts(String),
+    /// 보안 수정만 받는 LTS — (이름, 지원 종료일)
+    MaintenanceLts(String, String),
+    /// LTS 가 아닌 판 (홀수 판, LTS 되기 전)
+    Current,
+    /// 지원이 끝난 판
+    Eol,
+    /// 일정에 없음 (알 수 없음)
+    Unknown,
+}
+
+/// Node 공식 릴리스 일정
+pub fn node_schedule() -> Result<serde_json::Value, String> {
+    serde_json::from_slice(&curl("https://raw.githubusercontent.com/nodejs/Release/main/schedule.json")?)
+        .map_err(|e| format!("릴리스 일정 형식 오류: {e}"))
+}
+
+pub fn today() -> String {
+    let d = time::OffsetDateTime::now_utc().date();
+    format!("{:04}-{:02}-{:02}", d.year(), u8::from(d.month()), d.day())
+}
+
+/// 날짜는 YYYY-MM-DD 문자열이라 사전순 비교가 곧 날짜 비교다.
+pub fn node_support(schedule: &serde_json::Value, version: &str, today: &str) -> NodeSupport {
+    let Some(major) = version.trim_start_matches('v').split('.').next() else { return NodeSupport::Unknown };
+    let Some(e) = schedule.get(format!("v{major}")) else { return NodeSupport::Unknown };
+    let get = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let (lts, maint, end) = (get("lts"), get("maintenance"), get("end"));
+    let name = get("codename").to_string();
+    if !end.is_empty() && end <= today {
+        NodeSupport::Eol
+    } else if lts.is_empty() || lts > today {
+        NodeSupport::Current
+    } else if !maint.is_empty() && maint <= today {
+        NodeSupport::MaintenanceLts(name, end.to_string())
+    } else {
+        NodeSupport::ActiveLts(name)
+    }
+}
+
 fn node_platform() -> Result<&'static str, String> {
     let os = match std::env::consts::OS {
         "macos" => "darwin",
@@ -199,6 +243,24 @@ pub fn prepend_path(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_node_support_by_schedule() {
+        let sch = serde_json::json!({
+            "v12": {"lts": "2019-10-21", "maintenance": "2020-11-30", "end": "2022-04-30", "codename": "Erbium"},
+            "v22": {"lts": "2024-10-29", "maintenance": "2025-10-21", "end": "2027-04-30", "codename": "Jod"},
+            "v24": {"lts": "2025-10-28", "maintenance": "2026-10-20", "end": "2028-04-30", "codename": "Krypton"},
+            "v25": {"maintenance": "2026-04-01", "end": "2026-06-01"},
+            "v26": {"lts": "2026-10-28", "maintenance": "2027-10-20", "end": "2029-04-30", "codename": ""}
+        });
+        let t = "2026-10-03";
+        assert_eq!(node_support(&sch, "12.14.1", t), NodeSupport::Eol);
+        assert_eq!(node_support(&sch, "22.15.0", t), NodeSupport::MaintenanceLts("Jod".into(), "2027-04-30".into()));
+        assert_eq!(node_support(&sch, "v24.21.0", t), NodeSupport::ActiveLts("Krypton".into()));
+        assert_eq!(node_support(&sch, "25.1.0", t), NodeSupport::Eol);
+        assert_eq!(node_support(&sch, "26.0.0", t), NodeSupport::Current);
+        assert_eq!(node_support(&sch, "99.0.0", t), NodeSupport::Unknown);
+    }
 
     #[test]
     fn picks_newest_lts_not_current() {
