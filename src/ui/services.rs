@@ -1,11 +1,9 @@
 use iced::{
-    widget::{button, column, container, row, text, Space},
-    Color, Element, Length, Task,
+    widget::{column, row, text, Space},
+    Element, Length, Task,
 };
-use crate::platform::{ServiceStatus, ca_trusted, get_service_status, install_service, toggle_service};
-use crate::domain::apache::{renew_certs, set_https};
-use crate::domain::settings::load_settings;
-use crate::domain::tls::{ca_cert_path, ca_exists};
+use crate::platform::{ServiceStatus, get_service_status, install_service, toggle_service};
+use super::theme::{self, Icon, Kind, Tone, btn, card, chip, icon, muted, p, page_header};
 
 #[derive(Debug, Clone)]
 pub enum ServicesMessage {
@@ -14,10 +12,6 @@ pub enum ServicesMessage {
     Refresh,
     Toggled(String, Result<(), String>),
     Installed(String, Result<(), String>),
-    SetHttps(bool),
-    HttpsSet(Result<Vec<String>, String>),
-    RenewCerts,
-    CertsRenewed(Vec<String>),
 }
 
 pub struct ServicesState {
@@ -26,10 +20,22 @@ pub struct ServicesState {
     postgresql_status: ServiceStatus,
     installing: Option<String>,
     error: Option<String>,
-    https: bool,
-    ca_trusted: bool,
-    https_busy: bool,
-    https_log: Vec<String>,
+}
+
+/// (UI 이름, 서비스 id, 설명, 아이콘)
+const SERVICES: [(&str, &str, &str, Icon); 3] = [
+    ("Apache", "apache2", "웹 서버 · *.localhost", Icon::Globe),
+    ("MariaDB", "mariadb", "데이터베이스 서버", Icon::Database),
+    ("PostgreSQL", "postgresql", "데이터베이스 서버", Icon::Layers),
+];
+
+pub fn status_tone(s: &ServiceStatus) -> (&'static str, Tone) {
+    match s {
+        ServiceStatus::Running => ("실행 중", Tone::Success),
+        ServiceStatus::Stopped => ("중지됨", Tone::Neutral),
+        ServiceStatus::NotInstalled => ("미설치", Tone::Warning),
+        ServiceStatus::Unknown => ("알 수 없음", Tone::Neutral),
+    }
 }
 
 impl ServicesState {
@@ -40,10 +46,6 @@ impl ServicesState {
             postgresql_status: ServiceStatus::Unknown,
             installing: None,
             error: None,
-            https: false,
-            ca_trusted: false,
-            https_busy: false,
-            https_log: Vec::new(),
         };
         s.refresh();
         s
@@ -53,8 +55,19 @@ impl ServicesState {
         self.apache_status = get_service_status("apache2");
         self.mariadb_status = get_service_status("mariadb");
         self.postgresql_status = get_service_status("postgresql");
-        self.https = load_settings().https;
-        self.ca_trusted = ca_exists() && ca_trusted(&ca_cert_path());
+    }
+
+    fn status_of(&self, id: &str) -> &ServiceStatus {
+        match id {
+            "apache2" => &self.apache_status,
+            "mariadb" => &self.mariadb_status,
+            _ => &self.postgresql_status,
+        }
+    }
+
+    /// 사이드바 아래 요약용: (이름, 상태)
+    pub fn summary(&self) -> Vec<(&'static str, &ServiceStatus)> {
+        SERVICES.iter().map(|(name, id, ..)| (*name, self.status_of(id))).collect()
     }
 
     pub fn update(&mut self, msg: ServicesMessage) -> Task<ServicesMessage> {
@@ -93,33 +106,6 @@ impl ServicesState {
                 }
                 Task::none()
             }
-            ServicesMessage::SetHttps(on) => {
-                self.https_busy = true;
-                self.https_log.clear();
-                Task::perform(
-                    async move { tokio::task::spawn_blocking(move || set_https(on)).await.unwrap_or_else(|e| Err(e.to_string())) },
-                    ServicesMessage::HttpsSet,
-                )
-            }
-            ServicesMessage::HttpsSet(result) => {
-                self.https_busy = false;
-                match result {
-                    Ok(log) => self.https_log = log,
-                    Err(e) => self.https_log = vec![format!("✗ {e}")],
-                }
-                self.refresh();
-                Task::none()
-            }
-            ServicesMessage::RenewCerts => Task::perform(
-                async { tokio::task::spawn_blocking(renew_certs).await.unwrap_or_default() },
-                ServicesMessage::CertsRenewed,
-            ),
-            ServicesMessage::CertsRenewed(log) => {
-                if !log.is_empty() {
-                    self.https_log = log;
-                }
-                Task::none()
-            }
             ServicesMessage::Installed(name, result) => {
                 // 설치 중이던 그 서비스의 응답일 때만 잠금을 푼다. 순서가 엇갈려도
                 // GUI 가 죽어서는 안 되므로 단언하지 않고 조용히 넘긴다.
@@ -139,211 +125,60 @@ impl ServicesState {
     }
 
     pub fn view(&self) -> Element<'_, ServicesMessage> {
-        let apache = service_card(
-            "Apache2",
-            "웹 서버",
-            &self.apache_status,
-            "apache2",
-            self.installing.as_deref() == Some("apache2"),
-        );
+        let refresh = btn("새로고침", Some(Icon::Refresh), Kind::Surface).on_press(ServicesMessage::Refresh);
 
-        let mariadb = service_card(
-            "MariaDB",
-            "데이터베이스 서버",
-            &self.mariadb_status,
-            "mariadb",
-            self.installing.as_deref() == Some("mariadb"),
-        );
-
-        let postgresql = service_card(
-            "PostgreSQL",
-            "데이터베이스 서버",
-            &self.postgresql_status,
-            "postgresql",
-            self.installing.as_deref() == Some("postgresql"),
-        );
-
-        let refresh_btn = button(text("새로고침").size(13))
-            .on_press(ServicesMessage::Refresh)
-            .padding([8, 16]);
+        let tiles = SERVICES.iter().fold(row![].spacing(12), |r, (name, id, desc, ic)| {
+            r.push(self.tile(name, id, desc, *ic))
+        });
 
         let mut col = column![
-            text("서비스 관리").size(22),
-            Space::with_height(8),
-            text("Apache, MariaDB, PostgreSQL 서비스를 제어합니다.").size(13).color(Color::from_rgb(0.6, 0.6, 0.6)),
-            Space::with_height(24),
-            apache,
-            Space::with_height(12),
-            mariadb,
-            Space::with_height(12),
-            postgresql,
-            Space::with_height(12),
-            self.https_card(),
+            page_header("서비스", "웹 서버와 데이터베이스를 켜고 끕니다", Some(refresh.into())),
             Space::with_height(20),
-            refresh_btn,
-        ]
-        .spacing(0);
+            tiles,
+        ];
 
         if let Some(err) = &self.error {
-            col = col.push(Space::with_height(12)).push(
-                container(text(format!("오류: {err}")).size(13).color(Color::from_rgb(1.0, 0.4, 0.4)))
-                    .padding(12),
-            );
+            col = col.push(Space::with_height(16)).push(card(
+                row![icon(Icon::X, 14.0, p().danger_fg), text(err).size(13).color(p().danger_fg)].spacing(8),
+            ));
         }
-
         col.into()
     }
-}
 
-impl ServicesState {
-    fn https_card(&self) -> Element<'_, ServicesMessage> {
-        let muted = Color::from_rgb(0.6, 0.6, 0.6);
-        let (status, color) = if !self.https {
-            ("꺼짐", muted)
-        } else if self.ca_trusted {
-            ("켜짐 · 인증기관 신뢰됨", Color::from_rgb(0.2, 0.9, 0.4))
+    fn tile<'a>(&'a self, name: &'a str, id: &'a str, desc: &'a str, ic: Icon) -> Element<'a, ServicesMessage> {
+        let status = self.status_of(id);
+        let (label, tone) = status_tone(status);
+        let installing = self.installing.as_deref() == Some(id);
+        let running = matches!(status, ServiceStatus::Running);
+        let not_installed = matches!(status, ServiceStatus::NotInstalled);
+
+        let action = if installing {
+            btn("설치 중…", Some(Icon::Download), Kind::Flat)
+        } else if not_installed {
+            btn("설치하기", Some(Icon::Download), Kind::Primary).on_press(ServicesMessage::Install(id.to_string()))
+        } else if running {
+            btn("중지", Some(Icon::Square), Kind::Danger).on_press(ServicesMessage::Toggle(id.to_string(), false))
         } else {
-            ("켜짐 · 인증기관 신뢰 안 됨 (브라우저 경고)", Color::from_rgb(0.85, 0.6, 0.2))
+            btn("시작", Some(Icon::Play), Kind::Success).on_press(ServicesMessage::Toggle(id.to_string(), true))
         };
-        let label = match (self.https_busy, self.https) {
-            (true, _) => "처리 중…",
-            (false, true) => "끄기",
-            (false, false) => "켜기",
-        };
-        let mut btn = button(text(label).size(13)).padding([8, 16]);
-        if !self.https_busy {
-            btn = btn.on_press(ServicesMessage::SetHttps(!self.https));
-        }
-        let mut info = column![
-            text("HTTPS").size(16),
-            Space::with_height(2),
-            text("로컬 인증기관으로 모든 프로젝트를 https://도메인 으로도 엽니다. 인증서는 만료 30일 전에 자동 갱신됩니다.")
-                .size(12)
-                .color(muted),
-        ];
-        if self.https && !self.ca_trusted {
-            info = info.push(Space::with_height(6)).push(
-                text("끄고 다시 켜면 인증기관 신뢰 등록을 다시 시도합니다.").size(12).color(muted),
-            );
-        }
-        for l in &self.https_log {
-            info = info.push(super::status_line(l));
-        }
-        container(
-            row![
-                info.width(Length::Fill),
-                Space::with_width(16),
-                column![text(status).size(13).color(color), Space::with_height(8), btn]
-                    .align_x(iced::Alignment::End),
+
+        card(
+            column![
+                row![
+                    icon(ic, 14.0, p().fg3),
+                    text(name).size(13).font(theme::MEDIUM).color(p().fg3),
+                    Space::with_width(Length::Fill),
+                    chip(label, tone),
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
+                Space::with_height(10),
+                text(label).size(26).font(theme::BOLD).color(p().fg),
+                muted(desc),
+                Space::with_height(14),
+                action,
             ]
-            .align_y(iced::Alignment::Center),
+            .spacing(2),
         )
-        .padding(20)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
-            border: iced::Border { radius: 10.0.into(), color: Color::from_rgb(0.2, 0.2, 0.25), width: 1.0 },
-            ..Default::default()
-        })
-        .into()
     }
-}
-
-fn service_card<'a>(
-    name: &'a str,
-    desc: &'a str,
-    status: &'a ServiceStatus,
-    service_id: &'a str,
-    installing: bool,
-) -> Element<'a, ServicesMessage> {
-    let (status_text, status_color, is_running) = match status {
-        ServiceStatus::Running => ("실행 중", Color::from_rgb(0.2, 0.9, 0.4), true),
-        ServiceStatus::Stopped => ("중지됨", Color::from_rgb(0.9, 0.3, 0.3), false),
-        ServiceStatus::NotInstalled => ("설치되지 않음", Color::from_rgb(0.85, 0.6, 0.2), false),
-        ServiceStatus::Unknown => ("알 수 없음", Color::from_rgb(0.6, 0.6, 0.6), false),
-    };
-
-    let is_not_installed = matches!(status, ServiceStatus::NotInstalled);
-    let toggle_label = if installing {
-        "설치 중…"
-    } else if is_not_installed {
-        "설치하기"
-    } else if is_running {
-        "중지"
-    } else {
-        "시작"
-    };
-    let sid = service_id.to_string();
-
-    let mut toggle_btn = button(text(toggle_label).size(13))
-        .padding([8, 20])
-        .style(move |_, _| button::Style {
-            background: Some(iced::Background::Color(if is_running {
-                Color::from_rgb(0.7, 0.2, 0.2)
-            } else {
-                Color::from_rgb(0.1, 0.5, 0.3)
-            })),
-            border: iced::Border {
-                radius: 6.0.into(),
-                ..Default::default()
-            },
-            text_color: Color::WHITE,
-            ..Default::default()
-        });
-
-    if !installing {
-        let message = if is_not_installed {
-            ServicesMessage::Install(sid)
-        } else {
-            ServicesMessage::Toggle(sid, !is_running)
-        };
-        toggle_btn = toggle_btn.on_press(message);
-    }
-
-    let dot = container(Space::with_width(10))
-        .width(10)
-        .height(10)
-        .style(move |_| container::Style {
-            background: Some(iced::Background::Color(status_color)),
-            border: iced::Border {
-                radius: 5.0.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-
-    let info = column![
-        text(name).size(16),
-        Space::with_height(2),
-        text(desc).size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-    ];
-
-    let status_row = row![
-        dot,
-        Space::with_width(6),
-        text(status_text).size(13).color(status_color),
-    ]
-    .align_y(iced::Alignment::Center);
-
-    let card_content = row![
-        info,
-        Space::with_width(Length::Fill),
-        column![status_row, Space::with_height(8), toggle_btn]
-            .align_x(iced::Alignment::End),
-    ]
-    .align_y(iced::Alignment::Center);
-
-    container(card_content)
-        .padding(20)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
-            border: iced::Border {
-                radius: 10.0.into(),
-                color: Color::from_rgb(0.2, 0.2, 0.25),
-                width: 1.0,
-            },
-            ..Default::default()
-        })
-        .into()
 }

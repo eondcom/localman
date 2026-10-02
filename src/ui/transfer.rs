@@ -2,8 +2,11 @@
 //! 설정·DB를 한 파일로 내보내고 가져온다(transfer.rs). 리눅스 ↔ 맥 어느 방향이든 같다.
 
 use iced::{
-    widget::{button, checkbox, column, container, pick_list, progress_bar, row, scrollable, text, text_input, Space},
-    Color, Element, Length, Task,
+    widget::{column, container, pick_list, row, text, Space},
+    Element, Length, Task,
+};
+use super::theme::{
+    self, Icon, Kind, Tone, btn, card, check, chip, icon, input, muted, p, page_header, result_line, section_label,
 };
 use std::fmt;
 use std::net::SocketAddr;
@@ -486,224 +489,152 @@ impl TransferState {
 
     pub fn view(&self) -> Element<'_, TransferMessage> {
         let mut col = column![
-            text("백업·이전").size(22),
-            Space::with_height(8),
-            text("프로젝트 파일·설정·DB를 다른 PC(리눅스 ↔ 맥)로 옮깁니다. 같은 와이파이면 바로 보내고, 아니면 파일로 옮기세요.")
-                .size(13)
-                .color(muted()),
-            Space::with_height(20),
-            card(self.send_view()),
+            page_header(
+                "백업·이전",
+                "프로젝트 파일·설정·DB를 다른 PC(리눅스 ↔ 맥)로 옮깁니다. 같은 와이파이면 바로 보내고, 아니면 파일로 옮기세요",
+                None,
+            ),
             Space::with_height(16),
-            card(self.receive_view()),
-            Space::with_height(16),
+            section_label("같은 네트워크로 바로 이전"),
+            row![card(self.send_view()), card(self.receive_view())].spacing(12),
+            Space::with_height(14),
+            section_label("함께 옮길 데이터베이스"),
             card(self.selection_view()),
-            Space::with_height(16),
-            card(self.export_view()),
-            Space::with_height(16),
-            card(self.import_view()),
-            Space::with_height(16),
+            Space::with_height(14),
+            section_label("파일로 옮기기"),
+            row![card(self.export_view()), card(self.import_view())].spacing(12),
+            Space::with_height(14),
+            section_label("최근 이전 기록"),
             card(self.history_view()),
         ];
         if let Some(e) = &self.error {
-            col = col.push(Space::with_height(12)).push(text(e).size(13).color(red()));
+            col = col.push(Space::with_height(12)).push(result_line(format!("✗ {e}")));
         }
-        scrollable(col.spacing(0).padding(iced::Padding { right: 12.0, ..Default::default() })).into()
+        col.into()
     }
 
     /// 보내기·파일 내보내기에 함께 쓰는 선택: DB 와 접속 정보
     fn selection_view(&self) -> Element<'_, TransferMessage> {
-        let mut c = column![
-            text("함께 옮길 데이터베이스").size(16),
-            Space::with_height(4),
-            text("바로 보내기와 파일 내보내기에 모두 적용됩니다.").size(12).color(muted()),
-            Space::with_height(14),
-        ];
-
         let all_on = !self.dbs.is_empty() && self.dbs.iter().all(|d| d.2);
-        let mut db_header = row![text("데이터베이스").size(13)].align_y(iced::Alignment::Center);
+        let mut header = row![muted("바로 보내기와 파일 내보내기에 모두 적용됩니다").width(Length::Fill)]
+            .spacing(12)
+            .align_y(iced::Alignment::Center);
         if !self.dbs.is_empty() {
-            db_header = db_header
-                .push(Space::with_width(12))
-                .push(checkbox("전체", all_on).on_toggle(TransferMessage::ToggleAllDbs).size(14).text_size(12));
+            header = header.push(check("전체", all_on).on_toggle(TransferMessage::ToggleAllDbs));
         }
-        db_header = db_header
-            .push(Space::with_width(Length::Fill))
-            .push(button(text("다시 읽기").size(12)).on_press(TransferMessage::LoadDatabases).padding([4, 10]));
-        c = c.push(db_header).push(Space::with_height(8));
+        header = header.push(btn("다시 읽기", Some(Icon::Refresh), Kind::Ghost).on_press(TransferMessage::LoadDatabases));
+        let mut c = column![header, Space::with_height(10)];
 
         if self.dbs_loading {
-            c = c.push(text("DB 목록을 읽는 중…").size(12).color(muted()));
+            c = c.push(muted("DB 목록을 읽는 중…"));
         } else if self.dbs.is_empty() {
-            c = c.push(
-                text("담을 DB가 없습니다. 데이터베이스 탭에서 접속 정보를 저장하면 목록이 나옵니다.")
-                    .size(12)
-                    .color(muted()),
-            );
+            c = c.push(muted("담을 DB가 없습니다. 데이터베이스 탭에서 접속 정보를 저장하면 목록이 나옵니다."));
         } else {
-            let mut list = column![].spacing(4);
+            let mut list = row![].spacing(18);
             for (i, (engine, name, on)) in self.dbs.iter().enumerate() {
-                list = list.push(
-                    checkbox(format!("{name}  ({})", engine.label()), *on)
-                        .on_toggle(move |v| TransferMessage::ToggleDb(i, v))
-                        .size(14)
-                        .text_size(13),
-                );
+                list = list.push(check(format!("{name} · {}", engine.label()), *on).on_toggle(move |v| TransferMessage::ToggleDb(i, v)));
             }
             c = c.push(list);
         }
 
-        c = c
-            .push(Space::with_height(14))
-            .push(
-                checkbox("DB 접속 정보(비밀번호 포함)도 담기", self.export_credentials)
-                    .on_toggle(TransferMessage::ToggleExportCredentials)
-                    .size(14)
-                    .text_size(13),
-            );
+        c = c.push(Space::with_height(12)).push(theme::divider()).push(Space::with_height(12)).push(
+            check("DB 접속 정보(비밀번호 포함)도 담기", self.export_credentials).on_toggle(TransferMessage::ToggleExportCredentials),
+        );
         if self.export_credentials {
-            c = c.push(text("비밀번호가 평문으로 들어갑니다. 파일을 공유하지 마세요.").size(12).color(amber()));
+            c = c.push(Space::with_height(6)).push(chip("비밀번호가 평문으로 들어갑니다 — 파일을 공유하지 마세요", Tone::Warning));
         }
-
         c.into()
     }
 
     fn export_view(&self) -> Element<'_, TransferMessage> {
         let mut c = column![
-            text("파일로 내보내기").size(16),
-            Space::with_height(4),
-            text("설정과 위에서 고른 DB를 한 파일로 묶습니다. 프로젝트 소스 폴더는 담지 않습니다.").size(12).color(muted()),
-        ];
-        let label = if self.exporting { "내보내는 중…" } else { "백업 파일 만들기" };
-        let mut btn = primary_button(label);
-        if !self.exporting {
-            btn = btn.on_press(TransferMessage::Export);
-        }
-        c = c.push(Space::with_height(14)).push(btn);
-
+            card_title(Icon::Download, "파일로 내보내기"),
+            muted("설정과 고른 DB를 한 파일로 묶습니다. 프로젝트 소스 폴더는 담지 않습니다."),
+            Space::with_height(12),
+        ]
+        .spacing(4);
+        let b = btn(if self.exporting { "내보내는 중…" } else { "백업 파일 만들기" }, Some(Icon::HardDrive), Kind::Primary);
+        c = c.push(if self.exporting { b } else { b.on_press(TransferMessage::Export) });
         match &self.export_result {
-            Some(Ok(s)) => c = c.push(Space::with_height(10)).push(result_lines(s.lines())),
-            Some(Err(e)) => c = c.push(Space::with_height(10)).push(text(e).size(13).color(red())),
+            Some(Ok(s)) => c = c.push(Space::with_height(8)).push(result_lines(s.lines())),
+            Some(Err(e)) => c = c.push(Space::with_height(8)).push(result_line(format!("✗ {e}"))),
             None => {}
         }
         c.into()
     }
 
     fn import_view(&self) -> Element<'_, TransferMessage> {
-        let mut c = column![text("파일에서 가져오기").size(16), Space::with_height(14)];
+        let mut c = column![card_title(Icon::Upload, "파일에서 가져오기")].spacing(4);
 
         let Some(b) = &self.bundle else {
-            let label = if self.opening { "여는 중…" } else { "백업 파일 열기" };
-            let mut btn = primary_button(label);
-            if !self.opening {
-                btn = btn.on_press(TransferMessage::PickBundle);
-            }
-            return c.push(btn).into();
+            let open = btn(if self.opening { "여는 중…" } else { "백업 파일 열기" }, Some(Icon::FolderOpen), Kind::Flat);
+            return c
+                .push(muted("다른 PC에서 만든 localman-backup-*.tar.gz 를 엽니다."))
+                .push(Space::with_height(12))
+                .push(if self.opening { open } else { open.on_press(TransferMessage::PickBundle) })
+                .into();
         };
 
         let m = &b.manifest;
-        c = c.push(
-            text(format!(
-                "{} ({})에서 만든 백업 · 프로젝트 {}개 · DB {}개{}",
-                m.hostname,
-                os_label(&m.source_os),
-                b.projects.len(),
-                m.databases.len(),
-                if m.includes_credentials { " · 접속 정보 포함" } else { "" },
-            ))
-            .size(13),
+        c = c.push(muted(format!(
+            "{} ({})에서 만든 백업 · 프로젝트 {}개 · DB {}개{}",
+            m.hostname,
+            os_label(&m.source_os),
+            b.projects.len(),
+            m.databases.len(),
+            if m.includes_credentials { " · 접속 정보 포함" } else { "" },
+        )));
+
+        c = c.push(Space::with_height(10)).push(text("프로젝트 경로 바꾸기").size(12).font(theme::MEDIUM).color(p().fg3)).push(
+            row![
+                input("원래 경로 앞부분", &self.path_from).on_input(TransferMessage::PathFromChanged),
+                icon(Icon::ArrowLeftRight, 14.0, p().fg3),
+                input("이 PC 경로 앞부분", &self.path_to).on_input(TransferMessage::PathToChanged),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
         );
 
-        // 경로 바꾸기
-        c = c
-            .push(Space::with_height(14))
-            .push(text("프로젝트 경로 바꾸기").size(13))
-            .push(Space::with_height(6))
-            .push(
-                row![
-                    text_input("원래 경로 앞부분", &self.path_from)
-                        .on_input(TransferMessage::PathFromChanged)
-                        .size(13)
-                        .padding(6),
-                    text("→").size(14),
-                    text_input("이 PC 경로 앞부분", &self.path_to)
-                        .on_input(TransferMessage::PathToChanged)
-                        .size(13)
-                        .padding(6),
-                ]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
-            );
-
-        // 프로젝트 미리보기
-        c = c.push(Space::with_height(12));
-        let mut list = column![].spacing(3);
-        for p in &self.plan {
-            let (mark, color) = if p.exists_here && !self.overwrite {
-                ("건너뜀(이미 있음)", muted())
-            } else if !p.folder_exists {
-                ("폴더 없음", amber())
-            } else if p.exists_here {
-                ("덮어씀", amber())
+        c = c.push(Space::with_height(8));
+        for pl in &self.plan {
+            let (mark, tone) = if pl.exists_here && !self.overwrite {
+                ("건너뜀", Tone::Neutral)
+            } else if !pl.folder_exists {
+                ("폴더 없음", Tone::Warning)
+            } else if pl.exists_here {
+                ("덮어씀", Tone::Warning)
             } else {
-                ("추가", green())
+                ("추가", Tone::Success)
             };
-            let mut line = format!("{}  {}", p.project.id, p.project.path);
-            if let Some(old) = p.port_changed_from {
-                line.push_str(&format!("  (포트 {old} → {})", p.project.port));
+            let mut line = format!("{}  {}", pl.project.id, pl.project.path);
+            if let Some(old) = pl.port_changed_from {
+                line.push_str(&format!("  (포트 {old}에서 {}(으)로)", pl.project.port));
             }
-            list = list.push(
-                row![
-                    text(mark).size(12).color(color).width(110),
-                    text(line).size(12),
-                ]
-                .spacing(6),
-            );
+            c = c.push(row![chip(mark, tone), text(line).size(12).color(p().fg2)].spacing(8).align_y(iced::Alignment::Center));
         }
-        c = c.push(list);
 
-        // 옵션
-        c = c
-            .push(Space::with_height(14))
-            .push(
-                checkbox("이미 있는 프로젝트·DB 덮어쓰기", self.overwrite)
-                    .on_toggle(TransferMessage::ToggleOverwrite)
-                    .size(14)
-                    .text_size(13),
-            );
+        c = c.push(Space::with_height(8)).push(check("이미 있는 프로젝트·DB 덮어쓰기", self.overwrite).on_toggle(TransferMessage::ToggleOverwrite));
         if !m.databases.is_empty() {
             let names: Vec<String> = m.databases.iter().map(|d| d.name.clone()).collect();
-            c = c.push(
-                checkbox(format!("DB 복원: {}", names.join(", ")), self.restore_dbs)
-                    .on_toggle(TransferMessage::ToggleRestoreDbs)
-                    .size(14)
-                    .text_size(13),
-            );
+            c = c.push(check(format!("DB 복원: {}", names.join(", ")), self.restore_dbs).on_toggle(TransferMessage::ToggleRestoreDbs));
         }
         if !b.credentials.is_empty() {
             c = c.push(
-                checkbox("DB 접속 정보 가져오기 (이 PC에 같은 사용자가 있으면 이 PC 설정 유지)", self.import_credentials)
-                    .on_toggle(TransferMessage::ToggleImportCredentials)
-                    .size(14)
-                    .text_size(13),
+                check("DB 접속 정보 가져오기 (이 PC에 같은 사용자가 있으면 이 PC 설정 유지)", self.import_credentials)
+                    .on_toggle(TransferMessage::ToggleImportCredentials),
             );
         }
-        c = c.push(
-            text("프로젝트를 추가하면 이 PC의 Apache 가상호스트와 /etc/hosts가 새로 만들어집니다.")
-                .size(12)
-                .color(muted()),
-        );
+        c = c.push(muted("프로젝트를 추가하면 이 PC의 Apache 가상호스트와 /etc/hosts가 새로 만들어집니다."));
 
-        let label = if self.importing { "가져오는 중…" } else { "가져오기" };
-        let mut go = primary_button(label);
-        let mut close = button(text("닫기").size(13)).padding([8, 16]);
-        if !self.importing {
-            go = go.on_press(TransferMessage::Import);
-            close = close.on_press(TransferMessage::CloseBundle);
-        }
-        c = c.push(Space::with_height(14)).push(row![go, close].spacing(8));
-
+        let go = btn(if self.importing { "가져오는 중…" } else { "가져오기" }, Some(Icon::Check), Kind::Primary);
+        let close = btn("닫기", None, Kind::Ghost);
+        c = c.push(Space::with_height(10)).push(if self.importing {
+            row![go, close].spacing(8)
+        } else {
+            row![go.on_press(TransferMessage::Import), close.on_press(TransferMessage::CloseBundle)].spacing(8)
+        });
         if !self.import_log.is_empty() {
-            c = c.push(Space::with_height(10)).push(result_lines(self.import_log.iter().map(|s| s.as_str())));
+            c = c.push(Space::with_height(8)).push(result_lines(self.import_log.iter().map(|s| s.as_str())));
         }
         c.into()
     }
@@ -716,138 +647,108 @@ impl TransferState {
         let busy = self.sending.running;
 
         let mut c = column![
-            text("다른 PC로 보내기 (같은 네트워크)").size(16),
-            Space::with_height(4),
-            text("바뀐 파일만 보냅니다. node_modules·venv 같은 의존성 폴더는 빼고 보내니 받은 PC에서 패키지를 설치하세요.")
-                .size(12)
-                .color(muted()),
-            Space::with_height(14),
-            row![
-                text("보낼 것").size(13).width(80),
-                pick_list(scopes, Some(self.scope.clone()), TransferMessage::ScopeSelected).text_size(13),
-            ]
-            .align_y(iced::Alignment::Center),
+            card_title(Icon::Send, "다른 PC로 보내기"),
+            muted("바뀐 파일만 보냅니다. node_modules·venv 같은 의존성 폴더는 빼니 받은 PC에서 패키지를 설치하세요."),
             Space::with_height(10),
-        ];
+            label("보낼 것"),
+            pick_list(scopes, Some(self.scope.clone()), TransferMessage::ScopeSelected)
+                .text_size(13)
+                .padding([8, 12])
+                .width(Length::Fill)
+                .style(theme::pick_style),
+            Space::with_height(6),
+        ]
+        .spacing(4);
 
         // 받는 PC
-        let mut find = button(text(if self.searching { "찾는 중…" } else { "받는 PC 찾기" }).size(12)).padding([6, 12]);
-        if !self.searching && !busy {
-            find = find.on_press(TransferMessage::FindPeers);
-        }
-        let mut peers_row = row![text("받는 PC").size(13).width(80), find].spacing(8).align_y(iced::Alignment::Center);
-        for (i, p) in self.peers.iter().enumerate() {
-            let selected = self.peer_addr == p.addr.ip().to_string();
-            peers_row = peers_row.push(
-                button(text(format!("{} ({})", p.name, os_label(&p.os))).size(12))
-                    .on_press(TransferMessage::PickPeer(i))
-                    .padding([6, 12])
-                    .style(move |_, _| button::Style {
-                        background: Some(iced::Background::Color(if selected {
-                            Color::from_rgb(0.2, 0.4, 0.6)
-                        } else {
-                            Color::from_rgb(0.2, 0.2, 0.25)
-                        })),
-                        border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                        text_color: Color::WHITE,
-                        ..Default::default()
-                    }),
+        let find = btn(if self.searching { "찾는 중…" } else { "찾기" }, Some(Icon::Search), Kind::Flat);
+        let find = if !self.searching && !busy { find.on_press(TransferMessage::FindPeers) } else { find };
+        let mut peers = row![label("받는 PC"), Space::with_width(Length::Fill), find].spacing(6).align_y(iced::Alignment::Center);
+        for (i, pe) in self.peers.iter().enumerate() {
+            let selected = self.peer_addr == pe.addr.ip().to_string();
+            peers = peers.push(
+                theme::chip_btn(format!("{} · {}", pe.name, os_label(&pe.os)), if selected { Kind::Primary } else { Kind::Flat })
+                    .on_press(TransferMessage::PickPeer(i)),
             );
         }
-        c = c.push(peers_row).push(Space::with_height(8)).push(
+        c = c.push(peers).push(
             row![
-                text("").width(80),
-                text_input("또는 IP 직접 입력 (예: 192.168.0.12)", &self.peer_addr)
-                    .on_input(TransferMessage::PeerAddrChanged)
-                    .size(13)
-                    .padding(6)
-                    .width(260),
-                Space::with_width(16),
-                text("코드").size(13),
-                text_input("받는 PC의 6자리", &self.code)
-                    .on_input(TransferMessage::CodeChanged)
-                    .size(13)
-                    .padding(6)
-                    .width(140),
+                input("IP (예: 192.168.0.12)", &self.peer_addr).on_input(TransferMessage::PeerAddrChanged),
+                container(input("코드 6자리", &self.code).on_input(TransferMessage::CodeChanged)).width(120),
             ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
+            .spacing(8),
         );
         if !self.searching && self.peers.is_empty() {
-            c = c.push(
-                text("받는 PC에서 아래 [받기 대기]를 먼저 누르세요. 찾지 못하면 그 PC의 IP를 직접 입력하세요.")
-                    .size(12)
-                    .color(muted()),
-            );
+            c = c.push(muted("받는 PC에서 [받기 대기]를 먼저 누르세요. 찾지 못하면 IP를 직접 입력하세요."));
         }
 
         let ready = !busy && self.code.len() == 6 && !self.peer_addr.trim().is_empty();
-        let mut go = primary_button(if busy { "보내는 중…" } else { "보내기" });
-        if ready {
-            go = go.on_press(TransferMessage::Send);
-        }
-        c = c.push(Space::with_height(12)).push(go);
-        c = c.push(job_view(&self.sending));
-        c.into()
+        let go = btn(if busy { "보내는 중…" } else { "보내기" }, Some(Icon::Send), Kind::Primary);
+        c = c.push(Space::with_height(8)).push(if ready { go.on_press(TransferMessage::Send) } else { go });
+        c.push(job_view(&self.sending)).into()
     }
 
     fn receive_view(&self) -> Element<'_, TransferMessage> {
-        let mut c = column![
-            text("이 PC에서 받기").size(16),
-            Space::with_height(4),
-            text("받기 대기를 누르면 코드가 나옵니다. 보내는 PC에 그 코드를 입력하세요. 코드는 한 번만 쓸 수 있습니다.")
-                .size(12)
-                .color(muted()),
-            Space::with_height(12),
-        ];
         let waiting = self.recv_stop.is_some();
-        c = c.push(
-            checkbox("이미 있는 프로젝트·DB, 이 PC가 더 최신인 파일도 보내는 쪽 기준으로 덮어쓰기", self.recv_overwrite)
-                .on_toggle_maybe((!waiting).then_some(TransferMessage::ToggleRecvOverwrite))
-                .size(14)
-                .text_size(13),
-        );
-        let btn = if waiting {
-            button(text("멈추기").size(13)).padding([8, 16]).on_press(TransferMessage::StopReceive)
+        let mut c = column![
+            card_title(Icon::Download, "이 PC에서 받기"),
+            muted("받기 대기를 누르면 코드가 나옵니다. 보내는 PC에 그 코드를 입력하세요. 코드는 한 번만 쓸 수 있습니다."),
+            Space::with_height(10),
+            check("이미 있는 것도 보내는 쪽 기준으로 덮어쓰기", self.recv_overwrite)
+                .on_toggle_maybe((!waiting).then_some(TransferMessage::ToggleRecvOverwrite)),
+            muted("프로젝트·DB, 그리고 이 PC 쪽이 더 최신인 파일까지"),
+            Space::with_height(8),
+        ]
+        .spacing(4);
+        c = c.push(if waiting {
+            btn("멈추기", Some(Icon::Square), Kind::Danger).on_press(TransferMessage::StopReceive)
         } else {
-            primary_button("받기 대기").on_press(TransferMessage::StartReceive)
-        };
-        c = c.push(Space::with_height(12)).push(btn);
+            btn("받기 대기", Some(Icon::Wifi), Kind::Primary).on_press(TransferMessage::StartReceive)
+        });
 
         if let Some((code, name)) = &self.recv_code {
             if self.receiving.status.is_empty() {
-                c = c.push(Space::with_height(14)).push(
+                c = c.push(Space::with_height(10)).push(theme::inset(
                     row![
                         column![
-                            text("코드").size(12).color(muted()),
-                            text(format!("{} {}", &code[..3], &code[3..])).size(34).color(Color::from_rgb(0.4, 0.8, 1.0)),
-                        ],
-                        Space::with_width(30),
+                            muted("코드"),
+                            text(format!("{} {}", &code[..3], &code[3..])).size(34).font(theme::BOLD).color(p().primary_fg),
+                        ]
+                        .width(Length::Fill),
                         column![
-                            text("이 PC").size(12).color(muted()),
-                            text(name).size(16),
-                            text(format!("포트 {TRANSFER_PORT}")).size(11).color(muted()),
-                        ],
+                            muted("이 PC"),
+                            text(name.clone()).size(15).font(theme::SEMIBOLD).color(p().fg),
+                            muted(format!("포트 {TRANSFER_PORT}")),
+                        ]
+                        .align_x(iced::Alignment::End),
                     ]
                     .align_y(iced::Alignment::Center),
-                );
+                ));
             }
         }
-        c = c.push(job_view(&self.receiving));
-        c.into()
+        c.push(job_view(&self.receiving)).into()
     }
 
     fn history_view(&self) -> Element<'_, TransferMessage> {
-        let mut c = column![text("최근 이전 기록").size(16), Space::with_height(10)].spacing(3);
         if self.history.is_empty() {
-            c = c.push(text("아직 다른 PC와 주고받은 기록이 없습니다.").size(12).color(muted()));
+            return muted("아직 다른 PC와 주고받은 기록이 없습니다.").into();
         }
-        for l in &self.history {
-            let color = if l.contains("일부 실패") { amber() } else { Color::from_rgb(0.75, 0.75, 0.8) };
-            c = c.push(text(l).size(12).color(color));
-        }
-        c.into()
+        self.history
+            .iter()
+            .fold(column![].spacing(6), |c, l| {
+                let tone = if l.contains("일부 실패") { Tone::Warning } else { Tone::Success };
+                c.push(row![theme::dot(tone), text(l).size(12).color(p().fg2)].spacing(8).align_y(iced::Alignment::Center))
+            })
+            .into()
     }
+}
+
+fn card_title<'a>(i: Icon, t: &'a str) -> Element<'a, TransferMessage> {
+    row![icon(i, 15.0, p().fg2), theme::title(t)].spacing(8).align_y(iced::Alignment::Center).into()
+}
+
+fn label<'a>(t: &'a str) -> text::Text<'a, iced::Theme> {
+    text(t).size(12).font(theme::MEDIUM).color(p().fg3)
 }
 
 /// "192.168.0.12" 또는 "192.168.0.12:47801"
@@ -859,29 +760,25 @@ fn parse_addr(s: &str) -> Option<SocketAddr> {
 }
 
 fn job_view(job: &LanJob) -> Element<'_, TransferMessage> {
-    let mut c = column![].spacing(4);
+    let mut c = column![].spacing(6);
     if !job.status.is_empty() {
-        c = c.push(Space::with_height(10)).push(text(&job.status).size(13));
+        c = c.push(Space::with_height(6)).push(theme::status(job.status.clone(), Tone::Primary));
     }
     if let Some((files, done, total)) = job.progress {
         if total > 0 {
-            c = c.push(progress_bar(0.0..=total as f32, done as f32).height(8)).push(
-                text(format!("{} / {} · 파일 {files}개 완료", human_bytes(done), human_bytes(total)))
-                    .size(11)
-                    .color(muted()),
-            );
+            c = c.push(theme::progress(total as f32, done as f32, Tone::Primary)).push(muted(format!(
+                "{} / {} · 파일 {files}개 완료",
+                human_bytes(done),
+                human_bytes(total)
+            )));
         }
     }
     if !job.log.is_empty() {
         c = c.push(result_lines(job.log.iter().map(|s| s.as_str())));
     }
     match &job.result {
-        Some(Ok(lines)) => {
-            c = c.push(Space::with_height(8)).push(result_lines(lines.iter().map(|s| s.as_str())));
-        }
-        Some(Err(e)) => {
-            c = c.push(Space::with_height(8)).push(text(e).size(13).color(red()));
-        }
+        Some(Ok(lines)) => c = c.push(Space::with_height(4)).push(result_lines(lines.iter().map(|s| s.as_str()))),
+        Some(Err(e)) => c = c.push(Space::with_height(4)).push(result_line(format!("✗ {e}"))),
         None => {}
     }
     c.into()
@@ -897,42 +794,5 @@ fn os_label(os: &str) -> &str {
 }
 
 fn result_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Element<'a, TransferMessage> {
-    let mut col = column![].spacing(4);
-    for l in lines {
-        col = col.push(super::status_line(l));
-    }
-    col.into()
-}
-
-fn card<'a>(content: Element<'a, TransferMessage>) -> Element<'a, TransferMessage> {
-    container(content)
-        .padding(20)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
-            border: iced::Border {
-                radius: 10.0.into(),
-                color: Color::from_rgb(0.2, 0.2, 0.25),
-                width: 1.0,
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
-fn primary_button(label: &str) -> button::Button<'_, TransferMessage> {
-    button(text(label).size(13)).padding([8, 16])
-}
-
-fn muted() -> Color {
-    Color::from_rgb(0.6, 0.6, 0.6)
-}
-fn green() -> Color {
-    Color::from_rgb(0.45, 0.85, 0.5)
-}
-fn amber() -> Color {
-    Color::from_rgb(0.9, 0.7, 0.3)
-}
-fn red() -> Color {
-    Color::from_rgb(0.95, 0.4, 0.4)
+    lines.fold(column![].spacing(4), |c, l| c.push(result_line(l))).into()
 }

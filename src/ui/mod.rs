@@ -1,25 +1,30 @@
 mod services;
 mod projects;
 mod database;
+mod settings;
 mod transfer;
+pub mod theme;
 
 use iced::{
     keyboard,
-    widget::{button, column, container, row, text, Space},
-    Color, Element, Length, Subscription, Task,
+    widget::{column, container, row, scrollable, text, Space},
+    Background, Element, Length, Subscription, Task, Theme,
 };
 
 pub use services::ServicesMessage;
 pub use projects::ProjectsMessage;
 pub use database::DatabaseMessage;
+pub use settings::SettingsMessage;
 pub use transfer::TransferMessage;
+use theme::{Icon, Tone, p};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Tab {
     Services,
     Projects,
     Database,
     Transfer,
+    Settings,
 }
 
 #[derive(Debug, Clone)]
@@ -29,8 +34,7 @@ pub enum Message {
     Projects(ProjectsMessage),
     Database(DatabaseMessage),
     Transfer(TransferMessage),
-    #[allow(dead_code)]
-    RefreshServices,
+    Settings(SettingsMessage),
     FocusNext,
     FocusPrevious,
 }
@@ -41,10 +45,13 @@ pub struct App {
     projects: projects::ProjectsState,
     database: database::DatabaseState,
     transfer: transfer::TransferState,
+    settings: settings::SettingsState,
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
+        // 테마를 가장 먼저 정한다 (다른 화면의 색이 여기에 따라 결정된다)
+        let settings = settings::SettingsState::new();
         let (database, db_task) = database::DatabaseState::new();
         let (transfer, transfer_task) = transfer::TransferState::new();
         let app = Self {
@@ -53,6 +60,7 @@ impl App {
             projects: projects::ProjectsState::new(),
             database,
             transfer,
+            settings,
         };
         (
             app,
@@ -60,24 +68,25 @@ impl App {
                 db_task.map(Message::Database),
                 transfer_task.map(Message::Transfer),
                 // 앱을 켤 때마다 만료가 다가온 인증서를 갱신한다
-                Task::done(Message::Services(ServicesMessage::RenewCerts)),
+                Task::done(Message::Settings(SettingsMessage::RenewCerts)),
             ]),
         )
+    }
+
+    pub fn theme(&self) -> Theme {
+        theme::iced_theme()
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::TabSelected(tab) => {
+                if tab == Tab::Services {
+                    self.services.refresh();
+                }
                 self.active_tab = tab;
                 Task::none()
             }
-            Message::RefreshServices => {
-                self.services.refresh();
-                Task::none()
-            }
-            Message::Services(msg) => {
-                self.services.update(msg).map(Message::Services)
-            }
+            Message::Services(msg) => self.services.update(msg).map(Message::Services),
             Message::Projects(msg) => {
                 // 더보기 → "다른 PC로 보내기": 백업·이전 탭으로 넘어가 그 프로젝트를 골라 둔다
                 if let ProjectsMessage::SendToPc(id) = &msg {
@@ -89,12 +98,9 @@ impl App {
                 }
                 self.projects.update(msg).map(Message::Projects)
             }
-            Message::Database(msg) => {
-                self.database.update(msg).map(Message::Database)
-            }
+            Message::Database(msg) => self.database.update(msg).map(Message::Database),
             Message::Transfer(msg) => {
-                // 가져오기로 프로젝트가 바뀌면 프로젝트 탭 목록도 다시 읽는다
-                // 받기가 끝나도 프로젝트 목록(과 이전 기록 표시)을 다시 읽는다
+                // 가져오기·받기·보내기가 끝나면 프로젝트 목록(과 이전 기록 표시)을 다시 읽는다
                 let imported = matches!(
                     msg,
                     TransferMessage::Imported(_)
@@ -108,6 +114,7 @@ impl App {
                 }
                 task
             }
+            Message::Settings(msg) => self.settings.update(msg).map(Message::Settings),
             Message::FocusNext => iced::widget::focus_next(),
             Message::FocusPrevious => iced::widget::focus_previous(),
         }
@@ -119,7 +126,10 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         // 앱을 오래 켜 두는 경우를 위해 6시간마다 인증서 만료를 확인한다
         let renew = iced::time::every(std::time::Duration::from_secs(6 * 3600))
-            .map(|_| Message::Services(ServicesMessage::RenewCerts));
+            .map(|_| Message::Settings(SettingsMessage::RenewCerts));
+        // 테마가 "시스템"이면 OS 의 다크/라이트 전환을 따라간다
+        let system_theme = iced::time::every(std::time::Duration::from_secs(5))
+            .map(|_| Message::Settings(SettingsMessage::CheckSystemTheme));
         let keys = keyboard::on_key_press(|key, modifiers| match key {
             keyboard::Key::Named(keyboard::key::Named::Tab) => {
                 if modifiers.shift() {
@@ -130,107 +140,94 @@ impl App {
             }
             _ => None,
         });
-        Subscription::batch([keys, renew])
+        Subscription::batch([keys, renew, system_theme])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let sidebar = column![
-            sidebar_logo(),
-            Space::with_height(20),
-            tab_button("서비스", matches!(self.active_tab, Tab::Services), Message::TabSelected(Tab::Services)),
-            tab_button("프로젝트", matches!(self.active_tab, Tab::Projects), Message::TabSelected(Tab::Projects)),
-            tab_button("데이터베이스", matches!(self.active_tab, Tab::Database), Message::TabSelected(Tab::Database)),
-            tab_button("백업·이전", matches!(self.active_tab, Tab::Transfer), Message::TabSelected(Tab::Transfer)),
-        ]
-        .width(200)
-        .padding(12)
-        .spacing(4);
-
-        let sidebar = container(sidebar)
-            .style(|_| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.12))),
-                ..Default::default()
-            })
-            .height(Length::Fill);
-
         let content = match self.active_tab {
             Tab::Services => self.services.view().map(Message::Services),
             Tab::Projects => self.projects.view().map(Message::Projects),
             Tab::Database => self.database.view().map(Message::Database),
             Tab::Transfer => self.transfer.view().map(Message::Transfer),
+            Tab::Settings => self.settings.view().map(Message::Settings),
         };
 
-        let content = container(content)
-            .padding(24)
-            .width(Length::Fill)
-            .height(Length::Fill);
+        let content = container(scrollable(container(content).padding(iced::Padding {
+            top: 28.0,
+            bottom: 28.0,
+            left: 28.0,
+            right: 28.0,
+        })))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| container::Style { background: Some(Background::Color(p().app_bg)), ..Default::default() });
 
-        row![sidebar, content].into()
+        row![self.sidebar(), theme::vdivider(), content].into()
     }
-}
 
-fn sidebar_logo<'a>() -> Element<'a, Message> {
-    container(
-        text("LocalMan")
-            .size(20)
-            .color(Color::from_rgb(0.4, 0.8, 1.0)),
-    )
-    .padding([12, 8])
-    .into()
-}
+    fn sidebar(&self) -> Element<'_, Message> {
+        let nav = |i, label, tab: Tab| theme::nav_item(i, label, self.active_tab == tab, Message::TabSelected(tab));
 
-fn tab_button(label: &str, active: bool, msg: Message) -> Element<'_, Message> {
-    let bg = if active {
-        Color::from_rgb(0.2, 0.4, 0.6)
-    } else {
-        Color::TRANSPARENT
-    };
+        let logo = row![
+            container(theme::icon(Icon::Server, 18.0, p().on_primary))
+                .padding(8)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(p().primary)),
+                    border: iced::Border { radius: 9.0.into(), ..Default::default() },
+                    ..Default::default()
+                }),
+            column![
+                text("LocalMan").size(16).font(theme::BOLD).color(p().fg),
+                text(concat!("v", env!("CARGO_PKG_VERSION"))).size(11).color(p().fg4),
+            ],
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center);
 
-    button(
-        text(label)
-            .size(14)
-            .width(Length::Fill),
-    )
-    .on_press(msg)
-    .width(Length::Fill)
-    .padding([10, 14])
-    .style(move |_, _| button::Style {
-        background: Some(iced::Background::Color(bg)),
-        border: iced::Border {
-            radius: 6.0.into(),
-            ..Default::default()
-        },
-        text_color: Color::WHITE,
-        ..Default::default()
-    })
-    .into()
-}
+        // 아래쪽 요약: 서비스 상태와 HTTPS
+        let mut summary = column![].spacing(6);
+        for (name, st) in self.services.summary() {
+            let (label, tone) = services::status_tone(st);
+            summary = summary.push(
+                row![
+                    theme::dot(tone),
+                    text(name).size(12).color(p().fg3).width(Length::Fill),
+                    text(label).size(12).font(theme::MEDIUM).color(if tone == Tone::Success { p().fg2 } else { p().fg4 }),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        let (https_label, https_tone) = settings::https_summary(self.settings.https_on());
+        summary = summary.push(
+            row![theme::dot(https_tone), text(https_label).size(12).color(p().fg3)]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+        );
 
-/// "✓ …" / "✗ …" / "· …" 결과 줄을 색 점 + 글자로 그린다.
-/// (나눔고딕에 ✓·✗ 글리프가 없어 그대로 쓰면 네모로 깨진다)
-pub(crate) fn status_line<'a, M: 'a>(line: &'a str) -> Element<'a, M> {
-    let (color, rest) = if let Some(r) = line.strip_prefix('✓') {
-        (Color::from_rgb(0.45, 0.85, 0.5), r)
-    } else if let Some(r) = line.strip_prefix('✗') {
-        (Color::from_rgb(0.95, 0.4, 0.4), r)
-    } else if let Some(r) = line.strip_prefix('·') {
-        (Color::from_rgb(0.6, 0.6, 0.6), r)
-    } else {
-        (Color::from_rgb(0.6, 0.6, 0.6), line)
-    };
-    let dot = container(Space::with_width(6)).width(6).height(6).style(move |_| container::Style {
-        background: Some(iced::Background::Color(color)),
-        border: iced::Border { radius: 3.0.into(), ..Default::default() },
-        ..Default::default()
-    });
-    row![
-        column![Space::with_height(5), dot],
-        text(rest.trim_start()).size(12).color(if color == Color::from_rgb(0.6, 0.6, 0.6) {
-            color
-        } else {
-            Color::from_rgb(0.85, 0.85, 0.88)
-        }),
-    ]
-    .spacing(7)
-    .into()
+        let col = column![
+            logo,
+            Space::with_height(22),
+            nav(Icon::Server, "서비스", Tab::Services),
+            nav(Icon::Folder, "프로젝트", Tab::Projects),
+            nav(Icon::Database, "데이터베이스", Tab::Database),
+            nav(Icon::ArrowLeftRight, "백업·이전", Tab::Transfer),
+            nav(Icon::Settings, "설정", Tab::Settings),
+            Space::with_height(Length::Fill),
+            summary,
+        ]
+        .spacing(4)
+        .padding(iced::Padding { top: 20.0, bottom: 20.0, left: 14.0, right: 14.0 })
+        .width(220)
+        .height(Length::Fill);
+
+        container(col)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Background::Color(p().chrome)),
+                border: iced::Border { width: 0.0, ..Default::default() },
+                ..Default::default()
+            })
+            .into()
+    }
 }

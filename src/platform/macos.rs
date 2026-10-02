@@ -402,6 +402,15 @@ pub fn init_env() {
     unsafe { std::env::set_var("PATH", paths.join(":")) };
 }
 
+/// OS 가 다크 모드인지 (시스템 설정 > 화면 모드)
+pub fn system_prefers_dark() -> bool {
+    Command::new("defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "Dark")
+        .unwrap_or(false)
+}
+
 /// 기본 브라우저로 URL을 연다.
 pub fn open_url(url: &str) {
     let _ = Command::new("open").arg(url).spawn();

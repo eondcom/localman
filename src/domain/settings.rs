@@ -4,11 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemeMode {
+    Dark,
+    Light,
+    /// OS 설정을 따른다
+    #[default]
+    System,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     /// 모든 프로젝트를 https 로도 서빙할지 (로컬 인증기관 인증서)
     #[serde(default)]
     pub https: bool,
+    #[serde(default)]
+    pub theme: ThemeMode,
 }
 
 pub(crate) fn data_dir() -> PathBuf {

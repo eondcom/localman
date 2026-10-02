@@ -302,6 +302,18 @@ pub fn process_alive(pid: u32) -> bool {
 /// GUI로 실행해도 셸과 같은 환경을 쓰도록 맞춘다. 리눅스 데스크톱은 이미 그렇다.
 pub fn init_env() {}
 
+/// OS 가 다크 모드인지. GNOME 계열은 color-scheme, 그 밖에는 GTK 테마 이름으로 짐작한다.
+pub fn system_prefers_dark() -> bool {
+    let get = |key: &str| {
+        Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", key])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+            .unwrap_or_default()
+    };
+    get("color-scheme").contains("dark") || get("gtk-theme").contains("dark")
+}
+
 /// 기본 브라우저로 URL을 연다.
 pub fn open_url(url: &str) {
     let _ = Command::new("xdg-open").arg(url).spawn();

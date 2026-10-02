@@ -139,7 +139,14 @@ cargo build --release
 
 맥에서 리눅스 대상 타입 검사: `./scripts/check-linux.sh`
 
-`assets/NanumGothic.ttf`는 저장소에 없다(.gitignore). 빌드 전에 나눔고딕 TTF를 그 위치에 둔다.
+## 디자인
+
+맥북 팬 관리(mac-fan-control)와 같은 EOND UI App 0.2 체계를 쓴다 — `src/ui/theme.rs`.
+
+- 테두리 대신 밝기로 층을 나눈다 (바탕 → 카드 c1 → 겹침 c2 → 선택 c3). 색은 토큰으로만 쓴다 (HeroUI 팔레트)
+- 다크/라이트/시스템 (설정 탭). 시스템이면 맥은 화면 모드, 리눅스는 GNOME color-scheme 을 따른다
+- 글꼴 Pretendard, 아이콘 Lucide 를 앱에 넣는다 (`assets/fonts/`, 각 LICENSE 포함).
+  iced 가 화면을 직접 그리므로 맥·리눅스가 같은 화면이다 (창 테두리·파일 선택 창만 OS 것)
 
 ## 기술 스택
 
