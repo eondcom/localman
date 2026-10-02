@@ -14,6 +14,8 @@ const KEEP: usize = 500;
 pub enum Direction {
     Sent,
     Received,
+    /// 실서버로 배포 (peer 는 서버 주소)
+    Deployed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +115,7 @@ pub fn summary_line(r: &TransferRecord) -> String {
     let (arrow, verb) = match r.direction {
         Direction::Sent => ("↗", "(으)로 보냄"),
         Direction::Received => ("↙", "에서 받음"),
+        Direction::Deployed => ("↑", "에 배포"),
     };
     let status = if r.ok { "" } else { " (일부 실패)" };
     format!("{arrow} {} {}{verb}{status} · 파일 {}개", format_time(r.at), r.peer, r.files)

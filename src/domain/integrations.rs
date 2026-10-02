@@ -32,6 +32,7 @@ pub fn ensure_adminer_site() -> Result<String, String> {
         port: 80,
         start_command: String::new(),
         app_dir: String::new(),
+        db: None,
     };
     write_vhost(&pma)?;
     update_hosts(&pma.domain, true)?;

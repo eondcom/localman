@@ -7,6 +7,12 @@ use super::theme::{
     segmented, status,
 };
 use crate::domain::settings::load_settings;
+use crate::domain::DbEngine;
+use crate::domain::deploy::{DeployTarget, default_target, load_target, preview_files, push_database, save_target, test_connection, upload_files};
+use crate::domain::lan::human_bytes;
+use crate::domain::project::{ProjectDb, set_project_db};
+use crate::domain::usage::{SiteUsage, detect_db, site_usage};
+use std::collections::HashMap;
 use crate::platform::open_url;
 use crate::domain::{
     VhostProject, ProjectType, ServerStatus,
@@ -98,12 +104,108 @@ pub enum ProjectsMessage {
     CloseRxPasswordModal,
     // 새 프로젝트 폼 열기/닫기
     ToggleAddForm,
+    // 도메인·이름 검색
+    SearchChanged(String),
+    // 사이트별 용량
+    ComputeUsage,
+    UsageComputed(Vec<(String, SiteUsage)>),
+    // 수정 화면의 DB 지정 (비우면 자동 감지)
+    EditDbNameChanged(String),
+    EditDbEngineSelected(DbEngine),
+    // 서버 배포
+    OpenDeploy(String),
+    CloseDeploy,
+    DeployField(DeployField, String),
+    DeploySave,
+    DeployTest,
+    DeployPreview,
+    DeployUpload,
+    DeployDbAsk,
+    DeployDbCancel,
+    DeployDbConfirm,
+    DeployDone(Result<Vec<String>, String>),
     /// 도메인을 브라우저로 연다
     OpenSite(String),
     // 더보기(⋯) 메뉴
     ToggleMenu(String),
     /// 다른 PC로 보내기 — App 이 백업·이전 탭으로 넘겨 처리한다
     SendToPc(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DeployField {
+    Host,
+    Port,
+    User,
+    Key,
+    Path,
+    Excludes,
+    DbHost,
+    DbPort,
+    DbUser,
+    DbPassword,
+    DbName,
+}
+
+/// 서버 배포 패널의 입력값과 진행 상태
+struct DeployForm {
+    id: String,
+    host: String,
+    port: String,
+    user: String,
+    key: String,
+    path: String,
+    excludes: String,
+    db_host: String,
+    db_port: String,
+    db_user: String,
+    db_password: String,
+    db_name: String,
+    busy: Option<&'static str>,
+    log: Vec<String>,
+    /// DB 덮어쓰기 확인 중
+    confirm_db: bool,
+}
+
+impl DeployForm {
+    fn from_target(id: &str, t: &DeployTarget) -> Self {
+        Self {
+            id: id.to_string(),
+            host: t.ssh_host.clone(),
+            port: t.ssh_port.to_string(),
+            user: t.ssh_user.clone(),
+            key: t.ssh_key.clone(),
+            path: t.remote_path.clone(),
+            excludes: t.excludes.join(", "),
+            db_host: t.db_host.clone(),
+            db_port: if t.db_port == 0 { String::new() } else { t.db_port.to_string() },
+            db_user: t.db_user.clone(),
+            db_password: t.db_password.clone(),
+            db_name: t.db_name.clone(),
+            busy: None,
+            log: Vec::new(),
+            confirm_db: false,
+        }
+    }
+
+    fn to_target(&self) -> Result<DeployTarget, String> {
+        let port = |s: &str, d: u16| -> Result<u16, String> {
+            if s.trim().is_empty() { Ok(d) } else { s.trim().parse().map_err(|_| format!("포트가 숫자가 아닙니다: {s}")) }
+        };
+        Ok(DeployTarget {
+            ssh_host: self.host.trim().to_string(),
+            ssh_port: port(&self.port, 22)?,
+            ssh_user: self.user.trim().to_string(),
+            ssh_key: self.key.trim().to_string(),
+            remote_path: self.path.trim().to_string(),
+            excludes: self.excludes.split(',').map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect(),
+            db_host: self.db_host.trim().to_string(),
+            db_port: port(&self.db_port, 3306)?,
+            db_user: self.db_user.trim().to_string(),
+            db_password: self.db_password.clone(),
+            db_name: self.db_name.trim().to_string(),
+        })
+    }
 }
 
 pub struct ProjectsState {
@@ -133,6 +235,12 @@ pub struct ProjectsState {
     server_message: Option<Result<String, String>>,
     // 새 프로젝트 폼이 펼쳐져 있는지
     adding: bool,
+    search: String,
+    usage: HashMap<String, SiteUsage>,
+    usage_loading: bool,
+    edit_db_name: String,
+    edit_db_engine: DbEngine,
+    deploy: Option<DeployForm>,
     // 더보기 메뉴가 열린 project id
     menu_open: Option<String>,
     // project id → (마지막 이전 한 줄, 최근 이전 기록 줄들). 그릴 때마다 파일을 읽지 않게 미리 만든다
@@ -164,6 +272,12 @@ impl ProjectsState {
             transfers: load_transfers(&projects),
             menu_open: None,
             adding: false,
+            search: String::new(),
+            usage: HashMap::new(),
+            usage_loading: false,
+            edit_db_name: String::new(),
+            edit_db_engine: DbEngine::MariaDb,
+            deploy: None,
             projects,
             new_name: String::new(),
             new_id: String::new(),
@@ -189,6 +303,145 @@ impl ProjectsState {
         match msg {
             ProjectsMessage::Refresh => {
                 self.projects = list_projects();
+                self.transfers = load_transfers(&self.projects);
+                Task::none()
+            }
+            ProjectsMessage::SearchChanged(v) => {
+                self.search = v;
+                Task::none()
+            }
+            ProjectsMessage::ComputeUsage => {
+                if self.usage_loading {
+                    return Task::none();
+                }
+                self.usage_loading = true;
+                let projects = self.projects.clone();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            projects.iter().map(|p| (p.id.clone(), site_usage(p))).collect::<Vec<_>>()
+                        })
+                        .await
+                        .unwrap_or_default()
+                    },
+                    ProjectsMessage::UsageComputed,
+                )
+            }
+            ProjectsMessage::UsageComputed(list) => {
+                self.usage_loading = false;
+                self.usage = list.into_iter().collect();
+                Task::none()
+            }
+            ProjectsMessage::EditDbNameChanged(v) => {
+                self.edit_db_name = v;
+                Task::none()
+            }
+            ProjectsMessage::EditDbEngineSelected(e) => {
+                self.edit_db_engine = e;
+                Task::none()
+            }
+            ProjectsMessage::OpenDeploy(id) => {
+                if let Some(p) = self.projects.iter().find(|p| p.id == id) {
+                    let t = load_target(&id).unwrap_or_else(|| default_target(p));
+                    self.deploy = Some(DeployForm::from_target(&id, &t));
+                }
+                self.menu_open = None;
+                Task::none()
+            }
+            ProjectsMessage::CloseDeploy => {
+                self.deploy = None;
+                Task::none()
+            }
+            ProjectsMessage::DeployField(f, v) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    let slot = match f {
+                        DeployField::Host => &mut d.host,
+                        DeployField::Port => &mut d.port,
+                        DeployField::User => &mut d.user,
+                        DeployField::Key => &mut d.key,
+                        DeployField::Path => &mut d.path,
+                        DeployField::Excludes => &mut d.excludes,
+                        DeployField::DbHost => &mut d.db_host,
+                        DeployField::DbPort => &mut d.db_port,
+                        DeployField::DbUser => &mut d.db_user,
+                        DeployField::DbPassword => &mut d.db_password,
+                        DeployField::DbName => &mut d.db_name,
+                    };
+                    *slot = v;
+                    d.confirm_db = false;
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeploySave => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.log = match d.to_target().and_then(|t| save_target(&d.id, &t)) {
+                        Ok(()) => vec!["✓ 서버 정보를 저장했습니다".into()],
+                        Err(e) => vec![format!("✗ {e}")],
+                    };
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeployTest
+            | ProjectsMessage::DeployPreview
+            | ProjectsMessage::DeployUpload
+            | ProjectsMessage::DeployDbConfirm => {
+                let Some(d) = self.deploy.as_mut() else { return Task::none() };
+                let Some(p) = self.projects.iter().find(|p| p.id == d.id).cloned() else { return Task::none() };
+                let t = match d.to_target() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        d.log = vec![format!("✗ {e}")];
+                        return Task::none();
+                    }
+                };
+                // 실행할 때마다 입력값을 저장해 둔다 (다음에 다시 쓰도록)
+                if let Err(e) = save_target(&d.id, &t) {
+                    d.log = vec![format!("✗ {e}")];
+                    return Task::none();
+                }
+                d.confirm_db = false;
+                d.log.clear();
+                let (label, job): (&'static str, Box<dyn FnOnce() -> Result<Vec<String>, String> + Send>) = match msg {
+                    ProjectsMessage::DeployTest => ("연결 시험 중…", Box::new(move || Ok(test_connection(&p, &t)))),
+                    ProjectsMessage::DeployPreview => ("올라갈 파일을 보는 중…", Box::new(move || {
+                        preview_files(&p, &t).map(|files| {
+                            let mut log = vec![format!("✓ 올라갈 파일 {}개 (서버에만 있는 파일은 지우지 않음)", files.len())];
+                            log.extend(files.iter().take(40).map(|f| format!("· {f}")));
+                            if files.len() > 40 {
+                                log.push(format!("· … 외 {}개", files.len() - 40));
+                            }
+                            log
+                        })
+                    })),
+                    ProjectsMessage::DeployUpload => ("파일 올리는 중…", Box::new(move || upload_files(&p, &t))),
+                    _ => ("원격 DB 백업 후 넣는 중…", Box::new(move || push_database(&p, &t))),
+                };
+                d.busy = Some(label);
+                Task::perform(
+                    async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) },
+                    ProjectsMessage::DeployDone,
+                )
+            }
+            ProjectsMessage::DeployDbAsk => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.confirm_db = true;
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeployDbCancel => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.confirm_db = false;
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeployDone(r) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.busy = None;
+                    d.log = match r {
+                        Ok(l) => l,
+                        Err(e) => vec![format!("✗ {e}")],
+                    };
+                }
                 self.transfers = load_transfers(&self.projects);
                 Task::none()
             }
@@ -282,6 +535,7 @@ impl ProjectsState {
                     port,
                     start_command: self.new_start_command.clone(),
                     app_dir: self.new_app_dir.clone(),
+                    db: None,
                 };
                 let added_id = project.id.clone();
                 let needs_deps = project.project_type.is_proxied();
@@ -351,6 +605,16 @@ impl ProjectsState {
                     self.edit_start_command = p.start_command.clone();
                     self.edit_app_dir = p.app_dir.clone();
                     self.edit_type = p.project_type.clone();
+                    match &p.db {
+                        Some(db) => {
+                            self.edit_db_name = db.name.clone();
+                            self.edit_db_engine = db.engine;
+                        }
+                        None => {
+                            self.edit_db_name.clear();
+                            self.edit_db_engine = detect_db(p).map(|d| d.engine).unwrap_or(DbEngine::MariaDb);
+                        }
+                    }
                     self.editing_id = Some(id);
                     self.error = None;
                 }
@@ -401,6 +665,11 @@ impl ProjectsState {
                     self.edit_app_dir.clone(),
                 ) {
                     Ok(_) => {
+                        let db = (!self.edit_db_name.trim().is_empty())
+                            .then(|| ProjectDb { engine: self.edit_db_engine, name: self.edit_db_name.trim().to_string() });
+                        if let Err(e) = set_project_db(&id, db) {
+                            self.error = Some(e);
+                        }
                         self.editing_id = None;
                         self.error = None;
                         self.projects = list_projects();
@@ -606,25 +875,87 @@ impl ProjectsState {
                 .align_x(iced::Alignment::Center)
                 .width(Length::Fill),
             ));
-        } else {
-            let items: Vec<Element<ProjectsMessage>> = self
-                .projects
-                .iter()
-                .map(|p| {
-                    if editing_id == Some(p.id.as_str()) {
-                        project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command, &self.edit_app_dir, &self.edit_type)
-                    } else {
-                        let is_setting_up = self.setting_up.contains(&p.id);
-                        let transfer = self.transfers.get(&p.id);
-                        let menu = (self.menu_open.as_deref() == Some(p.id.as_str()))
-                            .then(|| transfer.map(|t| t.1.as_slice()).unwrap_or(&[]));
-                        project_row_view_with_state(p, editing_id.is_some(), is_setting_up, transfer.map(|t| t.0.as_str()), menu)
-                    }
-                })
-                .collect();
-            col = col.push(column(items).spacing(10));
+            return col.into();
         }
+
+        col = col.push(self.overview()).push(Space::with_height(12));
+
+        let q = self.search.trim().to_lowercase();
+        let shown: Vec<&VhostProject> = self
+            .projects
+            .iter()
+            .filter(|p| q.is_empty() || [&p.domain, &p.name, &p.id].iter().any(|s| s.to_lowercase().contains(&q)))
+            .collect();
+        if shown.is_empty() {
+            col = col.push(card(muted(format!("'{}'에 맞는 사이트가 없습니다", self.search.trim()))));
+        }
+        let mut list = column![].spacing(10);
+        for p_ in shown {
+            if editing_id == Some(p_.id.as_str()) {
+                list = list.push(project_row_editing(
+                    p_,
+                    &self.edit_name,
+                    &self.edit_path,
+                    &self.edit_start_command,
+                    &self.edit_app_dir,
+                    &self.edit_type,
+                    &self.edit_db_name,
+                    self.edit_db_engine,
+                ));
+                continue;
+            }
+            let transfer = self.transfers.get(&p_.id);
+            let menu = (self.menu_open.as_deref() == Some(p_.id.as_str())).then(|| transfer.map(|t| t.1.as_slice()).unwrap_or(&[]));
+            list = list.push(project_row_view_with_state(
+                p_,
+                editing_id.is_some(),
+                self.setting_up.contains(&p_.id),
+                transfer.map(|t| t.0.as_str()),
+                menu,
+                self.usage.get(&p_.id),
+            ));
+            if let Some(d) = self.deploy.as_ref().filter(|d| d.id == p_.id) {
+                list = list.push(deploy_panel(d));
+            }
+        }
+        col = col.push(list);
         col.into()
+    }
+
+    /// 검색창 + 전체 용량 요약
+    fn overview(&self) -> Element<'_, ProjectsMessage> {
+        let (files, deps, dbs) = self.usage.values().fold((0u64, 0u64, 0u64), |(f, d, b), u| {
+            (f + u.files, d + u.deps, b + u.db_bytes.unwrap_or(0))
+        });
+        let stat = |label: &'static str, value: String| -> Element<'_, ProjectsMessage> {
+            column![muted(label), text(value).size(20).font(theme::BOLD).color(p().fg)].spacing(2).into()
+        };
+        let summary: Element<ProjectsMessage> = if self.usage.is_empty() {
+            muted(if self.usage_loading { "용량을 재는 중…" } else { "[용량 계산]을 누르면 사이트별 파일·DB 크기를 잽니다" }).into()
+        } else {
+            row![
+                stat("사이트", format!("{}개", self.projects.len())),
+                stat("파일", human_bytes(files)),
+                stat("그중 의존성", human_bytes(deps)),
+                stat("DB", human_bytes(dbs)),
+                stat("합계", human_bytes(files + dbs)),
+            ]
+            .spacing(28)
+            .into()
+        };
+        let calc = btn(if self.usage_loading { "재는 중…" } else { "용량 계산" }, Some(Icon::HardDrive), Kind::Flat);
+        card(
+            column![
+                row![
+                    input("도메인·이름으로 찾기", &self.search).on_input(ProjectsMessage::SearchChanged).width(Length::Fill),
+                    if self.usage_loading { calc } else { calc.on_press(ProjectsMessage::ComputeUsage) },
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+                Space::with_height(14),
+                summary,
+            ],
+        )
     }
 
     fn add_form(&self) -> Element<'_, ProjectsMessage> {
@@ -737,6 +1068,7 @@ fn project_row_view_with_state<'a>(
     setting_up: bool,
     last_transfer: Option<&'a str>,
     menu: Option<&'a [String]>,
+    usage: Option<&'a SiteUsage>,
 ) -> Element<'a, ProjectsMessage> {
     let c = p();
     let id = p_.id.clone();
@@ -766,6 +1098,28 @@ fn project_row_view_with_state<'a>(
     ]
     .spacing(4)
     .width(Length::Fill);
+    if let Some(u) = usage {
+        let db = match (&u.db, u.db_bytes) {
+            (Some(d), Some(b)) => format!(" · DB {} {}", d.name, human_bytes(b)),
+            (Some(d), None) => format!(" · DB {} (크기 못 읽음)", d.name),
+            (None, _) => " · DB 없음".to_string(),
+        };
+        info = info.push(
+            row![
+                icon(Icon::HardDrive, 11.0, c.fg3),
+                text(format!(
+                    "파일 {} (의존성 {}){db} · 합계 {}",
+                    human_bytes(u.files),
+                    human_bytes(u.deps),
+                    human_bytes(u.total())
+                ))
+                .size(11)
+                .color(c.fg3),
+            ]
+            .spacing(5)
+            .align_y(iced::Alignment::Center),
+        );
+    }
     if let Some(t) = last_transfer {
         info = info.push(
             row![icon(Icon::History, 11.0, c.fg3), text(t).size(11).color(c.fg3)]
@@ -840,7 +1194,11 @@ fn with_menu<'a>(main: Element<'a, ProjectsMessage>, menu: Option<&'a [String]>,
         theme::divider(),
         Space::with_height(14),
         row![
-            btn("다른 PC로 보내기", Some(Icon::Send), Kind::Primary).on_press(ProjectsMessage::SendToPc(id)),
+            column![
+                btn("다른 PC로 보내기", Some(Icon::Send), Kind::Primary).on_press(ProjectsMessage::SendToPc(id.clone())),
+                btn("서버 배포", Some(Icon::Upload), Kind::Flat).on_press(ProjectsMessage::OpenDeploy(id)),
+            ]
+            .spacing(6),
             Space::with_width(24),
             history.width(Length::Fill),
         ]
@@ -857,8 +1215,11 @@ fn project_row_editing<'a>(
     edit_start_cmd: &'a str,
     edit_app_dir: &'a str,
     edit_type: &'a ProjectType,
+    edit_db_name: &'a str,
+    edit_db_engine: DbEngine,
 ) -> Element<'a, ProjectsMessage> {
     let needs_server = edit_type.is_proxied();
+    let detected = detect_db(p_).map(|d| d.name);
     let type_changed = *edit_type != p_.project_type;
 
     let mut form = column![
@@ -887,6 +1248,30 @@ fn project_row_editing<'a>(
         field(
             "하위 디렉토리 (선택)",
             input("예: app — 비우면 경로를 그대로 사용", edit_app_dir).on_input(ProjectsMessage::EditAppDirChanged).into(),
+            None,
+        ),
+        Space::with_height(12),
+        field(
+            "DB (용량 표시·서버 배포에 씀)",
+            row![
+                segmented(
+                    &[(DbEngine::MariaDb, "MariaDB"), (DbEngine::PostgreSql, "PostgreSQL")],
+                    &edit_db_engine,
+                    ProjectsMessage::EditDbEngineSelected,
+                ),
+                input(
+                    &match &detected {
+                        Some(n) => format!("비우면 자동 감지 ({n})"),
+                        None => "DB 이름 — 비우면 설정 파일에서 자동 감지".to_string(),
+                    },
+                    edit_db_name,
+                )
+                .on_input(ProjectsMessage::EditDbNameChanged)
+                .width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into(),
             None,
         ),
     ]
@@ -918,6 +1303,110 @@ fn project_row_editing<'a>(
         .spacing(8),
     );
     card(form)
+}
+
+/// 서버 배포 패널 (프로젝트 바로 아래에 열린다)
+fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
+    let inp = |ph: &str, value: &str, which: DeployField| input(ph, value).on_input(move |v| ProjectsMessage::DeployField(which, v));
+
+    let busy = d.busy.is_some();
+    let action = |label: &'static str, ic: Icon, kind: Kind, msg: ProjectsMessage| {
+        let b = btn(label, Some(ic), kind);
+        if busy { b } else { b.on_press(msg) }
+    };
+
+    let server = column![
+        theme::section_label("서버 (SSH 키 로그인)"),
+        row![
+            field("주소", inp("example.com", &d.host, DeployField::Host).into(), None),
+            container(field("포트", inp("22", &d.port, DeployField::Port).into(), None)).width(90),
+            container(field("사용자", inp("deploy", &d.user, DeployField::User).into(), None)).width(160),
+        ]
+        .spacing(10),
+        Space::with_height(8),
+        row![
+            field("웹 경로", inp("/var/www/site", &d.path, DeployField::Path).into(), None),
+            field("SSH 키 (선택)", inp("비우면 기본 키 (~/.ssh)", &d.key, DeployField::Key).into(), None),
+        ]
+        .spacing(10),
+        Space::with_height(8),
+        field(
+            "올리지 않을 것 (쉼표로 구분)",
+            inp(".git/, node_modules/, .env", &d.excludes, DeployField::Excludes).into(),
+            Some("서버에만 있는 파일은 지우지 않습니다. 서버의 .env·설정 파일이 덮이지 않게 여기에 넣으세요"),
+        ),
+    ];
+
+    let db = column![
+        theme::section_label("원격 DB (직접 접속)"),
+        row![
+            field("호스트", inp("db.example.com", &d.db_host, DeployField::DbHost).into(), None),
+            container(field("포트", inp("3306", &d.db_port, DeployField::DbPort).into(), None)).width(90),
+            field("DB 이름", inp("site", &d.db_name, DeployField::DbName).into(), None),
+        ]
+        .spacing(10),
+        Space::with_height(8),
+        row![
+            field("사용자", inp("site_user", &d.db_user, DeployField::DbUser).into(), None),
+            field("비밀번호", inp("", &d.db_password, DeployField::DbPassword).secure(true).into(), None),
+        ]
+        .spacing(10),
+    ];
+
+    let mut actions = row![
+        action("저장", Icon::Check, Kind::Flat, ProjectsMessage::DeploySave),
+        action("연결 시험", Icon::Zap, Kind::Flat, ProjectsMessage::DeployTest),
+        action("미리보기", Icon::Search, Kind::Flat, ProjectsMessage::DeployPreview),
+        action("파일 올리기", Icon::Upload, Kind::Primary, ProjectsMessage::DeployUpload),
+        action("DB 올리기", Icon::Database, Kind::Danger, ProjectsMessage::DeployDbAsk),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+    if let Some(label) = d.busy {
+        actions = actions.push(Space::with_width(8)).push(status(label, Tone::Primary));
+    }
+
+    let mut body = column![
+        row![
+            icon(Icon::Upload, 15.0, p().fg2),
+            text(format!("서버 배포 · {}", d.id)).size(15).font(theme::SEMIBOLD).color(p().fg),
+            Space::with_width(Length::Fill),
+            btn("닫기", Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseDeploy),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        Space::with_height(8),
+        server,
+        Space::with_height(12),
+        db,
+        Space::with_height(16),
+        actions,
+    ];
+
+    if d.confirm_db {
+        body = body.push(Space::with_height(12)).push(theme::inset(
+            column![
+                row![icon(Icon::Database, 14.0, p().danger_fg), text("운영 DB를 덮어씁니다").size(14).font(theme::SEMIBOLD).color(p().danger_fg)]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                muted(format!(
+                    "{}@{} 의 '{}' 내용을 이 PC의 DB로 바꿉니다. 넣기 직전에 원격 DB를 이 PC에 백업해 두지만, 그 사이 서버에 쌓인 데이터는 사라집니다.",
+                    d.db_user, d.db_host, d.db_name
+                )),
+                Space::with_height(6),
+                row![
+                    btn("덮어쓰기", Some(Icon::Database), Kind::Danger).on_press(ProjectsMessage::DeployDbConfirm),
+                    btn("취소", None, Kind::Ghost).on_press(ProjectsMessage::DeployDbCancel),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4),
+        ));
+    }
+    if !d.log.is_empty() {
+        body = body.push(Space::with_height(12)).push(d.log.iter().fold(column![].spacing(4), |c, l| c.push(result_line(l))));
+    }
+    card(body)
 }
 
 // 라이믹스 관리자 비번 변경 패널

@@ -69,6 +69,8 @@ impl App {
                 transfer_task.map(Message::Transfer),
                 // 앱을 켤 때마다 만료가 다가온 인증서를 갱신한다
                 Task::done(Message::Settings(SettingsMessage::RenewCerts)),
+                // 사이트별 용량은 폴더를 훑어야 하므로 시작할 때 한 번 백그라운드로 잰다
+                Task::done(Message::Projects(ProjectsMessage::ComputeUsage)),
             ]),
         )
     }

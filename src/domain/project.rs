@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+
+use super::database::DbEngine;
 use std::fs;
 use std::path::PathBuf;
 
@@ -43,6 +45,15 @@ pub struct VhostProject {
     /// 비어 있으면 path 자체를 사용한다. 예: 모노레포의 "app", Laravel의 "public"
     #[serde(default)]
     pub app_dir: String,
+    /// 이 사이트가 쓰는 DB. 용량 표시·배포에 쓴다. 없으면 설정 파일에서 자동 감지를 시도한다.
+    #[serde(default)]
+    pub db: Option<ProjectDb>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectDb {
+    pub engine: DbEngine,
+    pub name: String,
 }
 
 impl VhostProject {
@@ -147,6 +158,14 @@ pub fn update_project(
     write_vhost(&updated)?;
     eprintln!("[localman] 프로젝트 업데이트: {id} (type_changed={type_changed}, port={})", updated.port);
     Ok(())
+}
+
+/// 사이트와 DB 연결만 바꾼다 (vhost 는 그대로).
+pub fn set_project_db(id: &str, db: Option<ProjectDb>) -> Result<(), String> {
+    let mut list = list_projects();
+    let p = list.iter_mut().find(|p| p.id == id).ok_or_else(|| "프로젝트를 찾을 수 없습니다.".to_string())?;
+    p.db = db;
+    save_projects(&list)
 }
 
 pub fn remove_project(id: &str) -> Result<(), String> {

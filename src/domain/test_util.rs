@@ -45,5 +45,6 @@ pub fn project(t: ProjectType, path: &str, app_dir: &str, port: u16) -> VhostPro
         port,
         start_command: String::new(),
         app_dir: app_dir.into(),
+        db: None,
     }
 }

@@ -81,6 +81,26 @@ sudo ./scripts/linux/install-sudoers.sh
 sudo ./scripts/macos/install-sudoers.sh
 ```
 
+## 사이트 찾기·용량
+
+- 프로젝트 탭 위 검색창에서 도메인·이름·ID로 걸러낸다
+- [용량 계산]: 사이트마다 파일(그중 node_modules·venv 등 의존성 몫)·DB·합계, 맨 위에 전체 합계. 앱을 켤 때 한 번 잰다
+- 사이트의 DB는 수정 화면에서 지정한다. 비우면 라이믹스 `files/config/config.php`, `.env`(DB_DATABASE·DATABASE_URL)에서
+  자동으로 찾는다 (비밀번호는 읽지 않는다)
+
+## 서버 배포 (SSH)
+
+프로젝트 ⋯ → [서버 배포]. 서버(주소·포트·사용자·웹 경로·SSH 키)와 원격 DB(호스트·포트·이름·사용자·비밀번호)를 넣는다.
+
+- [연결 시험]: SSH·웹 경로·서버 rsync·원격 DB 접속 확인
+- [미리보기]: 올라갈 파일 목록만 본다 (`rsync --dry-run`)
+- [파일 올리기]: 바뀐 파일만 rsync로 올린다. **서버에만 있는 파일은 지우지 않는다**. `.git/`, `node_modules/`, `.env` 등은
+  기본으로 빼며(라이믹스는 `files/config/`·`files/cache/` 등도) 목록은 고칠 수 있다
+- [DB 올리기]: 확인을 한 번 더 받은 뒤, **원격 DB를 이 PC의 `<데이터 폴더>/deploy-backups/`에 먼저 백업**하고 로컬 DB로 덮어쓴다.
+  백업이 실패하면 덮어쓰지 않는다
+- SSH는 키 로그인만 쓴다 (`ssh-copy-id -p 포트 사용자@서버`로 한 번 등록). 접속 정보는 `deploy.json`(권한 600)에 저장되고 백업 묶음에는 담기지 않는다
+- 배포 기록은 프로젝트 줄과 ⋯ 메뉴의 이전 기록에 "↑ 서버에 배포"로 남는다
+
 ## HTTPS (로컬 인증기관)
 
 서비스 탭의 [HTTPS 켜기]로 모든 프로젝트를 `https://<도메인>`으로도 연다 (http도 그대로 열려 있다).

@@ -2,6 +2,7 @@
 
 pub mod apache;
 pub mod database;
+pub mod deploy;
 pub mod detect;
 pub mod history;
 pub mod integrations;
@@ -12,6 +13,7 @@ pub mod settings;
 pub mod setup;
 pub mod tls;
 pub mod transfer;
+pub mod usage;
 #[cfg(test)]
 mod test_util;
 
