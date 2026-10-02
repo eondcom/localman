@@ -1,7 +1,9 @@
 //! Apache vhost 설정 생성. 설정 내용은 OS 무관하고, 파일을 어디에 두고 어떻게
 //! 활성화하는지만 platform 쪽에서 OS별로 처리한다.
 
-use super::project::{ProjectType, VhostProject};
+use super::project::{ProjectType, VhostProject, list_projects};
+use super::settings::{load_settings, save_settings};
+use super::tls::{self, CertPaths};
 use crate::platform;
 
 pub(crate) fn build_vhost_conf(p: &VhostProject) -> String {
@@ -58,8 +60,85 @@ pub(crate) fn build_vhost_conf(p: &VhostProject) -> String {
     }
 }
 
+/// :80 설정을 그대로 복제해 :443 가상호스트를 만든다. http 도 계속 열어 둔다
+/// (dev server 나 외부 콜백이 http 를 쓰는 경우가 있어 강제로 넘기지 않는다).
+pub(crate) fn tls_vhost(conf80: &str, tls: &CertPaths) -> String {
+    // 맥은 인증서 경로에 공백("Application Support")이 있어 따옴표로 감싼다.
+    conf80.replacen(
+        "<VirtualHost *:80>\n",
+        &format!(
+            "<VirtualHost *:443>\n\
+             \x20   SSLEngine on\n\
+             \x20   SSLCertificateFile \"{}\"\n\
+             \x20   SSLCertificateKeyFile \"{}\"\n\
+             \x20   # 프록시 뒤 앱이 https 로 접속된 걸 알도록 (리다이렉트·쿠키 Secure 판단)\n\
+             \x20   RequestHeader set X-Forwarded-Proto https\n",
+            tls.cert.display(),
+            tls.key.display(),
+        ),
+        1,
+    )
+}
+
 pub(crate) fn write_vhost(p: &VhostProject) -> Result<(), String> {
-    platform::write_site(&p.id, &build_vhost_conf(p))
+    let mut conf = build_vhost_conf(p);
+    if load_settings().https {
+        let paths = tls::ensure_cert(&p.domain)?;
+        platform::ensure_ssl_module()?;
+        let tls_conf = tls_vhost(&conf, &paths);
+        conf.push('\n');
+        conf.push_str(&tls_conf);
+    }
+    platform::write_site(&p.id, &conf)
+}
+
+/// 등록된 모든 사이트의 vhost 를 다시 쓴다 (https 켜기/끄기 후). 줄 단위 결과를 돌려준다.
+fn rewrite_all_sites() -> Vec<String> {
+    list_projects()
+        .iter()
+        .map(|p| match write_vhost(p) {
+            Ok(()) => format!("✓ {}", p.domain),
+            Err(e) => format!("✗ {}: {e}", p.domain),
+        })
+        .collect()
+}
+
+/// 모든 프로젝트의 https 를 켜거나 끈다.
+/// 켤 때는 로컬 인증기관을 만들고, 아직 신뢰 등록이 안 됐으면 OS 에 등록한다.
+pub fn set_https(enabled: bool) -> Result<Vec<String>, String> {
+    let mut log = Vec::new();
+    if enabled {
+        tls::ensure_ca()?;
+        let ca = tls::ca_cert_path();
+        if !platform::ca_trusted(&ca) {
+            log.push(platform::trust_ca(&ca)?);
+        }
+    }
+    let mut s = load_settings();
+    s.https = enabled;
+    save_settings(&s)?;
+    log.extend(rewrite_all_sites());
+    Ok(log)
+}
+
+/// 만료가 다가온 인증서를 갱신하고, 하나라도 바뀌었으면 웹 서버를 reload 한다.
+/// 앱 시작 때와 주기적으로 불린다.
+pub fn renew_certs() -> Vec<String> {
+    if !load_settings().https {
+        return Vec::new();
+    }
+    let domains: Vec<String> = list_projects().into_iter().map(|p| p.domain).collect();
+    let results = tls::renew_due(&domains);
+    if results.iter().any(|r| r.is_ok()) {
+        platform::reload_web_server();
+    }
+    results
+        .into_iter()
+        .map(|r| match r {
+            Ok(d) => format!("✓ 인증서 갱신: {d}"),
+            Err(e) => format!("✗ 인증서 갱신 실패: {e}"),
+        })
+        .collect()
 }
 
 pub(crate) fn remove_vhost(p: &VhostProject) -> Result<(), String> {
@@ -91,6 +170,22 @@ mod tests {
         // 하위 디렉토리가 없으면 경로 그대로
         let conf2 = build_vhost_conf(&project(ProjectType::Php, "/srv/plain", "", 80));
         assert!(conf2.contains("DocumentRoot /srv/plain\n"));
+    }
+
+    #[test]
+    fn tls_vhost_mirrors_http_block_on_443() {
+        let conf = build_vhost_conf(&project(ProjectType::NextJs, "/srv/x", "", 5005));
+        let paths = CertPaths {
+            cert: "/Users/me/Library/Application Support/localman/tls/certs/demo.localhost.pem".into(),
+            key: "/Users/me/Library/Application Support/localman/tls/certs/demo.localhost.key".into(),
+        };
+        let tls = tls_vhost(&conf, &paths);
+        assert!(tls.starts_with("<VirtualHost *:443>\n"));
+        assert!(!tls.contains("*:80"));
+        // 공백이 있는 경로는 따옴표로 감싸야 Apache 가 읽는다
+        assert!(tls.contains("SSLCertificateFile \"/Users/me/Library/Application Support/"));
+        // 웹소켓(HMR) 프록시 규칙도 그대로 있어야 한다
+        assert!(tls.contains("RewriteRule ^/?(.*) ws://127.0.0.1:5005/$1 [P,L]"));
     }
 
     #[test]

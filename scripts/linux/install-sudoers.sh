@@ -12,6 +12,8 @@ LN=$(which ln)
 RM=$(which rm)
 TRUNCATE=$(which truncate)
 TAIL=$(which tail)
+UPDATE_CA=$(which update-ca-certificates)
+USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
 
 cat > "$RULES" << EOF
 # localman: 비밀번호 없이 웹·데이터베이스 서비스를 제어
@@ -31,6 +33,9 @@ $TARGET_USER ALL=(root) NOPASSWD: $CP /tmp/localman_vhost_* /etc/apache2/sites-a
 $TARGET_USER ALL=(root) NOPASSWD: $CP /tmp/localman_hosts /etc/hosts
 $TARGET_USER ALL=(root) NOPASSWD: $LN -sf /etc/apache2/sites-available/* /etc/apache2/sites-enabled/*
 $TARGET_USER ALL=(root) NOPASSWD: $RM -f /etc/apache2/sites-available/* /etc/apache2/sites-enabled/*
+# 로컬 HTTPS 인증기관을 시스템 신뢰 저장소에 등록
+$TARGET_USER ALL=(root) NOPASSWD: $CP $USER_HOME/.local/share/localman/tls/ca.pem /usr/local/share/ca-certificates/localman-ca.crt
+$TARGET_USER ALL=(root) NOPASSWD: $UPDATE_CA
 # 로그 비우기/읽기 (프로젝트별 에러 로그)
 $TARGET_USER ALL=(root) NOPASSWD: $TRUNCATE -s 0 /var/log/apache2/*
 $TARGET_USER ALL=(root) NOPASSWD: $TAIL -n * /var/log/apache2/*

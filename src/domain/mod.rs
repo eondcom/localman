@@ -6,7 +6,9 @@ pub mod detect;
 pub mod integrations;
 pub mod project;
 pub mod server;
+pub mod settings;
 pub mod setup;
+pub mod tls;
 pub mod transfer;
 #[cfg(test)]
 mod test_util;

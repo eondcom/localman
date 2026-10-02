@@ -190,7 +190,11 @@ fn ensure_httpd_base() -> Result<(), String> {
     };
     let user = std::env::var("USER").unwrap_or_else(|_| "nobody".into());
 
-    let modules = ["proxy_module", "proxy_http_module", "proxy_wstunnel_module", "rewrite_module"];
+    let modules = [
+        "proxy_module", "proxy_http_module", "proxy_wstunnel_module", "rewrite_module",
+        // https: ssl 과 그 세션 캐시, X-Forwarded-Proto 를 붙일 headers
+        "ssl_module", "socache_shmcb_module", "headers_module",
+    ];
     let mut lines: Vec<String> = Vec::new();
     let mut in_block = false;
     for line in original.lines() {
@@ -228,6 +232,7 @@ fn ensure_httpd_base() -> Result<(), String> {
         BLOCK_BEGIN.to_string(),
         format!("Define APACHE_LOG_DIR {}", apache_log_dir()),
         "ServerName localhost".to_string(),
+        "Listen 443".to_string(),
     ];
     let libphp = format!("{prefix}/opt/php/lib/httpd/modules/libphp.so");
     if Path::new(&libphp).exists() {
@@ -248,6 +253,10 @@ fn ensure_httpd_base() -> Result<(), String> {
     Ok(())
 }
 
+pub fn reload_web_server() {
+    reload_httpd();
+}
+
 fn reload_httpd() {
     if !httpd_running() {
         return;
@@ -262,6 +271,11 @@ fn reload_httpd() {
 
 /// 맥에서는 ensure_httpd_base가 필요한 모듈을 한꺼번에 켠다.
 pub fn ensure_proxy_module(_need_ws: bool) -> Result<(), String> {
+    ensure_httpd_base()
+}
+
+/// https 에 필요한 모듈은 ensure_httpd_base 가 함께 켠다.
+pub fn ensure_ssl_module() -> Result<(), String> {
     ensure_httpd_base()
 }
 
@@ -281,6 +295,38 @@ pub fn remove_site(id: &str) -> Result<(), String> {
     }
     reload_httpd();
     Ok(())
+}
+
+// ── 로컬 인증기관 신뢰 (키체인) ──────────────────────────────────────────
+
+/// 인증서 자체를 검증해 본다. 신뢰된 루트로 이어지면 성공한다.
+pub fn ca_trusted(ca: &Path) -> bool {
+    Command::new("security")
+        .args(["verify-cert", "-c"])
+        .arg(ca)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// 로그인 키체인에 루트로 신뢰 등록한다. macOS 가 암호 확인 창을 띄운다(sudo 불필요).
+/// 사파리·크롬은 키체인을 쓰고, 파이어폭스도 기본 설정에서 키체인 루트를 신뢰한다.
+pub fn trust_ca(ca: &Path) -> Result<String, String> {
+    let keychain = dirs::home_dir().unwrap_or_default().join("Library/Keychains/login.keychain-db");
+    let out = Command::new("security")
+        .args(["add-trusted-cert", "-r", "trustRoot", "-k"])
+        .arg(&keychain)
+        .arg(ca)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok("✓ 키체인에 인증기관 등록".into())
+    } else {
+        Err(format!(
+            "키체인 등록이 취소됐거나 실패했습니다: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
 }
 
 // ── 프로세스 (ps) ──────────────────────────────────────────────────────

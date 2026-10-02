@@ -81,6 +81,19 @@ sudo ./scripts/linux/install-sudoers.sh
 sudo ./scripts/macos/install-sudoers.sh
 ```
 
+## HTTPS (로컬 인증기관)
+
+서비스 탭의 [HTTPS 켜기]로 모든 프로젝트를 `https://<도메인>`으로도 연다 (http도 그대로 열려 있다).
+
+- Let's Encrypt는 `*.localhost`에 발급하지 않으므로 mkcert와 같은 방식을 쓴다: localman 전용 인증기관을
+  만들어 OS에 한 번 신뢰시키고, 도메인마다 인증서(1년)를 발급한다. 만료 30일 전이면 앱 시작 때와
+  6시간마다 자동으로 다시 발급하고 Apache를 reload한다
+- 인증기관은 이름 제약으로 `localhost`와 `*.localhost`에만 발급할 수 있다 — 키가 새도 다른 사이트를 위조할 수 없다
+- 인증기관 키는 이 PC에만 있다(`<데이터 폴더>/tls/`, 권한 600). 백업 묶음에도 담지 않는다
+- 신뢰 등록: 맥은 로그인 키체인(암호 확인 창이 뜬다), 리눅스는 시스템 저장소 + 크롬·파이어폭스 NSS DB
+  (`libnss3-tools`의 `certutil` 필요)
+- 앱 안에서는 `X-Forwarded-Proto: https`가 붙어 프록시 뒤 앱도 https로 접속된 걸 안다
+
 ## 백업·이전 (리눅스 ↔ 맥)
 
 [백업·이전] 탭에서 한 파일(`localman-backup-<호스트>-<날짜>.tar.gz`)로 내보내고 다른 PC에서 가져온다.
@@ -104,6 +117,8 @@ cargo build --release
 ```bash
 ./scripts/linux/run.sh
 ```
+
+맥에서 리눅스 대상 타입 검사: `./scripts/check-linux.sh`
 
 `assets/NanumGothic.ttf`는 저장소에 없다(.gitignore). 빌드 전에 나눔고딕 TTF를 그 위치에 둔다.
 

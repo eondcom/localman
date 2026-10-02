@@ -56,7 +56,12 @@ impl App {
         };
         (
             app,
-            Task::batch([db_task.map(Message::Database), transfer_task.map(Message::Transfer)]),
+            Task::batch([
+                db_task.map(Message::Database),
+                transfer_task.map(Message::Transfer),
+                // 앱을 켤 때마다 만료가 다가온 인증서를 갱신한다
+                Task::done(Message::Services(ServicesMessage::RenewCerts)),
+            ]),
         )
     }
 
@@ -98,7 +103,10 @@ impl App {
     /// text_input이 키를 소비하지 않을 때만(Status::Ignored) 들어오므로
     /// 입력 중인 텍스트를 가로채지 않는다.
     pub fn subscription(&self) -> Subscription<Message> {
-        keyboard::on_key_press(|key, modifiers| match key {
+        // 앱을 오래 켜 두는 경우를 위해 6시간마다 인증서 만료를 확인한다
+        let renew = iced::time::every(std::time::Duration::from_secs(6 * 3600))
+            .map(|_| Message::Services(ServicesMessage::RenewCerts));
+        let keys = keyboard::on_key_press(|key, modifiers| match key {
             keyboard::Key::Named(keyboard::key::Named::Tab) => {
                 if modifiers.shift() {
                     Some(Message::FocusPrevious)
@@ -107,7 +115,8 @@ impl App {
                 }
             }
             _ => None,
-        })
+        });
+        Subscription::batch([keys, renew])
     }
 
     pub fn view(&self) -> Element<'_, Message> {

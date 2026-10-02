@@ -2,7 +2,10 @@ use iced::{
     widget::{button, column, container, row, text, Space},
     Color, Element, Length, Task,
 };
-use crate::platform::{ServiceStatus, get_service_status, install_service, toggle_service};
+use crate::platform::{ServiceStatus, ca_trusted, get_service_status, install_service, toggle_service};
+use crate::domain::apache::{renew_certs, set_https};
+use crate::domain::settings::load_settings;
+use crate::domain::tls::{ca_cert_path, ca_exists};
 
 #[derive(Debug, Clone)]
 pub enum ServicesMessage {
@@ -11,6 +14,10 @@ pub enum ServicesMessage {
     Refresh,
     Toggled(String, Result<(), String>),
     Installed(String, Result<(), String>),
+    SetHttps(bool),
+    HttpsSet(Result<Vec<String>, String>),
+    RenewCerts,
+    CertsRenewed(Vec<String>),
 }
 
 pub struct ServicesState {
@@ -19,6 +26,10 @@ pub struct ServicesState {
     postgresql_status: ServiceStatus,
     installing: Option<String>,
     error: Option<String>,
+    https: bool,
+    ca_trusted: bool,
+    https_busy: bool,
+    https_log: Vec<String>,
 }
 
 impl ServicesState {
@@ -29,6 +40,10 @@ impl ServicesState {
             postgresql_status: ServiceStatus::Unknown,
             installing: None,
             error: None,
+            https: false,
+            ca_trusted: false,
+            https_busy: false,
+            https_log: Vec::new(),
         };
         s.refresh();
         s
@@ -38,6 +53,8 @@ impl ServicesState {
         self.apache_status = get_service_status("apache2");
         self.mariadb_status = get_service_status("mariadb");
         self.postgresql_status = get_service_status("postgresql");
+        self.https = load_settings().https;
+        self.ca_trusted = ca_exists() && ca_trusted(&ca_cert_path());
     }
 
     pub fn update(&mut self, msg: ServicesMessage) -> Task<ServicesMessage> {
@@ -73,6 +90,33 @@ impl ServicesState {
                         }
                     }
                     Err(e) => self.error = Some(e),
+                }
+                Task::none()
+            }
+            ServicesMessage::SetHttps(on) => {
+                self.https_busy = true;
+                self.https_log.clear();
+                Task::perform(
+                    async move { tokio::task::spawn_blocking(move || set_https(on)).await.unwrap_or_else(|e| Err(e.to_string())) },
+                    ServicesMessage::HttpsSet,
+                )
+            }
+            ServicesMessage::HttpsSet(result) => {
+                self.https_busy = false;
+                match result {
+                    Ok(log) => self.https_log = log,
+                    Err(e) => self.https_log = vec![format!("✗ {e}")],
+                }
+                self.refresh();
+                Task::none()
+            }
+            ServicesMessage::RenewCerts => Task::perform(
+                async { tokio::task::spawn_blocking(renew_certs).await.unwrap_or_default() },
+                ServicesMessage::CertsRenewed,
+            ),
+            ServicesMessage::CertsRenewed(log) => {
+                if !log.is_empty() {
+                    self.https_log = log;
                 }
                 Task::none()
             }
@@ -133,6 +177,8 @@ impl ServicesState {
             mariadb,
             Space::with_height(12),
             postgresql,
+            Space::with_height(12),
+            self.https_card(),
             Space::with_height(20),
             refresh_btn,
         ]
@@ -146,6 +192,61 @@ impl ServicesState {
         }
 
         col.into()
+    }
+}
+
+impl ServicesState {
+    fn https_card(&self) -> Element<'_, ServicesMessage> {
+        let muted = Color::from_rgb(0.6, 0.6, 0.6);
+        let (status, color) = if !self.https {
+            ("꺼짐", muted)
+        } else if self.ca_trusted {
+            ("켜짐 · 인증기관 신뢰됨", Color::from_rgb(0.2, 0.9, 0.4))
+        } else {
+            ("켜짐 · 인증기관 신뢰 안 됨 (브라우저 경고)", Color::from_rgb(0.85, 0.6, 0.2))
+        };
+        let label = match (self.https_busy, self.https) {
+            (true, _) => "처리 중…",
+            (false, true) => "끄기",
+            (false, false) => "켜기",
+        };
+        let mut btn = button(text(label).size(13)).padding([8, 16]);
+        if !self.https_busy {
+            btn = btn.on_press(ServicesMessage::SetHttps(!self.https));
+        }
+        let mut info = column![
+            text("HTTPS").size(16),
+            Space::with_height(2),
+            text("로컬 인증기관으로 모든 프로젝트를 https://도메인 으로도 엽니다. 인증서는 만료 30일 전에 자동 갱신됩니다.")
+                .size(12)
+                .color(muted),
+        ];
+        if self.https && !self.ca_trusted {
+            info = info.push(Space::with_height(6)).push(
+                text("끄고 다시 켜면 인증기관 신뢰 등록을 다시 시도합니다.").size(12).color(muted),
+            );
+        }
+        for l in &self.https_log {
+            let c = if l.starts_with('✗') { Color::from_rgb(1.0, 0.4, 0.4) } else { muted };
+            info = info.push(text(l).size(12).color(c));
+        }
+        container(
+            row![
+                info.width(Length::Fill),
+                Space::with_width(16),
+                column![text(status).size(13).color(color), Space::with_height(8), btn]
+                    .align_x(iced::Alignment::End),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .padding(20)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
+            border: iced::Border { radius: 10.0.into(), color: Color::from_rgb(0.2, 0.2, 0.25), width: 1.0 },
+            ..Default::default()
+        })
+        .into()
     }
 }
 

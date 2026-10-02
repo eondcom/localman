@@ -2,6 +2,7 @@
 
 use super::ServiceStatus;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 // ── 서비스 (systemd / apt) ─────────────────────────────────────────────
@@ -103,26 +104,34 @@ pub fn error_log_path(id: &str) -> String {
 /// 프록시에 필요한 Apache 모듈을 보장한다.
 /// need_ws=true면 웹소켓 터널링(proxy_wstunnel)까지 켠다 — Next.js dev의 HMR에 필요.
 pub fn ensure_proxy_module(need_ws: bool) -> Result<(), String> {
+    let mut wanted = vec![("proxy_http_module", &["proxy", "proxy_http"][..])];
+    if need_ws {
+        // 웹소켓 터널링 + Upgrade 헤더 판별에 필요
+        wanted.push(("proxy_wstunnel_module", &["proxy_wstunnel"][..]));
+        wanted.push(("rewrite_module", &["rewrite"][..]));
+    }
+    ensure_modules(&wanted, "proxy")
+}
+
+/// https 가상호스트에 필요한 모듈 (ssl, X-Forwarded-Proto 용 headers).
+/// 데비안의 ports.conf 는 ssl 모듈이 켜지면 Listen 443 을 함께 연다.
+pub fn ensure_ssl_module() -> Result<(), String> {
+    ensure_modules(&[("ssl_module", &["ssl"][..]), ("headers_module", &["headers"][..])], "ssl")
+}
+
+/// (`apache2ctl -M` 에 보일 모듈 이름, 꺼져 있으면 a2enmod 할 이름들)
+fn ensure_modules(wanted: &[(&str, &[&str])], what: &str) -> Result<(), String> {
     let out = Command::new("apache2ctl")
         .args(["-M"])
         .output()
         .map_err(|e| e.to_string())?;
     let modules = String::from_utf8_lossy(&out.stdout);
 
-    let mut needed: Vec<&str> = Vec::new();
-    if !modules.contains("proxy_http_module") {
-        needed.push("proxy");
-        needed.push("proxy_http");
-    }
-    if need_ws {
-        // 웹소켓 터널링 + Upgrade 헤더 판별에 필요
-        if !modules.contains("proxy_wstunnel_module") {
-            needed.push("proxy_wstunnel");
-        }
-        if !modules.contains("rewrite_module") {
-            needed.push("rewrite");
-        }
-    }
+    let needed: Vec<&str> = wanted
+        .iter()
+        .filter(|(loaded, _)| !modules.contains(loaded))
+        .flat_map(|(_, names)| names.iter().copied())
+        .collect();
     if needed.is_empty() {
         return Ok(());
     }
@@ -139,12 +148,13 @@ pub fn ensure_proxy_module(need_ws: bool) -> Result<(), String> {
         let err = String::from_utf8_lossy(&r.stderr).to_string();
         eprintln!("[localman] a2enmod 실패: {err}");
         return Err(format!(
-            "Apache proxy 모듈 활성화 실패.\n\
+            "Apache {what} 모듈 활성화 실패.\n\
              터미널에서 한 번 실행 후 재시도하세요:\n\
              sudo a2enmod {} && sudo systemctl reload apache2",
             needed.join(" ")
         ));
     }
+    // 새 모듈(특히 ssl 의 Listen 443)은 reload 로 반영된다
     let reload = Command::new("sudo")
         .args(["-n", "systemctl", "reload", "apache2"])
         .output()
@@ -153,6 +163,61 @@ pub fn ensure_proxy_module(need_ws: bool) -> Result<(), String> {
         return Err(format!("Apache reload 실패: {}", String::from_utf8_lossy(&reload.stderr)));
     }
     Ok(())
+}
+
+pub fn reload_web_server() {
+    let _ = Command::new("sudo").args(["-n", "systemctl", "reload", "apache2"]).output();
+}
+
+// ── 로컬 인증기관 신뢰 ─────────────────────────────────────────────────
+
+const SYSTEM_CA_PATH: &str = "/usr/local/share/ca-certificates/localman-ca.crt";
+
+pub fn ca_trusted(ca: &Path) -> bool {
+    match (fs::read(ca), fs::read(SYSTEM_CA_PATH)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// 시스템 신뢰 저장소(curl·wget·python 등)와 브라우저 NSS DB(크롬·파이어폭스)에 등록한다.
+/// 리눅스 크롬·파이어폭스는 시스템 저장소를 보지 않아 따로 등록해야 한다.
+pub fn trust_ca(ca: &Path) -> Result<String, String> {
+    let ca_str = ca.to_string_lossy().to_string();
+    let cp = Command::new("sudo")
+        .args(["-n", "cp", &ca_str, SYSTEM_CA_PATH])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !cp.status.success() {
+        return Err(format!(
+            "인증기관 등록 권한이 없습니다. scripts/linux/install-sudoers.sh 를 다시 실행하십시오.\n{}",
+            String::from_utf8_lossy(&cp.stderr).trim()
+        ));
+    }
+    let _ = Command::new("sudo").args(["-n", "update-ca-certificates"]).output();
+
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut dbs = vec![home.join(".pki/nssdb")];
+    if let Ok(entries) = fs::read_dir(home.join(".mozilla/firefox")) {
+        dbs.extend(entries.flatten().map(|e| e.path()).filter(|p| p.join("cert9.db").exists()));
+    }
+    let has_certutil = Command::new("certutil").arg("-H").output().is_ok();
+    if !has_certutil {
+        return Ok("✓ 시스템에 인증기관 등록 (크롬·파이어폭스에도 등록하려면 `sudo apt install libnss3-tools` 후 다시 켜세요)".into());
+    }
+    let mut browsers = 0;
+    for db in dbs {
+        let _ = fs::create_dir_all(&db);
+        let ok = Command::new("certutil")
+            .args(["-d", &format!("sql:{}", db.display()), "-A", "-t", "C,,", "-n", "LocalMan Local CA", "-i", &ca_str])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok {
+            browsers += 1;
+        }
+    }
+    Ok(format!("✓ 시스템과 브라우저 저장소 {browsers}곳에 인증기관 등록"))
 }
 
 /// vhost 설정을 sites-available에 쓰고 활성화한 뒤 Apache를 reload한다.

@@ -16,6 +16,8 @@ dirs = "5"
 rfd = "0.15"
 tar = "0.4"
 flate2 = "1"
+rcgen = "0.13"
+time = "0.3"
 
 [profile.release]
 opt-level = 3
