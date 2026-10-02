@@ -2,15 +2,15 @@ use iced::{
     widget::{button, column, container, row, text, text_input, Space, scrollable},
     Color, Element, Length, Task,
 };
-use crate::system::{
+use crate::domain::{
     VhostProject, ProjectType, ServerStatus,
     list_projects, add_project, update_project, remove_project,
     start_server, stop_server, server_status, auto_assign_port,
     setup_project, deps_ready, auto_detect_start_command, auto_detect_next_command,
     detect_next_app_dir, join_dir,
-    error_log_path, read_log, clear_log,
     is_rhymix_project, rx_reset_admin_password,
 };
+use crate::platform::{error_log_path, read_log, clear_log};
 use rfd;
 
 /// 타입에 맞는 실행 명령어를 자동 감지한다.
@@ -759,7 +759,7 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
                 r.into()
             }
         } else {
-            let apache_running = crate::system::get_service_status("apache2") == crate::system::ServiceStatus::Running;
+            let apache_running = crate::platform::get_service_status("apache2") == crate::platform::ServiceStatus::Running;
             let dot_color = if apache_running { Color::from_rgb(0.2, 0.9, 0.4) } else { Color::from_rgb(0.5, 0.5, 0.5) };
             let label = if apache_running { "Apache 실행 중" } else { "Apache 중지됨" };
             row![
@@ -1092,7 +1092,7 @@ fn log_panel(lv: &LogView) -> Element<'_, ProjectsMessage> {
         column![
             text(format!("에러 로그 · {}", lv.name)).size(15),
             Space::with_height(2),
-            text(crate::system::error_log_path(&lv.id))
+            text(error_log_path(&lv.id))
                 .size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
         ].width(Length::Fill),
         log_btn("복사", Color::from_rgb(0.2, 0.35, 0.5), ProjectsMessage::CopyLog),

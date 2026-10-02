@@ -64,7 +64,7 @@
 
 ```bash
 # install-sudoers.sh 실행으로 설정
-sudo ./install-sudoers.sh
+sudo ./scripts/linux/install-sudoers.sh
 ```
 
 ## 빌드
@@ -77,7 +77,7 @@ cargo build --release
 또는 개발 실행:
 
 ```bash
-./run.sh
+./scripts/linux/run.sh
 ```
 
 ## 기술 스택

@@ -2,7 +2,7 @@ use iced::{
     widget::{button, column, container, row, text, Space},
     Color, Element, Length, Task,
 };
-use crate::system::{ServiceStatus, get_service_status, install_service, toggle_service};
+use crate::platform::{ServiceStatus, get_service_status, install_service, toggle_service};
 
 #[derive(Debug, Clone)]
 pub enum ServicesMessage {

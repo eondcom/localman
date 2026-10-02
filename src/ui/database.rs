@@ -2,11 +2,12 @@ use iced::{
     widget::{button, column, container, row, text, text_input, Space, scrollable},
     Color, Element, Length, Task,
 };
-use crate::system::{
+use crate::domain::{
     list_databases, create_database, drop_database, backup_database, restore_database, import_sql,
     rename_database, list_users, create_user, drop_user, rename_user, change_user_password, grant_privileges, DbUser,
-    DbCredentials, DbEngine, load_db_connections, save_db_connection, ensure_adminer_site, open_url,
+    DbCredentials, DbEngine, load_db_connections, save_db_connection, ensure_adminer_site,
 };
+use crate::platform::open_url;
 use rfd;
 
 #[derive(Debug, Clone, PartialEq)]
