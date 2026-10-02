@@ -72,6 +72,9 @@ PHP 프로젝트 vhost 는 Debian 에선 `libapache2-mod-php` 가 자동으로 �
 `Listen 8080` + pf 리다이렉트, 또는 `sudo brew services start httpd`(root 실행 — 비권장,
 이후 brew 파일 소유권이 꼬인다).
 brew httpd 기본값은 `Listen 8080` 이므로 `httpd.conf` 에서 80 으로 바꿔야 한다.
+**이 방식은 0.0.0.0 바인딩이 전제라 같은 와이파이의 다른 기기에 열린다.** 모든 vhost 에
+`<Location /> Require local </Location>` 이 들어가야 한다 — Linux 는 2026-10-02 에
+`build_vhost_conf` 가 이미 넣도록 고쳤으므로, Mac 템플릿도 같은 함수를 거치게 하면 된다.
 
 **함정 4 — `*.localhost` 해석.** Chrome 은 `.localhost` 를 자체적으로 127.0.0.1 로 풀지만
 Safari·curl·Python 은 시스템 리졸버를 쓴다. 지금처럼 `/etc/hosts` 에 쓰는 방식을
