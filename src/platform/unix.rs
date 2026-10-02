@@ -18,8 +18,13 @@ pub fn spawn_in_new_group(program: &str, args: &[&str], dir: &str) -> Result<u32
         .spawn()
         .map_err(|e| format!("실행 실패: {e}"))?;
     let pid = child.id();
-    // child를 drop해도 프로세스는 계속 실행됨 (detach)
-    std::mem::forget(child);
+    // 서버가 끝나면 이 스레드가 회수(wait)해 좀비로 남지 않게 한다.
+    // (SIGCHLD 를 SIG_IGN 으로 두는 방법은 Command::output() 까지 ECHILD 로
+    //  실패시켜 systemctl·brew·mysql 호출 결과를 전부 잃게 만든다)
+    std::thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
     Ok(pid)
 }
 
@@ -111,8 +116,13 @@ pub fn clear_log(path: &str) -> Result<(), String> {
     if !Path::new(path).exists() {
         return Err("비울 로그 파일이 없습니다.".to_string());
     }
+    // 맥에는 truncate 명령이 없어 /dev/null 을 덮어써서 비운다.
+    #[cfg(target_os = "linux")]
+    let args = ["-n", "truncate", "-s", "0", path];
+    #[cfg(target_os = "macos")]
+    let args = ["-n", "/bin/cp", "/dev/null", path];
     let out = Command::new("sudo")
-        .args(["-n", "truncate", "-s", "0", path])
+        .args(args)
         .output()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
@@ -130,4 +140,28 @@ fn tail_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let start = lines.len().saturating_sub(n);
     lines[start..].join("\n")
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 끝난 dev server 는 좀비로 남지 않아야 하고, 그 와중에도
+    /// 다른 명령의 output() 은 종료 코드를 정상으로 받아야 한다.
+    #[test]
+    fn spawned_server_is_reaped_without_breaking_output() {
+        let pid = spawn_in_new_group("true", &[], "/").unwrap();
+        let mut reaped = false;
+        for _ in 0..100 {
+            if !crate::platform::process_alive(pid) {
+                reaped = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(reaped, "종료된 서버가 좀비로 남았습니다");
+        let out = Command::new("true").output().expect("output() 이 실패했습니다");
+        assert!(out.status.success());
+    }
 }

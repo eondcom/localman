@@ -10,7 +10,7 @@ const NANUM_GOTHIC: &[u8] =
 const APP_ICON: &[u8] = include_bytes!("../assets/localman.png");
 
 fn main() -> iced::Result {
-    platform::ignore_sigchld();
+    platform::init_env();
 
     if !platform::acquire_single_instance() {
         rfd::MessageDialog::new()
@@ -27,6 +27,7 @@ fn main() -> iced::Result {
         .window(window::Settings {
             size: Size::new(1100.0, 700.0),
             icon: window::icon::from_file_data(APP_ICON, None).ok(),
+            #[cfg(target_os = "linux")]
             platform_specific: window::settings::PlatformSpecific {
                 // .desktop 파일 이름(localman.desktop)과 일치해야 독바에서 같은 앱으로 인식됨
                 application_id: String::from("localman"),

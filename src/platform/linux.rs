@@ -217,7 +217,7 @@ pub fn proc_stat_fields(pid: u32) -> Option<(u32, u64)> {
 
 /// 프로세스가 존재하고 좀비가 아닌지 확인한다.
 ///
-/// localman은 자식을 detach(mem::forget)하고 wait하지 않으므로, 종료된 자식은 좀비로 남아
+/// 회수 스레드가 wait 하기 전 잠깐 동안은 종료된 자식이 좀비로 남아
 /// /proc/PID 가 계속 존재한다. 그것만 보면 이미 죽은 서버가 "실행 중"으로 표시된다.
 /// (같은 프로세스인지까지 확인하려면 starttime을 함께 보는 `is_alive`를 쓸 것)
 pub fn process_alive(pid: u32) -> bool {
@@ -234,26 +234,12 @@ pub fn process_alive(pid: u32) -> bool {
 
 // ── 데스크톱 ──────────────────────────────────────────────────────────
 
+/// GUI로 실행해도 셸과 같은 환경을 쓰도록 맞춘다. 리눅스 데스크톱은 이미 그렇다.
+pub fn init_env() {}
+
 /// 기본 브라우저로 URL을 연다.
 pub fn open_url(url: &str) {
     let _ = Command::new("xdg-open").arg(url).spawn();
-}
-
-/// SIGCHLD를 SIG_IGN으로 설정한다.
-///
-/// domain::server::start_server가 자식(dev server)을 detach(mem::forget)하므로
-/// 아무도 wait()를 호출하지 않는다. 커널 기본 동작은 자식이 죽어도
-/// 부모가 reap할 때까지 좀비로 남기는 것인데, SIGCHLD를 SIG_IGN으로
-/// 두면 POSIX 규정에 따라 커널이 종료된 자식을 즉시 자동 회수한다.
-pub fn ignore_sigchld() {
-    unsafe extern "C" {
-        fn signal(signum: i32, handler: usize) -> usize;
-    }
-    const SIGCHLD: i32 = 17;
-    const SIG_IGN: usize = 1;
-    unsafe {
-        signal(SIGCHLD, SIG_IGN);
-    }
 }
 
 /// 중복 실행 방지: abstract unix socket을 잠금으로 사용 (프로세스 종료 시 커널이 자동 해제)
