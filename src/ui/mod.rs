@@ -1,6 +1,7 @@
 mod services;
 mod projects;
 mod database;
+mod transfer;
 
 use iced::{
     keyboard,
@@ -11,12 +12,14 @@ use iced::{
 pub use services::ServicesMessage;
 pub use projects::ProjectsMessage;
 pub use database::DatabaseMessage;
+pub use transfer::TransferMessage;
 
 #[derive(Debug, Clone)]
 pub enum Tab {
     Services,
     Projects,
     Database,
+    Transfer,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +28,7 @@ pub enum Message {
     Services(ServicesMessage),
     Projects(ProjectsMessage),
     Database(DatabaseMessage),
+    Transfer(TransferMessage),
     #[allow(dead_code)]
     RefreshServices,
     FocusNext,
@@ -36,18 +40,24 @@ pub struct App {
     services: services::ServicesState,
     projects: projects::ProjectsState,
     database: database::DatabaseState,
+    transfer: transfer::TransferState,
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
         let (database, db_task) = database::DatabaseState::new();
+        let (transfer, transfer_task) = transfer::TransferState::new();
         let app = Self {
             active_tab: Tab::Services,
             services: services::ServicesState::new(),
             projects: projects::ProjectsState::new(),
             database,
+            transfer,
         };
-        (app, db_task.map(Message::Database))
+        (
+            app,
+            Task::batch([db_task.map(Message::Database), transfer_task.map(Message::Transfer)]),
+        )
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -68,6 +78,16 @@ impl App {
             }
             Message::Database(msg) => {
                 self.database.update(msg).map(Message::Database)
+            }
+            Message::Transfer(msg) => {
+                // 가져오기로 프로젝트가 바뀌면 프로젝트 탭 목록도 다시 읽는다
+                let imported = matches!(msg, TransferMessage::Imported(_));
+                let task = self.transfer.update(msg).map(Message::Transfer);
+                if imported {
+                    let refresh = self.projects.update(ProjectsMessage::Refresh).map(Message::Projects);
+                    return Task::batch([task, refresh]);
+                }
+                task
             }
             Message::FocusNext => iced::widget::focus_next(),
             Message::FocusPrevious => iced::widget::focus_previous(),
@@ -97,6 +117,7 @@ impl App {
             tab_button("서비스", matches!(self.active_tab, Tab::Services), Message::TabSelected(Tab::Services)),
             tab_button("프로젝트", matches!(self.active_tab, Tab::Projects), Message::TabSelected(Tab::Projects)),
             tab_button("데이터베이스", matches!(self.active_tab, Tab::Database), Message::TabSelected(Tab::Database)),
+            tab_button("백업·이전", matches!(self.active_tab, Tab::Transfer), Message::TabSelected(Tab::Transfer)),
         ]
         .width(200)
         .padding(12)
@@ -113,6 +134,7 @@ impl App {
             Tab::Services => self.services.view().map(Message::Services),
             Tab::Projects => self.projects.view().map(Message::Projects),
             Tab::Database => self.database.view().map(Message::Database),
+            Tab::Transfer => self.transfer.view().map(Message::Transfer),
         };
 
         let content = container(content)

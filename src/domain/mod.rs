@@ -7,6 +7,7 @@ pub mod integrations;
 pub mod project;
 pub mod server;
 pub mod setup;
+pub mod transfer;
 #[cfg(test)]
 mod test_util;
 

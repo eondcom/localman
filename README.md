@@ -55,6 +55,8 @@
 
 ## 요구사항
 
+### 리눅스 (데비안/우분투)
+
 - Apache2 (`sudo apt install apache2`)
   - Next.js의 HMR에는 `proxy_wstunnel`·`rewrite` 모듈이 필요하다 (없으면 프로젝트 추가 시 자동 활성화)
 - MariaDB (`sudo apt install mariadb-server`)
@@ -67,6 +69,29 @@
 sudo ./scripts/linux/install-sudoers.sh
 ```
 
+### 맥
+
+- [Homebrew](https://brew.sh) — httpd·MariaDB·PostgreSQL은 서비스 탭의 [설치하기]로 `brew install` 된다
+- Apache는 Homebrew `httpd`를 80포트로 띄운다. vhost는 `$(brew --prefix)/etc/httpd/localman/*.conf`에 생기고,
+  `httpd.conf` 끝에 localman 관리 블록(Listen 80, 실행 사용자, proxy·rewrite 모듈, mod_php, Include)이 들어간다
+- PHP 프로젝트는 `brew install php`가 있으면 mod_php로 연결된다
+- sudoers 설정 (80포트 httpd 제어, /etc/hosts, 로그):
+
+```bash
+sudo ./scripts/macos/install-sudoers.sh
+```
+
+## 백업·이전 (리눅스 ↔ 맥)
+
+[백업·이전] 탭에서 한 파일(`localman-backup-<호스트>-<날짜>.tar.gz`)로 내보내고 다른 PC에서 가져온다.
+
+- 담기는 것: 프로젝트 설정(`projects.json`), 고른 DB의 덤프, (선택) DB 접속 정보 — 비밀번호가 평문이므로 파일 관리에 주의
+- 담기지 않는 것: 프로젝트 소스 폴더. git 등으로 따로 옮긴다
+- 가져올 때 경로 앞부분을 바꾼다 (기본값: 만든 PC의 홈 → 이 PC의 홈, 예 `/home/dell` → `/Users/eond`)
+- 이미 있는 프로젝트·DB는 기본으로 건너뛰고, 덮어쓰기를 켜면 바꾼다. 포트가 겹치면 빈 포트로 옮긴다
+- 프로젝트마다 이 PC 방식으로 vhost·hosts를 새로 만든다 (Apache가 설치돼 있어야 한다)
+- Python venv는 OS 간 호환되지 않는다. 다른 OS에서 온 venv는 지우고 패키지 설치를 다시 한다
+
 ## 빌드
 
 ```bash
@@ -74,11 +99,13 @@ cargo build --release
 ./target/release/localman
 ```
 
-또는 개발 실행:
+또는 개발 실행 (리눅스, kime 입력기 충돌 회피용 X11 강제):
 
 ```bash
 ./scripts/linux/run.sh
 ```
+
+`assets/NanumGothic.ttf`는 저장소에 없다(.gitignore). 빌드 전에 나눔고딕 TTF를 그 위치에 둔다.
 
 ## 기술 스택
 

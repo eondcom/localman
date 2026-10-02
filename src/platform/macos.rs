@@ -181,8 +181,13 @@ const BLOCK_END: &str = "# <<< localman";
 /// - localman/*.conf Include
 fn ensure_httpd_base() -> Result<(), String> {
     let conf_path = httpd_conf_dir().join("httpd.conf");
-    let original = fs::read_to_string(&conf_path)
-        .map_err(|e| format!("httpd.conf를 읽을 수 없습니다 ({}): {e}\n먼저 httpd를 설치하세요.", conf_path.display()))?;
+    let original = match fs::read_to_string(&conf_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("Apache(httpd)가 설치돼 있지 않습니다. 서비스 탭에서 Apache2를 설치한 뒤 다시 시도하세요.".into());
+        }
+        Err(e) => return Err(format!("httpd.conf를 읽을 수 없습니다 ({}): {e}", conf_path.display())),
+    };
     let user = std::env::var("USER").unwrap_or_else(|_| "nobody".into());
 
     let modules = ["proxy_module", "proxy_http_module", "proxy_wstunnel_module", "rewrite_module"];
