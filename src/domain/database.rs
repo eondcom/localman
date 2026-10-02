@@ -127,6 +127,33 @@ fn list_postgres_databases(user: &str, password: &str) -> Vec<DbInfo> {
     }
 }
 
+/// DB 가 디스크에서 차지하는 크기(바이트). 못 읽으면 None.
+pub fn database_size(engine: DbEngine, user: &str, password: &str, db_name: &str) -> Option<u64> {
+    let out = match engine {
+        DbEngine::MariaDb => Command::new("mysql")
+            .args([
+                &format!("-u{user}"),
+                &format!("-p{password}"),
+                "--skip-column-names",
+                "-e",
+                &format!(
+                    "SELECT COALESCE(SUM(data_length + index_length), 0) FROM information_schema.tables WHERE table_schema = '{}';",
+                    db_name.replace('\'', "''")
+                ),
+            ])
+            .output()
+            .ok()?,
+        DbEngine::PostgreSql => postgres_command(user, password, "postgres")
+            .args(["-At", "-c", &format!("SELECT pg_database_size('{}');", db_name.replace('\'', "''"))])
+            .output()
+            .ok()?,
+    };
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
 pub fn create_database(engine: DbEngine, user: &str, password: &str, db_name: &str) -> Result<(), String> {
     match engine {
         DbEngine::MariaDb => create_mariadb_database(user, password, db_name),

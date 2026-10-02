@@ -1,16 +1,29 @@
 use iced::{
-    widget::{button, column, container, row, text, text_input, Space, scrollable},
-    Color, Element, Length, Task,
+    widget::{column, container, row, scrollable, text, Space},
+    Background, Element, Length, Task,
 };
-use crate::system::{
+use super::theme::{
+    self, Icon, Kind, Tone, btn, card, chip, icon, icon_btn, input, muted, p, page_header, result_line,
+    segmented, status,
+};
+use crate::domain::settings::load_settings;
+use crate::domain::DbEngine;
+use crate::domain::deploy::{DeployTarget, default_target, load_target, preview_files, push_database, save_target, test_connection, upload_files};
+use crate::domain::lan::human_bytes;
+use crate::domain::project::{ProjectDb, set_project_db};
+use crate::domain::usage::{SiteUsage, detect_db, site_usage};
+use std::collections::HashMap;
+use crate::platform::open_url;
+use crate::domain::{
     VhostProject, ProjectType, ServerStatus,
     list_projects, add_project, update_project, remove_project,
     start_server, stop_server, server_status, auto_assign_port,
     setup_project, deps_ready, auto_detect_start_command, auto_detect_next_command,
     detect_next_app_dir, join_dir,
-    error_log_path, read_log, clear_log,
     is_rhymix_project, rx_reset_admin_password,
 };
+use crate::platform::{error_log_path, read_log, clear_log};
+use crate::domain::history::{last_for_project, load_history, summary_line};
 use rfd;
 
 /// 타입에 맞는 실행 명령어를 자동 감지한다.
@@ -89,6 +102,110 @@ pub enum ProjectsMessage {
     RxResetPassword,
     RxResetPasswordDone(Result<String, String>),
     CloseRxPasswordModal,
+    // 새 프로젝트 폼 열기/닫기
+    ToggleAddForm,
+    // 도메인·이름 검색
+    SearchChanged(String),
+    // 사이트별 용량
+    ComputeUsage,
+    UsageComputed(Vec<(String, SiteUsage)>),
+    // 수정 화면의 DB 지정 (비우면 자동 감지)
+    EditDbNameChanged(String),
+    EditDbEngineSelected(DbEngine),
+    // 서버 배포
+    OpenDeploy(String),
+    CloseDeploy,
+    DeployField(DeployField, String),
+    DeploySave,
+    DeployTest,
+    DeployPreview,
+    DeployUpload,
+    DeployDbAsk,
+    DeployDbCancel,
+    DeployDbConfirm,
+    DeployDone(Result<Vec<String>, String>),
+    /// 도메인을 브라우저로 연다
+    OpenSite(String),
+    // 더보기(⋯) 메뉴
+    ToggleMenu(String),
+    /// 다른 PC로 보내기 — App 이 백업·이전 탭으로 넘겨 처리한다
+    SendToPc(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DeployField {
+    Host,
+    Port,
+    User,
+    Key,
+    Path,
+    Excludes,
+    DbHost,
+    DbPort,
+    DbUser,
+    DbPassword,
+    DbName,
+}
+
+/// 서버 배포 패널의 입력값과 진행 상태
+struct DeployForm {
+    id: String,
+    host: String,
+    port: String,
+    user: String,
+    key: String,
+    path: String,
+    excludes: String,
+    db_host: String,
+    db_port: String,
+    db_user: String,
+    db_password: String,
+    db_name: String,
+    busy: Option<&'static str>,
+    log: Vec<String>,
+    /// DB 덮어쓰기 확인 중
+    confirm_db: bool,
+}
+
+impl DeployForm {
+    fn from_target(id: &str, t: &DeployTarget) -> Self {
+        Self {
+            id: id.to_string(),
+            host: t.ssh_host.clone(),
+            port: t.ssh_port.to_string(),
+            user: t.ssh_user.clone(),
+            key: t.ssh_key.clone(),
+            path: t.remote_path.clone(),
+            excludes: t.excludes.join(", "),
+            db_host: t.db_host.clone(),
+            db_port: if t.db_port == 0 { String::new() } else { t.db_port.to_string() },
+            db_user: t.db_user.clone(),
+            db_password: t.db_password.clone(),
+            db_name: t.db_name.clone(),
+            busy: None,
+            log: Vec::new(),
+            confirm_db: false,
+        }
+    }
+
+    fn to_target(&self) -> Result<DeployTarget, String> {
+        let port = |s: &str, d: u16| -> Result<u16, String> {
+            if s.trim().is_empty() { Ok(d) } else { s.trim().parse().map_err(|_| format!("포트가 숫자가 아닙니다: {s}")) }
+        };
+        Ok(DeployTarget {
+            ssh_host: self.host.trim().to_string(),
+            ssh_port: port(&self.port, 22)?,
+            ssh_user: self.user.trim().to_string(),
+            ssh_key: self.key.trim().to_string(),
+            remote_path: self.path.trim().to_string(),
+            excludes: self.excludes.split(',').map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect(),
+            db_host: self.db_host.trim().to_string(),
+            db_port: port(&self.db_port, 3306)?,
+            db_user: self.db_user.trim().to_string(),
+            db_password: self.db_password.clone(),
+            db_name: self.db_name.trim().to_string(),
+        })
+    }
 }
 
 pub struct ProjectsState {
@@ -116,12 +233,52 @@ pub struct ProjectsState {
     // 메시지
     error: Option<String>,
     server_message: Option<Result<String, String>>,
+    // 새 프로젝트 폼이 펼쳐져 있는지
+    adding: bool,
+    search: String,
+    usage: HashMap<String, SiteUsage>,
+    usage_loading: bool,
+    edit_db_name: String,
+    edit_db_engine: DbEngine,
+    deploy: Option<DeployForm>,
+    // 더보기 메뉴가 열린 project id
+    menu_open: Option<String>,
+    // project id → (마지막 이전 한 줄, 최근 이전 기록 줄들). 그릴 때마다 파일을 읽지 않게 미리 만든다
+    transfers: std::collections::HashMap<String, (String, Vec<String>)>,
+}
+
+fn load_transfers(projects: &[VhostProject]) -> std::collections::HashMap<String, (String, Vec<String>)> {
+    let history = load_history();
+    projects
+        .iter()
+        .filter_map(|p| {
+            let last = last_for_project(&history, &p.id)?;
+            let recent: Vec<String> = history
+                .iter()
+                .rev()
+                .filter(|r| r.projects.iter().any(|x| x == &p.id))
+                .take(5)
+                .map(summary_line)
+                .collect();
+            Some((p.id.clone(), (summary_line(&last), recent)))
+        })
+        .collect()
 }
 
 impl ProjectsState {
     pub fn new() -> Self {
+        let projects = list_projects();
         Self {
-            projects: list_projects(),
+            transfers: load_transfers(&projects),
+            menu_open: None,
+            adding: false,
+            search: String::new(),
+            usage: HashMap::new(),
+            usage_loading: false,
+            edit_db_name: String::new(),
+            edit_db_engine: DbEngine::MariaDb,
+            deploy: None,
+            projects,
             new_name: String::new(),
             new_id: String::new(),
             new_path: String::new(),
@@ -146,6 +303,164 @@ impl ProjectsState {
         match msg {
             ProjectsMessage::Refresh => {
                 self.projects = list_projects();
+                self.transfers = load_transfers(&self.projects);
+                Task::none()
+            }
+            ProjectsMessage::SearchChanged(v) => {
+                self.search = v;
+                Task::none()
+            }
+            ProjectsMessage::ComputeUsage => {
+                if self.usage_loading {
+                    return Task::none();
+                }
+                self.usage_loading = true;
+                let projects = self.projects.clone();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            projects.iter().map(|p| (p.id.clone(), site_usage(p))).collect::<Vec<_>>()
+                        })
+                        .await
+                        .unwrap_or_default()
+                    },
+                    ProjectsMessage::UsageComputed,
+                )
+            }
+            ProjectsMessage::UsageComputed(list) => {
+                self.usage_loading = false;
+                self.usage = list.into_iter().collect();
+                Task::none()
+            }
+            ProjectsMessage::EditDbNameChanged(v) => {
+                self.edit_db_name = v;
+                Task::none()
+            }
+            ProjectsMessage::EditDbEngineSelected(e) => {
+                self.edit_db_engine = e;
+                Task::none()
+            }
+            ProjectsMessage::OpenDeploy(id) => {
+                if let Some(p) = self.projects.iter().find(|p| p.id == id) {
+                    let t = load_target(&id).unwrap_or_else(|| default_target(p));
+                    self.deploy = Some(DeployForm::from_target(&id, &t));
+                }
+                self.menu_open = None;
+                Task::none()
+            }
+            ProjectsMessage::CloseDeploy => {
+                self.deploy = None;
+                Task::none()
+            }
+            ProjectsMessage::DeployField(f, v) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    let slot = match f {
+                        DeployField::Host => &mut d.host,
+                        DeployField::Port => &mut d.port,
+                        DeployField::User => &mut d.user,
+                        DeployField::Key => &mut d.key,
+                        DeployField::Path => &mut d.path,
+                        DeployField::Excludes => &mut d.excludes,
+                        DeployField::DbHost => &mut d.db_host,
+                        DeployField::DbPort => &mut d.db_port,
+                        DeployField::DbUser => &mut d.db_user,
+                        DeployField::DbPassword => &mut d.db_password,
+                        DeployField::DbName => &mut d.db_name,
+                    };
+                    *slot = v;
+                    d.confirm_db = false;
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeploySave => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.log = match d.to_target().and_then(|t| save_target(&d.id, &t)) {
+                        Ok(()) => vec!["✓ 서버 정보를 저장했습니다".into()],
+                        Err(e) => vec![format!("✗ {e}")],
+                    };
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeployTest
+            | ProjectsMessage::DeployPreview
+            | ProjectsMessage::DeployUpload
+            | ProjectsMessage::DeployDbConfirm => {
+                let Some(d) = self.deploy.as_mut() else { return Task::none() };
+                let Some(p) = self.projects.iter().find(|p| p.id == d.id).cloned() else { return Task::none() };
+                let t = match d.to_target() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        d.log = vec![format!("✗ {e}")];
+                        return Task::none();
+                    }
+                };
+                // 실행할 때마다 입력값을 저장해 둔다 (다음에 다시 쓰도록)
+                if let Err(e) = save_target(&d.id, &t) {
+                    d.log = vec![format!("✗ {e}")];
+                    return Task::none();
+                }
+                d.confirm_db = false;
+                d.log.clear();
+                let (label, job): (&'static str, Box<dyn FnOnce() -> Result<Vec<String>, String> + Send>) = match msg {
+                    ProjectsMessage::DeployTest => ("연결 시험 중…", Box::new(move || Ok(test_connection(&p, &t)))),
+                    ProjectsMessage::DeployPreview => ("올라갈 파일을 보는 중…", Box::new(move || {
+                        preview_files(&p, &t).map(|files| {
+                            let mut log = vec![format!("✓ 올라갈 파일 {}개 (서버에만 있는 파일은 지우지 않음)", files.len())];
+                            log.extend(files.iter().take(40).map(|f| format!("· {f}")));
+                            if files.len() > 40 {
+                                log.push(format!("· … 외 {}개", files.len() - 40));
+                            }
+                            log
+                        })
+                    })),
+                    ProjectsMessage::DeployUpload => ("파일 올리는 중…", Box::new(move || upload_files(&p, &t))),
+                    _ => ("원격 DB 백업 후 넣는 중…", Box::new(move || push_database(&p, &t))),
+                };
+                d.busy = Some(label);
+                Task::perform(
+                    async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) },
+                    ProjectsMessage::DeployDone,
+                )
+            }
+            ProjectsMessage::DeployDbAsk => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.confirm_db = true;
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeployDbCancel => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.confirm_db = false;
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeployDone(r) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.busy = None;
+                    d.log = match r {
+                        Ok(l) => l,
+                        Err(e) => vec![format!("✗ {e}")],
+                    };
+                }
+                self.transfers = load_transfers(&self.projects);
+                Task::none()
+            }
+            ProjectsMessage::ToggleAddForm => {
+                self.adding = !self.adding;
+                Task::none()
+            }
+            ProjectsMessage::OpenSite(domain) => {
+                let scheme = if load_settings().https { "https" } else { "http" };
+                open_url(&format!("{scheme}://{domain}"));
+                Task::none()
+            }
+            ProjectsMessage::ToggleMenu(id) => {
+                self.menu_open = if self.menu_open.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+                Task::none()
+            }
+            ProjectsMessage::SendToPc(_) => {
+                // App 이 탭을 바꾸고 백업·이전 탭에 프로젝트를 넘긴다
+                self.menu_open = None;
                 Task::none()
             }
             ProjectsMessage::NameChanged(v) => {
@@ -220,6 +535,7 @@ impl ProjectsState {
                     port,
                     start_command: self.new_start_command.clone(),
                     app_dir: self.new_app_dir.clone(),
+                    db: None,
                 };
                 let added_id = project.id.clone();
                 let needs_deps = project.project_type.is_proxied();
@@ -232,6 +548,7 @@ impl ProjectsState {
                         self.new_app_dir.clear();
                         self.new_start_command = "python app.py".to_string();
                         self.new_type = ProjectType::Php;
+                        self.adding = false;
                         self.projects = list_projects();
                         // Python/Next.js면 의존성 자동 설치 시작
                         if needs_deps {
@@ -288,6 +605,16 @@ impl ProjectsState {
                     self.edit_start_command = p.start_command.clone();
                     self.edit_app_dir = p.app_dir.clone();
                     self.edit_type = p.project_type.clone();
+                    match &p.db {
+                        Some(db) => {
+                            self.edit_db_name = db.name.clone();
+                            self.edit_db_engine = db.engine;
+                        }
+                        None => {
+                            self.edit_db_name.clear();
+                            self.edit_db_engine = detect_db(p).map(|d| d.engine).unwrap_or(DbEngine::MariaDb);
+                        }
+                    }
                     self.editing_id = Some(id);
                     self.error = None;
                 }
@@ -338,6 +665,11 @@ impl ProjectsState {
                     self.edit_app_dir.clone(),
                 ) {
                     Ok(_) => {
+                        let db = (!self.edit_db_name.trim().is_empty())
+                            .then(|| ProjectDb { engine: self.edit_db_engine, name: self.edit_db_name.trim().to_string() });
+                        if let Err(e) = set_project_db(&id, db) {
+                            self.error = Some(e);
+                        }
                         self.editing_id = None;
                         self.error = None;
                         self.projects = list_projects();
@@ -500,692 +832,663 @@ impl ProjectsState {
     }
 
     pub fn view(&self) -> Element<'_, ProjectsMessage> {
-        let needs_server = self.new_type.is_proxied();
-
-        let type_row = row![
-            type_btn("PHP", self.new_type == ProjectType::Php,
-                ProjectsMessage::TypeSelected(ProjectType::Php)),
-            Space::with_width(8),
-            type_btn("Python", self.new_type == ProjectType::Python,
-                ProjectsMessage::TypeSelected(ProjectType::Python)),
-            Space::with_width(8),
-            type_btn("Next.js", self.new_type == ProjectType::NextJs,
-                ProjectsMessage::TypeSelected(ProjectType::NextJs)),
-        ];
-
-        let mut form_col = column![
-            text("새 프로젝트 추가").size(15),
-            Space::with_height(12),
-            type_row,
-            Space::with_height(12),
-            row![
-                column![
-                    text("프로젝트 이름").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                    Space::with_height(4),
-                    text_input("My Project", &self.new_name)
-                        .on_input(ProjectsMessage::NameChanged)
-                        .padding(10),
-                ].width(Length::FillPortion(2)),
-                Space::with_width(12),
-                column![
-                    text("ID (도메인)").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                    Space::with_height(4),
-                    text_input("id → id.localhost", &self.new_id)
-                        .on_input(ProjectsMessage::IdChanged)
-                        .padding(10),
-                ].width(Length::FillPortion(2)),
-            ],
-            Space::with_height(10),
+        let add_btn = if self.adding {
+            btn("닫기", Some(Icon::X), Kind::Surface).on_press(ProjectsMessage::ToggleAddForm)
+        } else {
+            btn("새 프로젝트", Some(Icon::Plus), Kind::Primary).on_press(ProjectsMessage::ToggleAddForm)
+        };
+        let mut col = column![
+            page_header("프로젝트", "*.localhost 도메인으로 여는 가상호스트를 관리합니다", Some(add_btn.into())),
+            Space::with_height(20),
         ]
         .spacing(0);
 
-        form_col = form_col.push(
-            column![
-                text("프로젝트 경로").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                Space::with_height(4),
-                row![
-                    text_input("/home/user/projects/...", &self.new_path)
-                        .padding(10)
-                        .width(Length::Fill),
-                    Space::with_width(8),
-                    button(text("탐색").size(13))
-                        .on_press(ProjectsMessage::OpenFilePicker)
-                        .padding([10, 16]),
-                ],
-            ]
-        );
-
-        form_col = form_col
-            .push(Space::with_height(10))
-            .push(column![
-                text("하위 디렉토리 (선택)").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                Space::with_height(4),
-                text_input("예: app — 비우면 프로젝트 경로를 그대로 사용", &self.new_app_dir)
-                    .on_input(ProjectsMessage::AppDirChanged)
-                    .padding(10),
-                Space::with_height(4),
-                text(if self.new_type == ProjectType::Php {
-                    "PHP: DocumentRoot로 사용됩니다 (예: public)"
-                } else {
-                    "앱이 하위 폴더에 있을 때 (예: easyhost/app). 폴더 선택 시 자동 감지됩니다"
-                })
-                .size(11).color(Color::from_rgb(0.45, 0.55, 0.65)),
-            ]);
-
-        if needs_server {
-            let placeholder = if self.new_type == ProjectType::NextJs {
-                "npx next dev --port 5001"
-            } else {
-                "python3 app.py"
-            };
-            form_col = form_col
-                .push(Space::with_height(10))
-                .push(column![
-                    text("실행 명령어").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                    Space::with_height(4),
-                    text_input(placeholder, &self.new_start_command)
-                        .on_input(ProjectsMessage::StartCommandChanged)
-                        .padding(10),
-                    Space::with_height(4),
-                    text(if self.new_type == ProjectType::NextJs {
-                        "포트는 자동 할당되며, --port 값도 거기에 맞춰집니다 (5001번부터)"
-                    } else {
-                        "포트는 자동 할당됩니다 (5001번부터 순서대로)"
-                    })
-                    .size(11).color(Color::from_rgb(0.4, 0.6, 0.4)),
-                ]);
+        if self.adding {
+            col = col.push(self.add_form()).push(Space::with_height(16));
         }
-
-        form_col = form_col.push(Space::with_height(14)).push(
-            button(text("프로젝트 추가").size(14))
-                .on_press(ProjectsMessage::AddProject)
-                .padding([10, 24])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.45, 0.7))),
-                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                })
-        );
-
-        let add_form = container(form_col)
-            .padding(20)
-            .width(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
-                border: iced::Border { radius: 10.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
-                ..Default::default()
-            });
-
-        let editing_id = self.editing_id.as_deref();
-        let project_list: Element<ProjectsMessage> = if self.projects.is_empty() {
-            container(
-                text("등록된 프로젝트가 없습니다.").size(14).color(Color::from_rgb(0.5,0.5,0.5))
-            ).padding(20).into()
-        } else {
-            let items: Vec<Element<ProjectsMessage>> = self.projects.iter().map(|p| {
-                if editing_id == Some(p.id.as_str()) {
-                    project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command, &self.edit_app_dir, &self.edit_type)
-                } else {
-                    let is_setting_up = self.setting_up.contains(&p.id);
-                    project_row_view_with_state(p, editing_id.is_some(), is_setting_up)
-                }
-            }).collect();
-            scrollable(column(items).spacing(8)).into()
-        };
-
-        let log_section: Element<ProjectsMessage> = match &self.log_view {
-            Some(lv) => column![log_panel(lv), Space::with_height(20)].into(),
-            None => Space::with_height(0).into(),
-        };
-
-        let rx_modal_section: Element<ProjectsMessage> = match &self.rx_password_modal {
-            Some(m) => column![rx_password_panel(m), Space::with_height(20)].into(),
-            None => Space::with_height(0).into(),
-        };
-
-        let mut col = column![
-            text("프로젝트").size(22),
-            Space::with_height(8),
-            text("가상호스트를 설정해 id.localhost 도메인으로 접속할 수 있습니다.")
-                .size(13).color(Color::from_rgb(0.6,0.6,0.6)),
-            Space::with_height(20),
-            add_form,
-            Space::with_height(20),
-            log_section,
-            rx_modal_section,
-            project_list,
-        ];
-
+        if let Some(m) = &self.rx_password_modal {
+            col = col.push(rx_password_panel(m)).push(Space::with_height(16));
+        }
+        if let Some(lv) = &self.log_view {
+            col = col.push(log_panel(lv)).push(Space::with_height(16));
+        }
         if let Some(err) = &self.error {
-            let full = format!("오류: {err}");
-            col = col.push(Space::with_height(8)).push(
-                row![
-                    text(full.clone()).size(13).color(Color::from_rgb(1.0, 0.4, 0.4)).width(Length::Fill),
-                    Space::with_width(8),
-                    msg_copy_btn(full),
-                ].align_y(iced::Alignment::Center)
-            );
+            col = col.push(message_card(format!("✗ {err}"))).push(Space::with_height(12));
         }
         if let Some(msg) = &self.server_message {
-            let (txt, color) = match msg {
-                Ok(m) => (m.as_str(), Color::from_rgb(0.2, 0.9, 0.4)),
-                Err(e) => (e.as_str(), Color::from_rgb(1.0, 0.4, 0.4)),
+            let line = match msg {
+                Ok(m) => format!("✓ {m}"),
+                Err(e) => format!("✗ {e}"),
             };
-            col = col.push(Space::with_height(8)).push(
-                row![
-                    text(txt).size(13).color(color).width(Length::Fill),
-                    Space::with_width(8),
-                    msg_copy_btn(txt.to_string()),
-                ].align_y(iced::Alignment::Center)
-            );
+            col = col.push(message_card(line)).push(Space::with_height(12));
         }
 
+        let editing_id = self.editing_id.as_deref();
+        if self.projects.is_empty() {
+            col = col.push(card(
+                column![
+                    icon(Icon::Folder, 22.0, p().fg4),
+                    text("등록된 프로젝트가 없습니다").size(14).font(theme::MEDIUM).color(p().fg2),
+                    muted("오른쪽 위 [새 프로젝트]로 폴더를 등록하면 id.localhost 로 열립니다"),
+                ]
+                .spacing(6)
+                .align_x(iced::Alignment::Center)
+                .width(Length::Fill),
+            ));
+            return col.into();
+        }
+
+        col = col.push(self.overview()).push(Space::with_height(12));
+
+        let q = self.search.trim().to_lowercase();
+        let shown: Vec<&VhostProject> = self
+            .projects
+            .iter()
+            .filter(|p| q.is_empty() || [&p.domain, &p.name, &p.id].iter().any(|s| s.to_lowercase().contains(&q)))
+            .collect();
+        if shown.is_empty() {
+            col = col.push(card(muted(format!("'{}'에 맞는 사이트가 없습니다", self.search.trim()))));
+        }
+        let mut list = column![].spacing(10);
+        for p_ in shown {
+            if editing_id == Some(p_.id.as_str()) {
+                list = list.push(project_row_editing(
+                    p_,
+                    &self.edit_name,
+                    &self.edit_path,
+                    &self.edit_start_command,
+                    &self.edit_app_dir,
+                    &self.edit_type,
+                    &self.edit_db_name,
+                    self.edit_db_engine,
+                ));
+                continue;
+            }
+            let transfer = self.transfers.get(&p_.id);
+            let menu = (self.menu_open.as_deref() == Some(p_.id.as_str())).then(|| transfer.map(|t| t.1.as_slice()).unwrap_or(&[]));
+            list = list.push(project_row_view_with_state(
+                p_,
+                editing_id.is_some(),
+                self.setting_up.contains(&p_.id),
+                transfer.map(|t| t.0.as_str()),
+                menu,
+                self.usage.get(&p_.id),
+            ));
+            if let Some(d) = self.deploy.as_ref().filter(|d| d.id == p_.id) {
+                list = list.push(deploy_panel(d));
+            }
+        }
+        col = col.push(list);
         col.into()
     }
-}
 
-// 일반 보기 모드 카드
-fn project_row_view(p: &VhostProject, any_editing: bool) -> Element<'_, ProjectsMessage> {
-    project_row_view_with_state(p, any_editing, false)
-}
-
-fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: bool) -> Element<'_, ProjectsMessage> {
-    let id = p.id.clone();
-    let id_edit = p.id.clone();
-    let id_srv = p.id.clone();
-    let id_log = p.id.clone();
-    let id_rx = p.id.clone();
-    let is_rhymix = is_rhymix_project(p);
-
-    let (type_label, type_color) = match p.project_type {
-        ProjectType::Php    => ("PHP",     Color::from_rgb(0.5, 0.6, 1.0)),
-        ProjectType::Python => ("Python",  Color::from_rgb(0.4, 0.8, 0.5)),
-        ProjectType::NextJs => ("Next.js", Color::from_rgb(0.8, 0.8, 0.85)),
-    };
-
-    let status = server_status(&p.id);
-    let is_running = matches!(status, ServerStatus::Running(_));
-
-    let server_controls: Element<ProjectsMessage> = {
-        if p.project_type.is_proxied() {
-            if setting_up {
-                row![
-                    text("⏳ 패키지 설치 중...").size(12).color(Color::from_rgb(0.8, 0.7, 0.2)),
-                ].align_y(iced::Alignment::Center).into()
-            } else {
-                let deps_ok = deps_ready(p);
-                let (btn_label, btn_color, btn_msg) = if is_running {
-                    ("중지", Color::from_rgb(0.7, 0.2, 0.2), ProjectsMessage::StopServer(id_srv))
-                } else {
-                    ("시작", Color::from_rgb(0.1, 0.5, 0.3), ProjectsMessage::StartServer(id_srv))
-                };
-                let dot_color = if is_running { Color::from_rgb(0.2, 0.9, 0.4) } else { Color::from_rgb(0.5, 0.5, 0.5) };
-                let pid_str = if let ServerStatus::Running(pid) = status { format!("PID {pid}") } else { "중지됨".to_string() };
-                let id_setup = p.id.clone();
-                let mut r = row![
-                    container(Space::with_width(8)).width(8).height(8)
-                        .style(move |_| container::Style {
-                            background: Some(iced::Background::Color(dot_color)),
-                            border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                            ..Default::default()
-                        }),
-                    Space::with_width(6),
-                    text(pid_str).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-                    Space::with_width(8),
-                    button(text(btn_label).size(12))
-                        .on_press(btn_msg)
-                        .padding([6, 14])
-                        .style(move |_, _| button::Style {
-                            background: Some(iced::Background::Color(btn_color)),
-                            border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                            text_color: Color::WHITE,
-                            ..Default::default()
-                        }),
-                ].align_y(iced::Alignment::Center);
-                if !deps_ok {
-                    r = r.push(Space::with_width(6)).push(
-                        button(text("패키지설치").size(11))
-                            .on_press(ProjectsMessage::SetupDeps(id_setup))
-                            .padding([6, 10])
-                            .style(|_, _| button::Style {
-                                background: Some(iced::Background::Color(Color::from_rgb(0.35, 0.25, 0.0))),
-                                border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                                text_color: Color::from_rgb(1.0, 0.85, 0.3),
-                                ..Default::default()
-                            })
-                    );
-                }
-                r.into()
-            }
+    /// 검색창 + 전체 용량 요약
+    fn overview(&self) -> Element<'_, ProjectsMessage> {
+        let (files, deps, dbs) = self.usage.values().fold((0u64, 0u64, 0u64), |(f, d, b), u| {
+            (f + u.files, d + u.deps, b + u.db_bytes.unwrap_or(0))
+        });
+        let stat = |label: &'static str, value: String| -> Element<'_, ProjectsMessage> {
+            column![muted(label), text(value).size(20).font(theme::BOLD).color(p().fg)].spacing(2).into()
+        };
+        let summary: Element<ProjectsMessage> = if self.usage.is_empty() {
+            muted(if self.usage_loading { "용량을 재는 중…" } else { "[용량 계산]을 누르면 사이트별 파일·DB 크기를 잽니다" }).into()
         } else {
-            let apache_running = crate::system::get_service_status("apache2") == crate::system::ServiceStatus::Running;
-            let dot_color = if apache_running { Color::from_rgb(0.2, 0.9, 0.4) } else { Color::from_rgb(0.5, 0.5, 0.5) };
-            let label = if apache_running { "Apache 실행 중" } else { "Apache 중지됨" };
             row![
-                container(Space::with_width(8)).width(8).height(8)
-                    .style(move |_| container::Style {
-                        background: Some(iced::Background::Color(dot_color)),
-                        border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                        ..Default::default()
-                    }),
-                Space::with_width(6),
-                text(label).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-            ].align_y(iced::Alignment::Center).into()
-        }
-    };
-
-    // 다른 항목 편집 중이면 수정 버튼 비활성
-    let edit_btn = if any_editing {
-        button(text("수정").size(12))
-            .padding([6, 14])
-            .style(|_, _| button::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.2, 0.25))),
-                border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                text_color: Color::from_rgb(0.4, 0.4, 0.4),
-                ..Default::default()
-            })
-    } else {
-        button(text("수정").size(12))
-            .on_press(ProjectsMessage::EditProject(id_edit))
-            .padding([6, 14])
-            .style(|_, _| button::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.35, 0.5))),
-                border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                text_color: Color::WHITE,
-                ..Default::default()
-            })
-    };
-
-    let mut controls_row = row![
-        server_controls,
-        Space::with_width(8),
-    ];
-    if is_rhymix {
-        controls_row = controls_row.push(
-            button(text("관리자 비번").size(12))
-                .on_press(ProjectsMessage::OpenRxPasswordModal(id_rx))
-                .padding([6, 14])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.35, 0.25, 0.0))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::from_rgb(1.0, 0.85, 0.3),
-                    ..Default::default()
-                }),
-        ).push(Space::with_width(6));
-    }
-
-    container(
-        row![
+                stat("사이트", format!("{}개", self.projects.len())),
+                stat("파일", human_bytes(files)),
+                stat("그중 의존성", human_bytes(deps)),
+                stat("DB", human_bytes(dbs)),
+                stat("합계", human_bytes(files + dbs)),
+            ]
+            .spacing(28)
+            .into()
+        };
+        let calc = btn(if self.usage_loading { "재는 중…" } else { "용량 계산" }, Some(Icon::HardDrive), Kind::Flat);
+        card(
             column![
                 row![
-                    text(&p.name).size(15),
-                    Space::with_width(8),
-                    container(text(type_label).size(11))
-                        .padding([2, 8])
-                        .style(move |_| container::Style {
-                            background: Some(iced::Background::Color(Color::from_rgba(type_color.r, type_color.g, type_color.b, 0.15))),
-                            border: iced::Border { radius: 4.0.into(), color: Color::from_rgba(type_color.r, type_color.g, type_color.b, 0.4), width: 1.0 },
-                            ..Default::default()
-                        }),
-                ].align_y(iced::Alignment::Center),
-                Space::with_height(2),
-                text(&p.domain).size(12).color(Color::from_rgb(0.4, 0.7, 1.0)),
-                Space::with_height(2),
-                text(if p.project_type == ProjectType::Php {
-                    p.work_dir()
-                } else if p.app_dir.is_empty() {
-                    format!(":{} · {}", p.port, p.start_command)
+                    input("도메인·이름으로 찾기", &self.search).on_input(ProjectsMessage::SearchChanged).width(Length::Fill),
+                    if self.usage_loading { calc } else { calc.on_press(ProjectsMessage::ComputeUsage) },
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+                Space::with_height(14),
+                summary,
+            ],
+        )
+    }
+
+    fn add_form(&self) -> Element<'_, ProjectsMessage> {
+        let needs_server = self.new_type.is_proxied();
+        let mut form = column![
+            row![
+                text("새 프로젝트").size(15).font(theme::SEMIBOLD).color(p().fg),
+                Space::with_width(Length::Fill),
+                type_picker(&self.new_type, ProjectsMessage::TypeSelected),
+            ]
+            .align_y(iced::Alignment::Center),
+            Space::with_height(14),
+            row![
+                field("프로젝트 이름", input("My Project", &self.new_name).on_input(ProjectsMessage::NameChanged).into(), None),
+                field("ID (도메인)", input("id → id.localhost", &self.new_id).on_input(ProjectsMessage::IdChanged).into(), None),
+            ]
+            .spacing(12),
+            Space::with_height(12),
+            field(
+                "프로젝트 경로",
+                row![
+                    input("/home/user/projects/...", &self.new_path)
+                        .on_input(|v| ProjectsMessage::PathSelected(Some(v)))
+                        .width(Length::Fill),
+                    btn("찾아보기", Some(Icon::FolderOpen), Kind::Flat).on_press(ProjectsMessage::OpenFilePicker),
+                ]
+                .spacing(8)
+                .into(),
+                None,
+            ),
+            Space::with_height(12),
+            field(
+                "하위 디렉토리 (선택)",
+                input("예: app — 비우면 프로젝트 경로를 그대로 사용", &self.new_app_dir)
+                    .on_input(ProjectsMessage::AppDirChanged)
+                    .into(),
+                Some(if self.new_type == ProjectType::Php {
+                    "PHP: DocumentRoot로 사용됩니다 (예: public)"
                 } else {
-                    format!(":{} · {}/ · {}", p.port, p.app_dir, p.start_command)
-                }).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-            ].width(Length::Fill),
-            controls_row,
-            button(text("로그").size(12))
-                .on_press(ProjectsMessage::ViewLog(id_log))
-                .padding([6, 14])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.3, 0.3, 0.18))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::from_rgb(1.0, 0.9, 0.5),
-                    ..Default::default()
+                    "앱이 하위 폴더에 있을 때 (예: easyhost/app). 폴더를 고르면 자동으로 찾습니다"
                 }),
-            Space::with_width(6),
-            edit_btn,
-            Space::with_width(6),
-            button(text("삭제").size(12))
-                .on_press(ProjectsMessage::RemoveProject(id))
-                .padding([6, 14])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.5, 0.1, 0.1))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
+            ),
+        ]
+        .spacing(0);
+
+        if needs_server {
+            let placeholder = if self.new_type == ProjectType::NextJs { "npx next dev --port 5001" } else { "python3 app.py" };
+            form = form.push(Space::with_height(12)).push(field(
+                "실행 명령어",
+                input(placeholder, &self.new_start_command).on_input(ProjectsMessage::StartCommandChanged).into(),
+                Some(if self.new_type == ProjectType::NextJs {
+                    "포트는 5001번부터 자동으로 정해지고 --port 값도 거기에 맞춰집니다"
+                } else {
+                    "포트는 5001번부터 자동으로 정해집니다"
                 }),
-        ].align_y(iced::Alignment::Center)
+            ));
+        }
+
+        form = form.push(Space::with_height(16)).push(
+            row![
+                btn("추가", Some(Icon::Plus), Kind::Primary).on_press(ProjectsMessage::AddProject),
+                btn("취소", None, Kind::Ghost).on_press(ProjectsMessage::ToggleAddForm),
+            ]
+            .spacing(8),
+        );
+        card(form)
+    }
+}
+
+/// 라벨 + 입력 + 도움말
+fn field<'a>(label: &'a str, control: Element<'a, ProjectsMessage>, help: Option<&'a str>) -> Element<'a, ProjectsMessage> {
+    let mut c = column![text(label).size(12).font(theme::MEDIUM).color(p().fg3), control].spacing(6);
+    if let Some(h) = help {
+        c = c.push(text(h).size(11).color(p().fg4));
+    }
+    c.width(Length::Fill).into()
+}
+
+fn type_picker<'a>(selected: &ProjectType, on: impl Fn(ProjectType) -> ProjectsMessage + 'a) -> Element<'a, ProjectsMessage> {
+    segmented(
+        &[(ProjectType::Php, "PHP"), (ProjectType::Python, "Python"), (ProjectType::NextJs, "Next.js")],
+        selected,
+        on,
     )
-    .padding(16)
-    .width(Length::Fill)
-    .style(|_| container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
-        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.2, 0.2, 0.25), width: 1.0 },
-        ..Default::default()
-    })
+}
+
+fn type_chip<'a>(t: &ProjectType) -> Element<'a, ProjectsMessage> {
+    match t {
+        ProjectType::Php => chip("PHP", Tone::Primary),
+        ProjectType::Python => chip("Python", Tone::Success),
+        ProjectType::NextJs => chip("Next.js", Tone::Neutral),
+    }
+}
+
+fn message_card(line: String) -> Element<'static, ProjectsMessage> {
+    let copy_text = line.trim_start_matches(['✓', '✗', ' ']).to_string();
+    card(
+        row![
+            container(result_line(line)).width(Length::Fill),
+            btn("복사", Some(Icon::Copy), Kind::Ghost).on_press(ProjectsMessage::CopyText(copy_text)),
+        ]
+        .align_y(iced::Alignment::Center),
+    )
+}
+
+/// last_transfer: 마지막 이전 한 줄. menu: 더보기가 열려 있으면 Some(최근 이전 기록)
+fn project_row_view_with_state<'a>(
+    p_: &'a VhostProject,
+    any_editing: bool,
+    setting_up: bool,
+    last_transfer: Option<&'a str>,
+    menu: Option<&'a [String]>,
+    usage: Option<&'a SiteUsage>,
+) -> Element<'a, ProjectsMessage> {
+    let c = p();
+    let id = p_.id.clone();
+
+    // 왼쪽: 이름·타입, 도메인(누르면 열림), 경로·명령, 마지막 이전
+    let mut info = column![
+        row![text(&p_.name).size(15).font(theme::SEMIBOLD).color(c.fg), type_chip(&p_.project_type)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        iced::widget::button(
+            row![icon(Icon::Globe, 12.0, c.primary_fg), text(&p_.domain).size(13).color(c.primary_fg)]
+                .spacing(5)
+                .align_y(iced::Alignment::Center),
+        )
+        .padding(0)
+        .on_press(ProjectsMessage::OpenSite(p_.domain.clone()))
+        .style(|_, _| iced::widget::button::Style::default()),
+        text(if p_.project_type == ProjectType::Php {
+            p_.work_dir()
+        } else if p_.app_dir.is_empty() {
+            format!(":{} · {}", p_.port, p_.start_command)
+        } else {
+            format!(":{} · {}/ · {}", p_.port, p_.app_dir, p_.start_command)
+        })
+        .size(12)
+        .color(c.fg4),
+    ]
+    .spacing(4)
+    .width(Length::Fill);
+    if let Some(u) = usage {
+        let db = match (&u.db, u.db_bytes) {
+            (Some(d), Some(b)) => format!(" · DB {} {}", d.name, human_bytes(b)),
+            (Some(d), None) => format!(" · DB {} (크기 못 읽음)", d.name),
+            (None, _) => " · DB 없음".to_string(),
+        };
+        info = info.push(
+            row![
+                icon(Icon::HardDrive, 11.0, c.fg3),
+                text(format!(
+                    "파일 {} (의존성 {}){db} · 합계 {}",
+                    human_bytes(u.files),
+                    human_bytes(u.deps),
+                    human_bytes(u.total())
+                ))
+                .size(11)
+                .color(c.fg3),
+            ]
+            .spacing(5)
+            .align_y(iced::Alignment::Center),
+        );
+    }
+    if let Some(t) = last_transfer {
+        info = info.push(
+            row![icon(Icon::History, 11.0, c.fg3), text(t).size(11).color(c.fg3)]
+                .spacing(5)
+                .align_y(iced::Alignment::Center),
+        );
+    }
+
+    // 오른쪽: 상태와 동작
+    let mut actions = row![].spacing(6).align_y(iced::Alignment::Center);
+    if p_.project_type.is_proxied() {
+        if setting_up {
+            actions = actions.push(status("패키지 설치 중…", Tone::Warning));
+        } else {
+            let st = server_status(&p_.id);
+            let running = matches!(st, ServerStatus::Running(_));
+            let label = match st {
+                ServerStatus::Running(pid) => format!("실행 중 · PID {pid}"),
+                ServerStatus::Stopped => "중지됨".to_string(),
+            };
+            actions = actions.push(status(label, if running { Tone::Success } else { Tone::Neutral }));
+            if !deps_ready(p_) {
+                actions = actions.push(btn("패키지 설치", Some(Icon::Package), Kind::Flat).on_press(ProjectsMessage::SetupDeps(id.clone())));
+            }
+            actions = actions.push(if running {
+                btn("중지", Some(Icon::Square), Kind::Danger).on_press(ProjectsMessage::StopServer(id.clone()))
+            } else {
+                btn("시작", Some(Icon::Play), Kind::Success).on_press(ProjectsMessage::StartServer(id.clone()))
+            });
+        }
+    } else {
+        let apache_running = crate::platform::get_service_status("apache2") == crate::platform::ServiceStatus::Running;
+        actions = actions.push(status(
+            if apache_running { "Apache 실행 중" } else { "Apache 중지됨" },
+            if apache_running { Tone::Success } else { Tone::Neutral },
+        ));
+    }
+    if is_rhymix_project(p_) {
+        actions = actions.push(btn("관리자 비번", Some(Icon::Key), Kind::Flat).on_press(ProjectsMessage::OpenRxPasswordModal(id.clone())));
+    }
+    actions = actions
+        .push(btn("로그", Some(Icon::FileText), Kind::Flat).on_press(ProjectsMessage::ViewLog(id.clone())))
+        .push({
+            let b = btn("수정", Some(Icon::Pencil), Kind::Flat);
+            if any_editing { b } else { b.on_press(ProjectsMessage::EditProject(id.clone())) }
+        })
+        .push(btn("삭제", Some(Icon::Trash), Kind::Danger).on_press(ProjectsMessage::RemoveProject(id.clone())))
+        .push(icon_btn(Icon::Ellipsis, menu.is_some()).on_press(ProjectsMessage::ToggleMenu(id.clone())));
+
+    let main = row![info, actions].spacing(16).align_y(iced::Alignment::Center);
+    card(with_menu(main.into(), menu, id))
+}
+
+/// 더보기 메뉴가 열려 있으면 카드 아래에 동작과 최근 이전 기록을 붙인다.
+fn with_menu<'a>(main: Element<'a, ProjectsMessage>, menu: Option<&'a [String]>, id: String) -> Element<'a, ProjectsMessage> {
+    let Some(recent) = menu else {
+        return main;
+    };
+    let mut history = column![text("이전 기록").size(12).font(theme::SEMIBOLD).color(p().fg3)].spacing(4);
+    if recent.is_empty() {
+        history = history.push(muted("아직 다른 PC와 주고받은 적이 없습니다."));
+    }
+    for l in recent {
+        let tone = if l.contains("일부 실패") { Tone::Warning } else { Tone::Success };
+        history = history.push(
+            row![theme::dot(tone), text(l).size(12).color(p().fg2)].spacing(8).align_y(iced::Alignment::Center),
+        );
+    }
+    column![
+        main,
+        Space::with_height(14),
+        theme::divider(),
+        Space::with_height(14),
+        row![
+            column![
+                btn("다른 PC로 보내기", Some(Icon::Send), Kind::Primary).on_press(ProjectsMessage::SendToPc(id.clone())),
+                btn("서버 배포", Some(Icon::Upload), Kind::Flat).on_press(ProjectsMessage::OpenDeploy(id)),
+            ]
+            .spacing(6),
+            Space::with_width(24),
+            history.width(Length::Fill),
+        ]
+        .align_y(iced::Alignment::Start),
+    ]
     .into()
 }
 
 // 편집 모드 카드
 fn project_row_editing<'a>(
-    p: &'a VhostProject,
+    p_: &'a VhostProject,
     edit_name: &'a str,
     edit_path: &'a str,
     edit_start_cmd: &'a str,
     edit_app_dir: &'a str,
     edit_type: &'a ProjectType,
+    edit_db_name: &'a str,
+    edit_db_engine: DbEngine,
 ) -> Element<'a, ProjectsMessage> {
-    let id_save   = p.id.clone();
-    let id_folder = p.id.clone();
     let needs_server = edit_type.is_proxied();
-    let type_changed = *edit_type != p.project_type;
+    let detected = detect_db(p_).map(|d| d.name);
+    let type_changed = *edit_type != p_.project_type;
 
-    let mut edit_col = column![
+    let mut form = column![
         row![
-            text(&p.domain).size(12).color(Color::from_rgb(0.4, 0.7, 1.0)),
-            Space::with_width(8),
-            text("편집 중").size(11).color(Color::from_rgb(0.9, 0.7, 0.2)),
-        ],
-        Space::with_height(10),
-        // 이름
-        column![
-            text("이름").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-            Space::with_height(4),
-            text_input("프로젝트 이름", edit_name)
-                .on_input(ProjectsMessage::EditNameChanged)
-                .padding(9),
-        ],
-        Space::with_height(8),
-        // 경로
-        column![
-            text("경로").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-            Space::with_height(4),
+            text(&p_.domain).size(15).font(theme::SEMIBOLD).color(p().fg),
+            chip("편집 중", Tone::Warning),
+            Space::with_width(Length::Fill),
+            type_picker(edit_type, ProjectsMessage::EditTypeSelected),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        Space::with_height(14),
+        field("이름", input("프로젝트 이름", edit_name).on_input(ProjectsMessage::EditNameChanged).into(), None),
+        Space::with_height(12),
+        field(
+            "경로",
             row![
-                text_input("/home/...", edit_path)
-                    .on_input(ProjectsMessage::EditPathChanged)
-                    .padding(9)
-                    .width(Length::Fill),
-                Space::with_width(8),
-                button(text("탐색").size(12))
-                    .on_press(ProjectsMessage::EditPickFolder(id_folder))
-                    .padding([9, 14]),
-            ],
-        ],
-        Space::with_height(8),
-        // 하위 디렉토리
-        column![
-            text("하위 디렉토리 (선택)").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-            Space::with_height(4),
-            text_input("예: app — 비우면 경로를 그대로 사용", edit_app_dir)
-                .on_input(ProjectsMessage::EditAppDirChanged)
-                .padding(9),
-        ],
-        Space::with_height(8),
-        // 타입 선택
-        column![
-            text("타입").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-            Space::with_height(4),
+                input("/home/...", edit_path).on_input(ProjectsMessage::EditPathChanged).width(Length::Fill),
+                btn("찾아보기", Some(Icon::FolderOpen), Kind::Flat).on_press(ProjectsMessage::EditPickFolder(p_.id.clone())),
+            ]
+            .spacing(8)
+            .into(),
+            None,
+        ),
+        Space::with_height(12),
+        field(
+            "하위 디렉토리 (선택)",
+            input("예: app — 비우면 경로를 그대로 사용", edit_app_dir).on_input(ProjectsMessage::EditAppDirChanged).into(),
+            None,
+        ),
+        Space::with_height(12),
+        field(
+            "DB (용량 표시·서버 배포에 씀)",
             row![
-                type_btn("PHP", *edit_type == ProjectType::Php,
-                    ProjectsMessage::EditTypeSelected(ProjectType::Php)),
-                Space::with_width(8),
-                type_btn("Python", *edit_type == ProjectType::Python,
-                    ProjectsMessage::EditTypeSelected(ProjectType::Python)),
-                Space::with_width(8),
-                type_btn("Next.js", *edit_type == ProjectType::NextJs,
-                    ProjectsMessage::EditTypeSelected(ProjectType::NextJs)),
-            ],
-        ],
+                segmented(
+                    &[(DbEngine::MariaDb, "MariaDB"), (DbEngine::PostgreSql, "PostgreSQL")],
+                    &edit_db_engine,
+                    ProjectsMessage::EditDbEngineSelected,
+                ),
+                input(
+                    &match &detected {
+                        Some(n) => format!("비우면 자동 감지 ({n})"),
+                        None => "DB 이름 — 비우면 설정 파일에서 자동 감지".to_string(),
+                    },
+                    edit_db_name,
+                )
+                .on_input(ProjectsMessage::EditDbNameChanged)
+                .width(Length::Fill),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center)
+            .into(),
+            None,
+        ),
     ]
     .spacing(0);
 
     if type_changed {
-        edit_col = edit_col.push(Space::with_height(6)).push(
-            text(if needs_server {
-                "→ 저장 시 새 포트가 할당되고 vhost가 Proxy 형태로 다시 작성됩니다"
+        form = form.push(Space::with_height(10)).push(chip(
+            if needs_server {
+                "저장하면 새 포트를 받고 vhost가 프록시 형태로 다시 만들어집니다"
             } else {
-                "→ 저장 시 포트가 80으로 리셋되고 vhost가 DocumentRoot 형태로 다시 작성됩니다"
-            })
-            .size(11)
-            .color(Color::from_rgb(0.9, 0.7, 0.2)),
-        );
+                "저장하면 포트가 80으로 바뀌고 vhost가 DocumentRoot 형태로 다시 만들어집니다"
+            },
+            Tone::Warning,
+        ));
     }
-
     if needs_server {
-        let placeholder = if *edit_type == ProjectType::NextJs {
-            "npx next dev --port 5001"
-        } else {
-            "python3 run_server.py 5001"
-        };
-        edit_col = edit_col
-            .push(Space::with_height(8))
-            .push(column![
-                text("실행 명령어").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-                Space::with_height(4),
-                text_input(placeholder, edit_start_cmd)
-                    .on_input(ProjectsMessage::EditStartCommandChanged)
-                    .padding(9),
-            ]);
+        let placeholder = if *edit_type == ProjectType::NextJs { "npx next dev --port 5001" } else { "python3 run_server.py 5001" };
+        form = form.push(Space::with_height(12)).push(field(
+            "실행 명령어",
+            input(placeholder, edit_start_cmd).on_input(ProjectsMessage::EditStartCommandChanged).into(),
+            None,
+        ));
+    }
+    form = form.push(Space::with_height(16)).push(
+        row![
+            btn("저장", Some(Icon::Check), Kind::Primary).on_press(ProjectsMessage::SaveEdit(p_.id.clone())),
+            btn("취소", None, Kind::Ghost).on_press(ProjectsMessage::CancelEdit),
+        ]
+        .spacing(8),
+    );
+    card(form)
+}
+
+/// 서버 배포 패널 (프로젝트 바로 아래에 열린다)
+fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
+    let inp = |ph: &str, value: &str, which: DeployField| input(ph, value).on_input(move |v| ProjectsMessage::DeployField(which, v));
+
+    let busy = d.busy.is_some();
+    let action = |label: &'static str, ic: Icon, kind: Kind, msg: ProjectsMessage| {
+        let b = btn(label, Some(ic), kind);
+        if busy { b } else { b.on_press(msg) }
+    };
+
+    let server = column![
+        theme::section_label("서버 (SSH 키 로그인)"),
+        row![
+            field("주소", inp("example.com", &d.host, DeployField::Host).into(), None),
+            container(field("포트", inp("22", &d.port, DeployField::Port).into(), None)).width(90),
+            container(field("사용자", inp("deploy", &d.user, DeployField::User).into(), None)).width(160),
+        ]
+        .spacing(10),
+        Space::with_height(8),
+        row![
+            field("웹 경로", inp("/var/www/site", &d.path, DeployField::Path).into(), None),
+            field("SSH 키 (선택)", inp("비우면 기본 키 (~/.ssh)", &d.key, DeployField::Key).into(), None),
+        ]
+        .spacing(10),
+        Space::with_height(8),
+        field(
+            "올리지 않을 것 (쉼표로 구분)",
+            inp(".git/, node_modules/, .env", &d.excludes, DeployField::Excludes).into(),
+            Some("서버에만 있는 파일은 지우지 않습니다. 서버의 .env·설정 파일이 덮이지 않게 여기에 넣으세요"),
+        ),
+    ];
+
+    let db = column![
+        theme::section_label("원격 DB (직접 접속)"),
+        row![
+            field("호스트", inp("db.example.com", &d.db_host, DeployField::DbHost).into(), None),
+            container(field("포트", inp("3306", &d.db_port, DeployField::DbPort).into(), None)).width(90),
+            field("DB 이름", inp("site", &d.db_name, DeployField::DbName).into(), None),
+        ]
+        .spacing(10),
+        Space::with_height(8),
+        row![
+            field("사용자", inp("site_user", &d.db_user, DeployField::DbUser).into(), None),
+            field("비밀번호", inp("", &d.db_password, DeployField::DbPassword).secure(true).into(), None),
+        ]
+        .spacing(10),
+    ];
+
+    let mut actions = row![
+        action("저장", Icon::Check, Kind::Flat, ProjectsMessage::DeploySave),
+        action("연결 시험", Icon::Zap, Kind::Flat, ProjectsMessage::DeployTest),
+        action("미리보기", Icon::Search, Kind::Flat, ProjectsMessage::DeployPreview),
+        action("파일 올리기", Icon::Upload, Kind::Primary, ProjectsMessage::DeployUpload),
+        action("DB 올리기", Icon::Database, Kind::Danger, ProjectsMessage::DeployDbAsk),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+    if let Some(label) = d.busy {
+        actions = actions.push(Space::with_width(8)).push(status(label, Tone::Primary));
     }
 
-    edit_col = edit_col.push(Space::with_height(12)).push(
+    let mut body = column![
         row![
-            button(text("저장").size(13))
-                .on_press(ProjectsMessage::SaveEdit(id_save))
-                .padding([8, 20])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.5, 0.3))),
-                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-            Space::with_width(8),
-            button(text("취소").size(13))
-                .on_press(ProjectsMessage::CancelEdit)
-                .padding([8, 20])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.25, 0.25, 0.3))),
-                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
+            icon(Icon::Upload, 15.0, p().fg2),
+            text(format!("서버 배포 · {}", d.id)).size(15).font(theme::SEMIBOLD).color(p().fg),
+            Space::with_width(Length::Fill),
+            btn("닫기", Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseDeploy),
         ]
-    );
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        Space::with_height(8),
+        server,
+        Space::with_height(12),
+        db,
+        Space::with_height(16),
+        actions,
+    ];
 
-    container(edit_col)
-        .padding(16)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.14, 0.16, 0.20))),
-            border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.3, 0.5, 0.7), width: 1.5 },
-            ..Default::default()
-        })
-        .into()
+    if d.confirm_db {
+        body = body.push(Space::with_height(12)).push(theme::inset(
+            column![
+                row![icon(Icon::Database, 14.0, p().danger_fg), text("운영 DB를 덮어씁니다").size(14).font(theme::SEMIBOLD).color(p().danger_fg)]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                muted(format!(
+                    "{}@{} 의 '{}' 내용을 이 PC의 DB로 바꿉니다. 넣기 직전에 원격 DB를 이 PC에 백업해 두지만, 그 사이 서버에 쌓인 데이터는 사라집니다.",
+                    d.db_user, d.db_host, d.db_name
+                )),
+                Space::with_height(6),
+                row![
+                    btn("덮어쓰기", Some(Icon::Database), Kind::Danger).on_press(ProjectsMessage::DeployDbConfirm),
+                    btn("취소", None, Kind::Ghost).on_press(ProjectsMessage::DeployDbCancel),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4),
+        ));
+    }
+    if !d.log.is_empty() {
+        body = body.push(Space::with_height(12)).push(d.log.iter().fold(column![].spacing(4), |c, l| c.push(result_line(l))));
+    }
+    card(body)
+}
+
+// 라이믹스 관리자 비번 변경 패널
+fn rx_password_panel(m: &RxPasswordModal) -> Element<'_, ProjectsMessage> {
+    let header = row![
+        icon(Icon::Key, 15.0, p().fg2),
+        text(format!("라이믹스 관리자 비번 변경 · {}", m.project_name)).size(15).font(theme::SEMIBOLD).color(p().fg),
+        Space::with_width(Length::Fill),
+        btn("닫기", Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseRxPasswordModal),
+    ]
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
+
+    let change = btn(if m.running { "변경 중…" } else { "변경" }, Some(Icon::Check), Kind::Primary);
+    let form = row![
+        container(field("관리자 ID", input("admin", &m.user_id).on_input(ProjectsMessage::RxUserIdChanged).into(), None)).width(180),
+        field(
+            "새 비밀번호",
+            input("새 비밀번호", &m.new_password).on_input(ProjectsMessage::RxNewPasswordChanged).secure(true).into(),
+            None,
+        ),
+        column![Space::with_height(20), if m.running { change } else { change.on_press(ProjectsMessage::RxResetPassword) }],
+    ]
+    .spacing(12);
+
+    let mut body = column![
+        header,
+        Space::with_height(6),
+        muted("rx-cli(rx member reset-password)로 라이믹스 코어의 비밀번호 변경 로직을 그대로 부릅니다. 사이트 구분 없는 전역 회원 계정이니 ID를 정확히 입력하세요."),
+        Space::with_height(14),
+        form,
+    ];
+    if let Some(msg) = &m.message {
+        let line = match msg {
+            Ok(m) => format!("✓ {m}"),
+            Err(e) => format!("✗ {e}"),
+        };
+        body = body.push(Space::with_height(12)).push(result_line(line));
+    }
+    card(body)
 }
 
 // 에러 로그 패널
-fn rx_password_panel(m: &RxPasswordModal) -> Element<'_, ProjectsMessage> {
-    let header = row![
-        text(format!("라이믹스 관리자 비번 변경 · {}", m.project_name)).size(15).width(Length::Fill),
-        log_btn("닫기", Color::from_rgb(0.25, 0.25, 0.3), ProjectsMessage::CloseRxPasswordModal),
-    ].align_y(iced::Alignment::Center);
-
-    let form = row![
-        column![
-            text("관리자 ID").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-            Space::with_height(4),
-            text_input("admin", &m.user_id)
-                .on_input(ProjectsMessage::RxUserIdChanged)
-                .padding(10),
-        ].width(160),
-        Space::with_width(10),
-        column![
-            text("새 비밀번호").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-            Space::with_height(4),
-            text_input("새 비밀번호", &m.new_password)
-                .on_input(ProjectsMessage::RxNewPasswordChanged)
-                .secure(true)
-                .padding(10),
-        ].width(Length::Fill),
-        Space::with_width(10),
-        column![
-            Space::with_height(18),
-            button(text(if m.running { "변경 중..." } else { "변경" }).size(13))
-                .on_press_maybe(if m.running { None } else { Some(ProjectsMessage::RxResetPassword) })
-                .padding([10, 16])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.5, 0.3))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-        ],
-    ];
-
-    let mut body = column![
-        text("rx-cli(rx member reset-password)로 라이믹스 코어의 비밀번호 변경 로직을 그대로 호출합니다. 사이트 구분 없는 전역 회원 계정이니 ID를 정확히 입력하세요.")
-            .size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-        Space::with_height(10),
-        form,
-    ];
-
-    if let Some(msg) = &m.message {
-        let (txt, color) = match msg {
-            Ok(m) => (m.as_str(), Color::from_rgb(0.2, 0.9, 0.4)),
-            Err(e) => (e.as_str(), Color::from_rgb(1.0, 0.4, 0.4)),
-        };
-        body = body.push(Space::with_height(10)).push(
-            text(txt).size(12).color(color)
-        );
-    }
-
-    container(
-        column![
-            header,
-            Space::with_height(12),
-            body,
-        ]
-    )
-    .padding(16)
-    .width(Length::Fill)
-    .style(|_| container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
-        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.35, 0.25, 0.2), width: 1.0 },
-        ..Default::default()
-    })
-    .into()
-}
-
 fn log_panel(lv: &LogView) -> Element<'_, ProjectsMessage> {
-    let id_clear = lv.id.clone();
-    let id_refresh = lv.id.clone();
-
     let header = row![
         column![
-            text(format!("에러 로그 · {}", lv.name)).size(15),
-            Space::with_height(2),
-            text(crate::system::error_log_path(&lv.id))
-                .size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-        ].width(Length::Fill),
-        log_btn("복사", Color::from_rgb(0.2, 0.35, 0.5), ProjectsMessage::CopyLog),
-        Space::with_width(6),
-        log_btn("새로고침", Color::from_rgb(0.2, 0.4, 0.3), ProjectsMessage::ViewLog(id_refresh)),
-        Space::with_width(6),
-        log_btn("지우기", Color::from_rgb(0.5, 0.2, 0.1), ProjectsMessage::ClearLog(id_clear)),
-        Space::with_width(6),
-        log_btn("닫기", Color::from_rgb(0.25, 0.25, 0.3), ProjectsMessage::CloseLog),
-    ].align_y(iced::Alignment::Center);
+            row![icon(Icon::FileText, 15.0, p().fg2), text(format!("에러 로그 · {}", lv.name)).size(15).font(theme::SEMIBOLD).color(p().fg)]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            muted(error_log_path(&lv.id)),
+        ]
+        .spacing(4)
+        .width(Length::Fill),
+        btn("복사", Some(Icon::Copy), Kind::Flat).on_press(ProjectsMessage::CopyLog),
+        btn("새로고침", Some(Icon::Refresh), Kind::Flat).on_press(ProjectsMessage::ViewLog(lv.id.clone())),
+        btn("비우기", Some(Icon::Trash), Kind::Danger).on_press(ProjectsMessage::ClearLog(lv.id.clone())),
+        btn("닫기", Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseLog),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
 
     let body: Element<ProjectsMessage> = if let Some(err) = &lv.error {
-        // 에러/안내 메시지: 한글 포함 → 기본 폰트
-        text(err).size(12).color(Color::from_rgb(1.0, 0.6, 0.4)).into()
+        text(err).size(12).color(p().warning_fg).into()
     } else if lv.content.trim().is_empty() {
-        // 빈 로그 안내: 한글 → 기본 폰트(모노스페이스 강제 시 한글이 깨짐)
-        text("(로그가 비어 있습니다)").size(12).color(Color::from_rgb(0.5, 0.5, 0.5)).into()
+        // 한글 안내는 기본 글꼴로 (고정폭 글꼴에는 한글이 없다)
+        muted("(로그가 비어 있습니다)").into()
     } else {
-        // 실제 로그 본문만 모노스페이스
-        scrollable(
-            text(&lv.content)
-                .size(12)
-                .font(iced::Font::MONOSPACE)
-                .color(Color::from_rgb(0.8, 0.85, 0.8))
-        )
-        .height(Length::Fixed(320.0))
-        .width(Length::Fill)
-        .into()
+        scrollable(text(&lv.content).size(12).font(iced::Font::MONOSPACE).color(p().fg2))
+            .height(Length::Fixed(320.0))
+            .width(Length::Fill)
+            .into()
     };
 
-    container(
-        column![
-            header,
-            Space::with_height(12),
-            container(body)
-                .padding(12)
-                .width(Length::Fill)
-                .style(|_| container::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.08, 0.08, 0.10))),
-                    border: iced::Border { radius: 6.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
-                    ..Default::default()
-                }),
-        ]
-    )
-    .padding(16)
-    .width(Length::Fill)
-    .style(|_| container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.13, 0.16))),
-        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.35, 0.35, 0.2), width: 1.0 },
-        ..Default::default()
-    })
-    .into()
-}
-
-// 하단 상태/오류 메시지 복사 버튼
-fn msg_copy_btn(text_to_copy: String) -> Element<'static, ProjectsMessage> {
-    button(text("복사").size(11))
-        .on_press(ProjectsMessage::CopyText(text_to_copy))
-        .padding([4, 10])
-        .style(|_, _| button::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.35, 0.5))),
-            border: iced::Border { radius: 5.0.into(), ..Default::default() },
-            text_color: Color::WHITE,
+    card(column![
+        header,
+        Space::with_height(12),
+        container(body).padding(12).width(Length::Fill).style(|_| container::Style {
+            background: Some(Background::Color(p().c2)),
+            border: iced::Border { radius: theme::R_ROW.into(), ..Default::default() },
             ..Default::default()
-        })
-        .into()
-}
-
-fn log_btn(label: &str, color: Color, msg: ProjectsMessage) -> Element<'_, ProjectsMessage> {
-    button(text(label).size(12))
-        .on_press(msg)
-        .padding([6, 14])
-        .style(move |_, _| button::Style {
-            background: Some(iced::Background::Color(color)),
-            border: iced::Border { radius: 5.0.into(), ..Default::default() },
-            text_color: Color::WHITE,
-            ..Default::default()
-        })
-        .into()
-}
-
-fn type_btn(label: &str, active: bool, msg: ProjectsMessage) -> Element<'_, ProjectsMessage> {
-    let bg = if active { Color::from_rgb(0.15, 0.35, 0.55) } else { Color::from_rgb(0.13, 0.13, 0.16) };
-    button(text(label).size(13))
-        .on_press(msg)
-        .padding([8, 20])
-        .style(move |_, _| button::Style {
-            background: Some(iced::Background::Color(bg)),
-            border: iced::Border { radius: 6.0.into(), color: Color::from_rgb(0.2, 0.2, 0.25), width: 1.0 },
-            text_color: Color::WHITE,
-            ..Default::default()
-        })
-        .into()
+        }),
+    ])
 }
 
 fn slugify(s: &str) -> String {

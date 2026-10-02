@@ -1,17 +1,18 @@
-mod system;
+mod domain;
+mod platform;
 mod ui;
 
-use iced::{application, window, Font, Settings, Size, Theme};
+use iced::{application, window, Settings, Size};
 use ui::App;
 
-const NANUM_GOTHIC: &[u8] =
-    include_bytes!("../assets/NanumGothic.ttf");
 const APP_ICON: &[u8] = include_bytes!("../assets/localman.png");
 
 fn main() -> iced::Result {
-    ignore_sigchld();
+    platform::init_env();
+    // 앱이 설치한 Node.js(LTS)를 먼저 찾게 한다
+    domain::tools::prepend_path(&domain::tools::node_bin_dir());
 
-    if !acquire_single_instance() {
+    if !platform::acquire_single_instance() {
         rfd::MessageDialog::new()
             .set_title("LocalMan")
             .set_description("LocalMan이 이미 실행 중입니다.")
@@ -22,10 +23,11 @@ fn main() -> iced::Result {
 
     application("LocalMan", App::update, App::view)
         .subscription(App::subscription)
-        .theme(|_| Theme::Dark)
+        .theme(App::theme)
         .window(window::Settings {
             size: Size::new(1100.0, 700.0),
             icon: window::icon::from_file_data(APP_ICON, None).ok(),
+            #[cfg(target_os = "linux")]
             platform_specific: window::settings::PlatformSpecific {
                 // .desktop 파일 이름(localman.desktop)과 일치해야 독바에서 같은 앱으로 인식됨
                 application_id: String::from("localman"),
@@ -34,44 +36,9 @@ fn main() -> iced::Result {
             ..window::Settings::default()
         })
         .settings(Settings {
-            fonts: vec![NANUM_GOTHIC.into()],
-            default_font: Font::with_name("NanumGothic"),
+            fonts: ui::theme::FONT_FILES.iter().map(|f| (*f).into()).collect(),
+            default_font: ui::theme::REGULAR,
             ..Settings::default()
         })
         .run_with(App::new)
-}
-
-/// SIGCHLD를 SIG_IGN으로 설정한다.
-///
-/// vhost::spawn_server가 자식(dev server)을 detach(mem::forget)하므로
-/// 아무도 wait()를 호출하지 않는다. 커널 기본 동작은 자식이 죽어도
-/// 부모가 reap할 때까지 좀비로 남기는 것인데, SIGCHLD를 SIG_IGN으로
-/// 두면 POSIX 규정에 따라 커널이 종료된 자식을 즉시 자동 회수한다.
-fn ignore_sigchld() {
-    unsafe extern "C" {
-        fn signal(signum: i32, handler: usize) -> usize;
-    }
-    const SIGCHLD: i32 = 17;
-    const SIG_IGN: usize = 1;
-    unsafe {
-        signal(SIGCHLD, SIG_IGN);
-    }
-}
-
-/// 중복 실행 방지: abstract unix socket을 잠금으로 사용 (프로세스 종료 시 커널이 자동 해제)
-fn acquire_single_instance() -> bool {
-    use std::os::linux::net::SocketAddrExt;
-    use std::os::unix::net::{SocketAddr, UnixListener};
-
-    let Ok(addr) = SocketAddr::from_abstract_name(b"localman.single-instance") else {
-        return true;
-    };
-    match UnixListener::bind_addr(&addr) {
-        Ok(listener) => {
-            // drop되면 잠금이 풀리므로 프로세스 수명 동안 유지
-            std::mem::forget(listener);
-            true
-        }
-        Err(_) => false,
-    }
 }

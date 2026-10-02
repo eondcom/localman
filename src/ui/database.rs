@@ -1,12 +1,16 @@
 use iced::{
-    widget::{button, column, container, row, text, text_input, Space, scrollable},
-    Color, Element, Length, Task,
+    widget::{column, container, row, text, Space},
+    Element, Length, Task,
 };
-use crate::system::{
+use super::theme::{
+    self, Icon, Kind, btn, card, group, icon, input, muted, p, page_header, result_line, segmented,
+};
+use crate::domain::{
     list_databases, create_database, drop_database, backup_database, restore_database, import_sql,
     rename_database, list_users, create_user, drop_user, rename_user, change_user_password, grant_privileges, DbUser,
-    DbCredentials, DbEngine, load_db_connections, save_db_connection, ensure_adminer_site, open_url,
+    DbCredentials, DbEngine, load_db_connections, save_db_connection, ensure_adminer_site,
 };
+use crate::platform::open_url;
 use rfd;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -482,588 +486,296 @@ impl DatabaseState {
     }
 
     pub fn view(&self) -> Element<'_, DatabaseMessage> {
-        let conn_panel = container(
+        let adminer = btn("Adminer 열기", Some(Icon::ExternalLink), Kind::Surface).on_press(DatabaseMessage::OpenAdminer);
+
+        let conn = card(
             column![
                 row![
-                    column![
-                        text("엔진").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                        Space::with_height(4),
+                    field(
+                        "엔진",
+                        segmented(
+                            &[(DbEngine::MariaDb, "MariaDB"), (DbEngine::PostgreSql, "PostgreSQL")],
+                            &self.engine,
+                            DatabaseMessage::EngineSelected,
+                        ),
+                    ),
+                    container(field("사용자", input("root", &self.user).on_input(DatabaseMessage::UserChanged).into())).width(160),
+                    container(field(
+                        "비밀번호",
                         row![
-                            engine_btn("MariaDB", self.engine == DbEngine::MariaDb, DatabaseMessage::EngineSelected(DbEngine::MariaDb)),
-                            Space::with_width(6),
-                            engine_btn("PostgreSQL", self.engine == DbEngine::PostgreSql, DatabaseMessage::EngineSelected(DbEngine::PostgreSql)),
-                        ],
-                    ].width(230),
-                    Space::with_width(10),
-                    column![
-                        text("사용자").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                        Space::with_height(4),
-                        text_input("root", &self.user)
-                            .on_input(DatabaseMessage::UserChanged)
-                            .padding(10),
-                    ].width(150),
-                    Space::with_width(10),
-                    column![
-                        text("비밀번호").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                        Space::with_height(4),
-                        row![
-                            text_input("password", &self.password)
+                            input("password", &self.password)
                                 .on_input(DatabaseMessage::PasswordChanged)
                                 .secure(!self.show_password)
-                                .padding(10)
                                 .width(Length::Fill),
-                            Space::with_width(6),
-                            button(text(if self.show_password { "숨기기" } else { "보기" }).size(12))
-                                .on_press(DatabaseMessage::TogglePasswordVisibility)
-                                .padding([10, 12])
-                                .style(|_, _| button::Style {
-                                    background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.2, 0.25))),
-                                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                                    text_color: Color::WHITE,
-                                    ..Default::default()
-                                }),
-                        ],
-                        Space::with_height(4),
-                        text(match self.engine {
-                            DbEngine::MariaDb => "기본 root 비밀번호: root",
-                            DbEngine::PostgreSql => "기본 사용자: postgres, 포트: 5432",
-                        }).size(11).color(Color::from_rgb(0.45,0.5,0.45)),
-                    ].width(260),
-                    Space::with_width(10),
-                    column![
-                        Space::with_height(18),
-                        button(text("연결").size(13))
-                            .on_press(DatabaseMessage::Connect)
-                            .padding([10, 20])
-                            .style(|_, _| button::Style {
-                                background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.45, 0.7))),
-                                border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                                text_color: Color::WHITE,
-                                ..Default::default()
-                            }),
-                    ],
+                            btn(if self.show_password { "숨기기" } else { "보기" }, None, Kind::Ghost)
+                                .on_press(DatabaseMessage::TogglePasswordVisibility),
+                        ]
+                        .spacing(4)
+                        .align_y(iced::Alignment::Center)
+                        .into(),
+                    ))
+                    .width(Length::Fill),
+                    column![Space::with_height(19), btn("연결", Some(Icon::Zap), Kind::Primary).on_press(DatabaseMessage::Connect)],
                 ]
+                .spacing(12)
                 .align_y(iced::Alignment::End),
+                Space::with_height(8),
+                muted(match self.engine {
+                    DbEngine::MariaDb => "기본 root 비밀번호: root",
+                    DbEngine::PostgreSql => "기본 사용자: postgres · 포트 5432",
+                }),
                 saved_connections_view(&self.saved_connections),
             ]
-        )
-        .padding(16)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.13,0.13,0.16))),
-            border: iced::Border { radius: 10.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
-            ..Default::default()
-        });
+            .spacing(0),
+        );
 
-        let subtab_row = row![
-            subtab_btn("DB 목록", self.subtab == SubTab::Databases, DatabaseMessage::SubTabSelected(SubTab::Databases)),
-            Space::with_width(8),
-            subtab_btn("사용자 관리", self.subtab == SubTab::Users, DatabaseMessage::SubTabSelected(SubTab::Users)),
-        ];
+        let tabs = segmented(
+            &[(SubTab::Databases, "데이터베이스"), (SubTab::Users, "사용자")],
+            &self.subtab,
+            DatabaseMessage::SubTabSelected,
+        );
 
         let body: Element<DatabaseMessage> = match self.subtab {
             SubTab::Databases => self.view_databases(),
             SubTab::Users => self.view_users(),
         };
 
-        let header_row = row![
-            column![
-                text("데이터베이스").size(22),
-                Space::with_height(8),
-                text(format!("{} 데이터베이스를 관리하고 백업/복원합니다.", self.engine.label())).size(13).color(Color::from_rgb(0.6,0.6,0.6)),
-            ].width(Length::Fill),
-            button(text("🛢 Adminer 열기").size(13))
-                .on_press(DatabaseMessage::OpenAdminer)
-                .padding([10, 18])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.45, 0.35))),
-                    border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-        ].align_y(iced::Alignment::Center);
-
+        let subtitle: &'static str = match self.engine {
+            DbEngine::MariaDb => "MariaDB 데이터베이스와 사용자를 관리하고 백업·복원합니다",
+            DbEngine::PostgreSql => "PostgreSQL 데이터베이스와 사용자를 관리하고 백업·복원합니다",
+        };
         let mut col = column![
-            header_row,
+            page_header("데이터베이스", subtitle, Some(adminer.into())),
             Space::with_height(20),
-            conn_panel,
+            conn,
             Space::with_height(16),
-            subtab_row,
-            Space::with_height(16),
-            body,
+            tabs,
+            Space::with_height(14),
         ];
-
         if let Some(status) = &self.status {
-            let (msg, color) = match status {
-                Ok(m) => (m.as_str(), Color::from_rgb(0.2, 0.9, 0.4)),
-                Err(e) => (e.as_str(), Color::from_rgb(1.0, 0.4, 0.4)),
-            };
-            col = col.push(Space::with_height(10)).push(
-                row![
-                    text(msg).size(13).color(color).width(Length::Fill),
-                    Space::with_width(8),
-                    copy_btn(msg.to_string()),
-                ].align_y(iced::Alignment::Center)
-            );
+            col = col.push(status_card(status)).push(Space::with_height(12));
         }
-
-        col.into()
+        col.push(body).into()
     }
 
     fn view_databases(&self) -> Element<'_, DatabaseMessage> {
-        let create_panel = container(
+        let create = card(
             row![
-                text_input("새 데이터베이스 이름", &self.new_db_name)
+                input("새 데이터베이스 이름", &self.new_db_name)
                     .on_input(DatabaseMessage::NewDbNameChanged)
-                    .padding(10)
                     .width(Length::Fill),
-                Space::with_width(8),
-                button(text("생성").size(13))
-                    .on_press(DatabaseMessage::CreateDb)
-                    .padding([10, 18])
-                    .style(|_, _| button::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.5, 0.3))),
-                        border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                        text_color: Color::WHITE,
-                        ..Default::default()
-                    }),
+                btn("만들기", Some(Icon::Plus), Kind::Primary).on_press(DatabaseMessage::CreateDb),
             ]
-        )
-        .padding(14)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.13,0.13,0.16))),
-            border: iced::Border { radius: 10.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
-            ..Default::default()
-        });
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        );
 
-        let import_panel = container(
+        let import = card(
             column![
-                text("SQL 가져오기 / 복원").size(14),
-                Space::with_height(4),
-                text(".sql 또는 .sql.gz 덤프를 선택하면 대상 DB로 가져옵니다. DB가 없으면 자동 생성됩니다.")
-                    .size(11).color(Color::from_rgb(0.55,0.55,0.55)),
-                Space::with_height(10),
+                row![icon(Icon::Upload, 14.0, p().fg2), theme::title("SQL 가져오기 · 복원")]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                muted(".sql 또는 .sql.gz 덤프를 고르면 대상 DB로 가져옵니다. DB가 없으면 새로 만듭니다."),
+                Space::with_height(8),
                 row![
-                    text_input("대상 DB 이름 (비우면 파일명 사용)", &self.import_db_name)
+                    input("대상 DB 이름 (비우면 파일 이름)", &self.import_db_name)
                         .on_input(DatabaseMessage::ImportDbNameChanged)
-                        .padding(10)
                         .width(Length::Fill),
-                    Space::with_width(8),
-                    button(text("SQL 파일 선택 후 가져오기").size(13))
-                        .on_press(DatabaseMessage::ImportSql)
-                        .padding([10, 18])
-                        .style(|_, _| button::Style {
-                            background: Some(iced::Background::Color(Color::from_rgb(0.4, 0.25, 0.1))),
-                            border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                            text_color: Color::WHITE,
-                            ..Default::default()
-                        }),
+                    btn("파일 골라 가져오기", Some(Icon::FolderOpen), Kind::Flat).on_press(DatabaseMessage::ImportSql),
                 ]
+                .spacing(8)
                 .align_y(iced::Alignment::Center),
             ]
-        )
-        .padding(14)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.13,0.13,0.16))),
-            border: iced::Border { radius: 10.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
-            ..Default::default()
-        });
+            .spacing(4),
+        );
 
-        let db_list: Element<DatabaseMessage> = if self.databases.is_empty() {
-            container(
-                text(if self.connected { "데이터베이스 없음" } else { "연결 후 목록이 표시됩니다." })
-                    .size(13).color(Color::from_rgb(0.5,0.5,0.5))
-            ).padding(16).into()
+        let list: Element<DatabaseMessage> = if self.databases.is_empty() {
+            card(empty_state(if self.connected { "데이터베이스가 없습니다" } else { "연결하면 목록이 나옵니다" }))
         } else {
-            let items: Vec<Element<DatabaseMessage>> = self.databases.iter().map(|db| {
-                db_row(db, &self.db_users, self.editing_db.as_deref(), &self.edit_db_name)
-            }).collect();
-            scrollable(column(items).spacing(6)).into()
+            group(
+                self.databases
+                    .iter()
+                    .map(|db| db_row(db, &self.db_users, self.editing_db.as_deref(), &self.edit_db_name))
+                    .collect(),
+            )
         };
 
-        column![create_panel, Space::with_height(12), import_panel, Space::with_height(12), db_list].into()
+        column![
+            row![create, import].spacing(12),
+            Space::with_height(14),
+            theme::section_label("데이터베이스 목록"),
+            list,
+        ]
+        .into()
     }
 
     fn view_users(&self) -> Element<'_, DatabaseMessage> {
-        let create_panel = container(
+        let create = card(
             column![
-                text("새 사용자 추가").size(14),
+                theme::title("새 사용자"),
                 Space::with_height(10),
                 row![
-                    column![
-                        text("사용자명").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                        Space::with_height(4),
-                        text_input("dbuser", &self.new_user_name)
-                            .on_input(DatabaseMessage::NewUserNameChanged)
-                            .padding(9),
-                    ].width(Length::FillPortion(2)),
-                    Space::with_width(10),
-                    column![
-                        text("비밀번호").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                        Space::with_height(4),
-                        text_input("password", &self.new_user_password)
+                    field("사용자 이름", input("dbuser", &self.new_user_name).on_input(DatabaseMessage::NewUserNameChanged).into()),
+                    field(
+                        "비밀번호",
+                        input("password", &self.new_user_password)
                             .on_input(DatabaseMessage::NewUserPasswordChanged)
                             .secure(true)
-                            .padding(9),
-                    ].width(Length::FillPortion(2)),
-                    Space::with_width(10),
-                    column![
-                        text("호스트").size(12).color(Color::from_rgb(0.6,0.6,0.6)),
-                        Space::with_height(4),
-                        text_input("localhost", &self.new_user_host)
-                            .on_input(DatabaseMessage::NewUserHostChanged)
-                            .padding(9),
-                    ].width(120),
-                    Space::with_width(10),
-                    column![
-                        Space::with_height(18),
-                        button(text("추가").size(13))
-                            .on_press(DatabaseMessage::CreateUser)
-                            .padding([9, 18])
-                            .style(|_, _| button::Style {
-                                background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.5, 0.3))),
-                                border: iced::Border { radius: 6.0.into(), ..Default::default() },
-                                text_color: Color::WHITE,
-                                ..Default::default()
-                            }),
-                    ],
-                ],
-            ]
-        )
-        .padding(16)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.13,0.13,0.16))),
-            border: iced::Border { radius: 10.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
-            ..Default::default()
-        });
+                            .into(),
+                    ),
+                    container(field("호스트", input("localhost", &self.new_user_host).on_input(DatabaseMessage::NewUserHostChanged).into()))
+                        .width(140),
+                    column![Space::with_height(19), btn("추가", Some(Icon::Plus), Kind::Primary).on_press(DatabaseMessage::CreateUser)],
+                ]
+                .spacing(12)
+                .align_y(iced::Alignment::End),
+            ],
+        );
 
-        let user_list: Element<DatabaseMessage> = if self.db_users.is_empty() {
-            container(
-                text(if self.connected { "사용자 없음" } else { "연결 후 목록이 표시됩니다." })
-                    .size(13).color(Color::from_rgb(0.5,0.5,0.5))
-            ).padding(16).into()
+        let list: Element<DatabaseMessage> = if self.db_users.is_empty() {
+            card(empty_state(if self.connected { "사용자가 없습니다" } else { "연결하면 목록이 나옵니다" }))
         } else {
-            let items: Vec<Element<DatabaseMessage>> = self.db_users.iter().map(|u| {
-                user_row(u, &self.databases, self.editing_user.as_ref(), &self.edit_user_name, &self.edit_user_password)
-            }).collect();
-            scrollable(column(items).spacing(6)).into()
+            group(
+                self.db_users
+                    .iter()
+                    .map(|u| user_row(u, self.editing_user.as_ref(), &self.edit_user_name, &self.edit_user_password))
+                    .collect(),
+            )
         };
 
-        let mut col = column![create_panel, Space::with_height(12), user_list];
-
+        let mut col = column![create, Space::with_height(14)];
         if let Some(status) = &self.user_status {
-            let (msg, color) = match status {
-                Ok(m) => (m.as_str(), Color::from_rgb(0.2, 0.9, 0.4)),
-                Err(e) => (e.as_str(), Color::from_rgb(1.0, 0.4, 0.4)),
-            };
-            col = col.push(Space::with_height(8)).push(
-                row![
-                    text(msg).size(13).color(color).width(Length::Fill),
-                    Space::with_width(8),
-                    copy_btn(msg.to_string()),
-                ].align_y(iced::Alignment::Center)
-            );
+            col = col.push(status_card(status)).push(Space::with_height(12));
         }
-
-        col.into()
+        col.push(theme::section_label("사용자 목록")).push(list).into()
     }
 }
 
-/// 메시지를 클립보드로 복사하는 작은 버튼
-fn copy_btn(text_to_copy: String) -> Element<'static, DatabaseMessage> {
-    button(text("복사").size(11))
-        .on_press(DatabaseMessage::CopyText(text_to_copy))
-        .padding([4, 10])
-        .style(|_, _| button::Style {
-            background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.35, 0.5))),
-            border: iced::Border { radius: 5.0.into(), ..Default::default() },
-            text_color: Color::WHITE,
-            ..Default::default()
-        })
+fn field<'a>(label: &'a str, control: Element<'a, DatabaseMessage>) -> Element<'a, DatabaseMessage> {
+    column![text(label).size(12).font(theme::MEDIUM).color(p().fg3), control]
+        .spacing(6)
+        .width(Length::Fill)
         .into()
 }
 
-fn subtab_btn(label: &str, active: bool, msg: DatabaseMessage) -> Element<'_, DatabaseMessage> {
-    let bg = if active {
-        Color::from_rgb(0.15, 0.35, 0.55)
-    } else {
-        Color::from_rgb(0.13, 0.13, 0.16)
-    };
-    button(text(label).size(13))
-        .on_press(msg)
-        .padding([8, 18])
-        .style(move |_, _| button::Style {
-            background: Some(iced::Background::Color(bg)),
-            border: iced::Border {
-                radius: 6.0.into(),
-                color: Color::from_rgb(0.2, 0.2, 0.25),
-                width: 1.0,
-            },
-            text_color: Color::WHITE,
-            ..Default::default()
-        })
+fn empty_state<'a>(msg: &'a str) -> Element<'a, DatabaseMessage> {
+    column![icon(Icon::Database, 22.0, p().fg4), text(msg).size(13).color(p().fg3)]
+        .spacing(6)
+        .align_x(iced::Alignment::Center)
+        .width(Length::Fill)
         .into()
 }
 
-fn engine_btn(label: &str, active: bool, msg: DatabaseMessage) -> Element<'_, DatabaseMessage> {
-    let bg = if active {
-        Color::from_rgb(0.1, 0.45, 0.7)
-    } else {
-        Color::from_rgb(0.18, 0.18, 0.22)
+fn status_card(status: &Result<String, String>) -> Element<'_, DatabaseMessage> {
+    let (line, raw) = match status {
+        Ok(m) => (format!("✓ {m}"), m.clone()),
+        Err(e) => (format!("✗ {e}"), e.clone()),
     };
-    button(text(label).size(12))
-        .on_press(msg)
-        .padding([10, 14])
-        .style(move |_, _| button::Style {
-            background: Some(iced::Background::Color(bg)),
-            border: iced::Border {
-                radius: 6.0.into(),
-                color: Color::from_rgb(0.24, 0.24, 0.3),
-                width: 1.0,
-            },
-            text_color: Color::WHITE,
-            ..Default::default()
-        })
-        .into()
+    card(
+        row![
+            container(result_line(line)).width(Length::Fill),
+            btn("복사", Some(Icon::Copy), Kind::Ghost).on_press(DatabaseMessage::CopyText(raw)),
+        ]
+        .align_y(iced::Alignment::Center),
+    )
 }
 
 fn saved_connections_view(saved: &[DbCredentials]) -> Element<'_, DatabaseMessage> {
     if saved.is_empty() {
         return Space::with_height(0).into();
     }
-    let buttons: Vec<Element<DatabaseMessage>> = saved.iter().enumerate().map(|(i, c)| {
-        button(text(format!("{} / {}", c.engine.label(), c.user)).size(11))
-            .on_press(DatabaseMessage::SavedConnectionSelected(i))
-            .padding([5, 10])
-            .style(|_, _| button::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.18, 0.18, 0.22))),
-                border: iced::Border { radius: 5.0.into(), color: Color::from_rgb(0.25,0.25,0.3), width: 1.0 },
-                text_color: Color::WHITE,
-                ..Default::default()
-            })
-            .into()
-    }).collect();
-
+    let chips = saved.iter().enumerate().fold(row![].spacing(6), |r, (i, c)| {
+        r.push(
+            theme::chip_btn(format!("{} · {}", c.engine.label(), c.user), Kind::Flat)
+                .on_press(DatabaseMessage::SavedConnectionSelected(i)),
+        )
+    });
     column![
-        Space::with_height(10),
-        text("저장된 연결").size(11).color(Color::from_rgb(0.55, 0.55, 0.55)),
+        Space::with_height(12),
+        text("저장된 연결").size(12).font(theme::MEDIUM).color(p().fg3),
         Space::with_height(6),
-        row(buttons).spacing(6),
-    ].into()
+        chips,
+    ]
+    .into()
 }
 
-fn db_row<'a>(
-    db: &'a str,
-    users: &'a [DbUser],
-    editing_db: Option<&'a str>,
-    edit_db_name: &'a str,
-) -> Element<'a, DatabaseMessage> {
-    let db_name = db.to_string();
-    let db_backup = db.to_string();
-    let db_restore = db.to_string();
-    let is_editing = editing_db == Some(db);
-
-    let grant_buttons: Vec<Element<DatabaseMessage>> = users.iter().map(|u| {
-        let un = u.username.clone();
-        let uh = u.host.clone();
-        let dn = db.to_string();
-        button(text(format!("{} 권한", u.username)).size(11))
-            .on_press(DatabaseMessage::GrantPrivileges(un, uh, dn))
-            .padding([5, 10])
-            .style(|_, _| button::Style {
-                background: Some(iced::Background::Color(Color::from_rgb(0.25, 0.2, 0.45))),
-                border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                text_color: Color::WHITE,
-                ..Default::default()
-            })
-            .into()
-    }).collect();
-
-    let grant_row: Element<DatabaseMessage> = if grant_buttons.is_empty() {
-        Space::with_width(0).into()
-    } else {
-        row(grant_buttons).spacing(4).into()
-    };
-
-    let main_row: Element<DatabaseMessage> = if is_editing {
-        row![
-            text_input("DB 이름", edit_db_name)
-                .on_input(DatabaseMessage::EditDbNameChanged)
-                .padding(8)
-                .width(Length::Fill),
-            Space::with_width(6),
-            button(text("저장").size(12))
-                .on_press(DatabaseMessage::SaveDbEdit(db.to_string()))
-                .padding([6, 12])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.5, 0.3))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-            Space::with_width(6),
-            button(text("취소").size(12))
-                .on_press(DatabaseMessage::CancelDbEdit)
-                .padding([6, 12])
-        ].align_y(iced::Alignment::Center).into()
-    } else {
-        row![
-            text(db).size(14).width(Length::Fill),
-            button(text("편집").size(12))
-                .on_press(DatabaseMessage::EditDb(db.to_string()))
-                .padding([6, 12])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.25, 0.35))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-            Space::with_width(6),
-            button(text("백업").size(12))
-                .on_press(DatabaseMessage::BackupDb(db_backup))
-                .padding([6, 12])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.35, 0.6))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-            Space::with_width(6),
-            button(text("복원").size(12))
-                .on_press(DatabaseMessage::RestoreDb(db_restore))
-                .padding([6, 12])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.4, 0.25, 0.1))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-            Space::with_width(6),
-            button(text("삭제").size(12))
-                .on_press(DatabaseMessage::DropDb(db_name))
-                .padding([6, 12])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.5, 0.1, 0.1))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
+fn db_row<'a>(db: &'a str, users: &'a [DbUser], editing_db: Option<&'a str>, edit_db_name: &'a str) -> Element<'a, DatabaseMessage> {
+    if editing_db == Some(db) {
+        return row![
+            input("DB 이름", edit_db_name).on_input(DatabaseMessage::EditDbNameChanged).width(Length::Fill),
+            btn("저장", Some(Icon::Check), Kind::Primary).on_press(DatabaseMessage::SaveDbEdit(db.to_string())),
+            btn("취소", None, Kind::Ghost).on_press(DatabaseMessage::CancelDbEdit),
         ]
-        .align_y(iced::Alignment::Center).into()
-    };
-
-    let mut card_col = column![main_row];
-
-    if !users.is_empty() {
-        card_col = card_col.push(Space::with_height(6)).push(
-            row![
-                text("권한 부여:").size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-                Space::with_width(6),
-                grant_row,
-            ]
-            .align_y(iced::Alignment::Center)
-        );
+        .spacing(6)
+        .align_y(iced::Alignment::Center)
+        .into();
     }
 
-    container(card_col)
-    .padding(14)
-    .width(Length::Fill)
-    .style(|_| container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.13,0.13,0.16))),
-        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
-        ..Default::default()
-    })
+    let mut left = column![
+        row![icon(Icon::Database, 14.0, p().fg3), text(db).size(14).font(theme::MEDIUM).color(p().fg)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+    ]
+    .spacing(6)
+    .width(Length::Fill);
+    if !users.is_empty() {
+        let grants = users.iter().fold(row![muted("권한 주기")].spacing(4).align_y(iced::Alignment::Center), |r, u| {
+            r.push(
+                theme::chip_btn(u.username.clone(), Kind::Flat)
+                    .on_press(DatabaseMessage::GrantPrivileges(u.username.clone(), u.host.clone(), db.to_string())),
+            )
+        });
+        left = left.push(grants);
+    }
+
+    row![
+        left,
+        btn("이름 변경", Some(Icon::Pencil), Kind::Flat).on_press(DatabaseMessage::EditDb(db.to_string())),
+        btn("백업", Some(Icon::Download), Kind::Flat).on_press(DatabaseMessage::BackupDb(db.to_string())),
+        btn("복원", Some(Icon::Upload), Kind::Flat).on_press(DatabaseMessage::RestoreDb(db.to_string())),
+        btn("삭제", Some(Icon::Trash), Kind::Danger).on_press(DatabaseMessage::DropDb(db.to_string())),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center)
     .into()
 }
 
 fn user_row<'a>(
     u: &'a DbUser,
-    _databases: &'a [String],
     editing_user: Option<&'a (String, String)>,
     edit_user_name: &'a str,
     edit_user_password: &'a str,
 ) -> Element<'a, DatabaseMessage> {
-    let un = u.username.clone();
-    let uh = u.host.clone();
-    let is_editing = editing_user
-        .map(|(name, host)| name == &u.username && host == &u.host)
-        .unwrap_or(false);
-
-    let content: Element<DatabaseMessage> = if is_editing {
-        row![
-            column![
-                text("사용자명").size(11).color(Color::from_rgb(0.55, 0.55, 0.55)),
-                text_input("사용자명", edit_user_name)
-                    .on_input(DatabaseMessage::EditUserNameChanged)
-                    .padding(8),
-            ].width(Length::FillPortion(2)),
-            Space::with_width(8),
-            column![
-                text("새 비밀번호").size(11).color(Color::from_rgb(0.55, 0.55, 0.55)),
-                text_input("비워두면 유지", edit_user_password)
+    let is_editing = editing_user.map(|(name, host)| name == &u.username && host == &u.host).unwrap_or(false);
+    if is_editing {
+        return row![
+            field("사용자 이름", input("사용자 이름", edit_user_name).on_input(DatabaseMessage::EditUserNameChanged).into()),
+            field(
+                "새 비밀번호",
+                input("비워 두면 그대로", edit_user_password)
                     .on_input(DatabaseMessage::EditUserPasswordChanged)
                     .secure(true)
-                    .padding(8),
-            ].width(Length::FillPortion(2)),
-            Space::with_width(8),
-            button(text("저장").size(12))
-                .on_press(DatabaseMessage::SaveUserEdit(u.username.clone(), u.host.clone()))
-                .padding([7, 12])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.5, 0.3))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-            Space::with_width(6),
-            button(text("취소").size(12))
-                .on_press(DatabaseMessage::CancelUserEdit)
-                .padding([7, 12]),
+                    .into(),
+            ),
+            btn("저장", Some(Icon::Check), Kind::Primary).on_press(DatabaseMessage::SaveUserEdit(u.username.clone(), u.host.clone())),
+            btn("취소", None, Kind::Ghost).on_press(DatabaseMessage::CancelUserEdit),
         ]
+        .spacing(8)
         .align_y(iced::Alignment::End)
-        .into()
-    } else {
-        row![
-            column![
-                text(&u.username).size(14),
-                Space::with_height(2),
-                text(format!("호스트: {}", u.host)).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-            ].width(Length::Fill),
-            button(text("편집").size(12))
-                .on_press(DatabaseMessage::EditUser(u.username.clone(), u.host.clone()))
-                .padding([6, 14])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.2, 0.25, 0.35))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
-            Space::with_width(6),
-            button(text("삭제").size(12))
-                .on_press(DatabaseMessage::DropUser(un, uh))
-                .padding([6, 14])
-                .style(|_, _| button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgb(0.5, 0.1, 0.1))),
-                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
-                    text_color: Color::WHITE,
-                    ..Default::default()
-                }),
+        .into();
+    }
+    row![
+        column![
+            text(&u.username).size(14).font(theme::MEDIUM).color(p().fg),
+            muted(format!("호스트 {}", u.host)),
         ]
-        .align_y(iced::Alignment::Center)
-        .into()
-    };
-
-    container(content)
-    .padding(14)
-    .width(Length::Fill)
-    .style(|_| container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb(0.13,0.13,0.16))),
-        border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.2,0.2,0.25), width: 1.0 },
-        ..Default::default()
-    })
+        .spacing(2)
+        .width(Length::Fill),
+        btn("수정", Some(Icon::Pencil), Kind::Flat).on_press(DatabaseMessage::EditUser(u.username.clone(), u.host.clone())),
+        btn("삭제", Some(Icon::Trash), Kind::Danger).on_press(DatabaseMessage::DropUser(u.username.clone(), u.host.clone())),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center)
     .into()
 }
 

@@ -1,0 +1,49 @@
+#!/bin/bash
+# localman sudoers 규칙 설치 (한 번만 실행)
+set -e
+TARGET_USER=${SUDO_USER:-$(whoami)}
+RULES=/tmp/localman-sudoers
+
+# 배포판별 경로 차이로 sudoers 규칙이 빗나가지 않게 실행 파일 위치를 확인한다.
+SYSTEMCTL=$(which systemctl)
+APTGET=$(which apt-get)
+CP=$(which cp)
+LN=$(which ln)
+RM=$(which rm)
+TRUNCATE=$(which truncate)
+TAIL=$(which tail)
+UPDATE_CA=$(which update-ca-certificates)
+USER_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+
+cat > "$RULES" << EOF
+# localman: 비밀번호 없이 웹·데이터베이스 서비스를 제어
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL start apache2
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL stop apache2
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL reload apache2
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL start mariadb
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL stop mariadb
+# 임의 패키지 설치는 postinst를 통한 root 실행으로 이어질 수 있어, 허용 대상만 정확히 제한한다.
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y postgresql
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y mariadb-server
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y apache2
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL start postgresql
+$TARGET_USER ALL=(root) NOPASSWD: $SYSTEMCTL stop postgresql
+$TARGET_USER ALL=(root) NOPASSWD: /usr/sbin/a2enmod *
+$TARGET_USER ALL=(root) NOPASSWD: $CP /tmp/localman_vhost_* /etc/apache2/sites-available/*
+$TARGET_USER ALL=(root) NOPASSWD: $CP /tmp/localman_hosts /etc/hosts
+$TARGET_USER ALL=(root) NOPASSWD: $LN -sf /etc/apache2/sites-available/* /etc/apache2/sites-enabled/*
+$TARGET_USER ALL=(root) NOPASSWD: $RM -f /etc/apache2/sites-available/* /etc/apache2/sites-enabled/*
+# 개발 도구 설치 (localman 의 tool_packages 와 정확히 같아야 한다)
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y python3 python3-venv python3-pip
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y php libapache2-mod-php php-mysql php-pgsql php-mbstring php-xml php-curl php-gd php-zip
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y rsync
+# 로컬 HTTPS 인증기관을 시스템 신뢰 저장소에 등록
+$TARGET_USER ALL=(root) NOPASSWD: $CP $USER_HOME/.local/share/localman/tls/ca.pem /usr/local/share/ca-certificates/localman-ca.crt
+$TARGET_USER ALL=(root) NOPASSWD: $UPDATE_CA
+# 로그 비우기/읽기 (프로젝트별 에러 로그)
+$TARGET_USER ALL=(root) NOPASSWD: $TRUNCATE -s 0 /var/log/apache2/*
+$TARGET_USER ALL=(root) NOPASSWD: $TAIL -n * /var/log/apache2/*
+EOF
+
+visudo -cf "$RULES" && sudo install -m 440 "$RULES" /etc/sudoers.d/localman
+echo "sudoers 규칙 설치 완료: /etc/sudoers.d/localman"
