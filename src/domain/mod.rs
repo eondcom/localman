@@ -12,6 +12,7 @@ pub mod server;
 pub mod settings;
 pub mod setup;
 pub mod tls;
+pub mod tools;
 pub mod transfer;
 pub mod usage;
 #[cfg(test)]

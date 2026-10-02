@@ -71,6 +71,7 @@ impl App {
                 Task::done(Message::Settings(SettingsMessage::RenewCerts)),
                 // 사이트별 용량은 폴더를 훑어야 하므로 시작할 때 한 번 백그라운드로 잰다
                 Task::done(Message::Projects(ProjectsMessage::ComputeUsage)),
+                services::ServicesState::init_task().map(Message::Services),
             ]),
         )
     }

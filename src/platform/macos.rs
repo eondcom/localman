@@ -120,6 +120,28 @@ pub fn install_service(service: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn install_tool(key: &str) -> Result<String, String> {
+    let formula = match key {
+        "python" => "python",
+        "php" => "php",
+        "rsync" => "rsync",
+        _ => return Err(format!("설치할 수 있는 도구가 아닙니다: {key}")),
+    };
+    let out = brew()
+        .args(["install", formula])
+        .output()
+        .map_err(|e| format!("brew 실행 실패: {e}\nHomebrew가 설치돼 있는지 확인하세요."))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    if key == "php" && Path::new(&format!("{}/etc/httpd/httpd.conf", brew_prefix())).exists() {
+        // httpd.conf 의 localman 블록에 mod_php 를 연결하고 반영한다
+        ensure_httpd_base()?;
+        reload_httpd();
+    }
+    Ok(format!("brew install {formula} 완료"))
+}
+
 pub fn toggle_service(name: &str, start: bool) -> Result<(), String> {
     let action = if start { "start" } else { "stop" };
     eprintln!("[localman] 서비스 {action}: {name}");

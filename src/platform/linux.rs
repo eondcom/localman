@@ -73,6 +73,41 @@ pub fn install_service(service: &str) -> Result<(), String> {
     Err(error.to_string())
 }
 
+/// 개발 도구별 apt 패키지. sudoers 규칙과 정확히 같아야 하므로 고정한다.
+pub fn tool_packages(key: &str) -> Option<&'static [&'static str]> {
+    Some(match key {
+        "python" => &["python3", "python3-venv", "python3-pip"],
+        "php" => &[
+            "php", "libapache2-mod-php", "php-mysql", "php-pgsql", "php-mbstring", "php-xml", "php-curl", "php-gd", "php-zip",
+        ],
+        "rsync" => &["rsync"],
+        _ => return None,
+    })
+}
+
+pub fn install_tool(key: &str) -> Result<String, String> {
+    let pkgs = tool_packages(key).ok_or_else(|| format!("설치할 수 있는 도구가 아닙니다: {key}"))?;
+    let mut args = vec!["-n", "/usr/bin/apt-get", "install", "-y"];
+    args.extend(pkgs.iter());
+    let out = Command::new("sudo")
+        .args(&args)
+        .env("DEBIAN_FRONTEND", "noninteractive")
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("password is required") {
+            return Err("설치 권한이 없습니다. scripts/linux/install-sudoers.sh 를 다시 실행하십시오.".into());
+        }
+        return Err(err.trim().to_string());
+    }
+    if key == "php" {
+        // mod_php 가 새로 켜졌으니 Apache 에 반영한다
+        reload_web_server();
+    }
+    Ok(format!("{} 설치 완료", pkgs.join(" ")))
+}
+
 pub fn toggle_service(name: &str, start: bool) -> Result<(), String> {
     let action = if start { "start" } else { "stop" };
     eprintln!("[localman] 서비스 {action}: {name}");

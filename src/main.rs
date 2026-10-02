@@ -9,6 +9,8 @@ const APP_ICON: &[u8] = include_bytes!("../assets/localman.png");
 
 fn main() -> iced::Result {
     platform::init_env();
+    // 앱이 설치한 Node.js(LTS)를 먼저 찾게 한다
+    domain::tools::prepend_path(&domain::tools::node_bin_dir());
 
     if !platform::acquire_single_instance() {
         rfd::MessageDialog::new()

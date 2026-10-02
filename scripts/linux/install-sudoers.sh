@@ -33,6 +33,10 @@ $TARGET_USER ALL=(root) NOPASSWD: $CP /tmp/localman_vhost_* /etc/apache2/sites-a
 $TARGET_USER ALL=(root) NOPASSWD: $CP /tmp/localman_hosts /etc/hosts
 $TARGET_USER ALL=(root) NOPASSWD: $LN -sf /etc/apache2/sites-available/* /etc/apache2/sites-enabled/*
 $TARGET_USER ALL=(root) NOPASSWD: $RM -f /etc/apache2/sites-available/* /etc/apache2/sites-enabled/*
+# 개발 도구 설치 (localman 의 tool_packages 와 정확히 같아야 한다)
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y python3 python3-venv python3-pip
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y php libapache2-mod-php php-mysql php-pgsql php-mbstring php-xml php-curl php-gd php-zip
+$TARGET_USER ALL=(root) NOPASSWD: $APTGET install -y rsync
 # 로컬 HTTPS 인증기관을 시스템 신뢰 저장소에 등록
 $TARGET_USER ALL=(root) NOPASSWD: $CP $USER_HOME/.local/share/localman/tls/ca.pem /usr/local/share/ca-certificates/localman-ca.crt
 $TARGET_USER ALL=(root) NOPASSWD: $UPDATE_CA

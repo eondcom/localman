@@ -501,7 +501,7 @@ fn button_style(kind: Kind, status: button::Status) -> button::Style {
 }
 
 /// 버튼. on_press 는 호출한 쪽에서 붙인다 (없으면 비활성으로 그려진다).
-pub fn btn<'a, M: Clone + 'a>(label: &'a str, ic: Option<Icon>, kind: Kind) -> button::Button<'a, M> {
+pub fn btn<'a, M: Clone + 'a>(label: impl text::IntoFragment<'a>, ic: Option<Icon>, kind: Kind) -> button::Button<'a, M> {
     let c = p();
     let fg = match kind {
         Kind::Primary => c.on_primary,
