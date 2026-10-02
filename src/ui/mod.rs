@@ -7,9 +7,16 @@ pub mod theme;
 
 use iced::{
     keyboard,
-    widget::{column, container, row, scrollable, text, Space},
+    widget::{column, container, row, scrollable, stack, text, Space},
     Background, Element, Length, Subscription, Task, Theme,
 };
+use std::time::Duration;
+
+/// 화면 오른쪽 아래에 잠깐 떴다 사라지는 알림. 오류는 오래, 성공은 짧게 띄운다.
+struct Toast {
+    id: u64,
+    result: Result<String, String>,
+}
 
 pub use services::ServicesMessage;
 pub use projects::ProjectsMessage;
@@ -37,6 +44,8 @@ pub enum Message {
     Settings(SettingsMessage),
     FocusNext,
     FocusPrevious,
+    DismissToast(u64),
+    CopyToast(String),
 }
 
 pub struct App {
@@ -46,6 +55,8 @@ pub struct App {
     database: database::DatabaseState,
     transfer: transfer::TransferState,
     settings: settings::SettingsState,
+    toasts: Vec<Toast>,
+    next_toast_id: u64,
 }
 
 impl App {
@@ -61,6 +72,8 @@ impl App {
             database,
             transfer,
             settings,
+            toasts: Vec::new(),
+            next_toast_id: 0,
         };
         (
             app,
@@ -81,7 +94,35 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.update_inner(message);
+        // 각 탭이 쌓아둔 알림을 꺼내 토스트로 띄우고, 일정 시간 뒤 자동으로 닫는다.
+        let pending: Vec<_> = self.projects.take_toasts().into_iter().chain(self.database.take_toasts()).collect();
+        if pending.is_empty() {
+            return task;
+        }
+        let mut tasks = vec![task];
+        for result in pending {
+            let id = self.next_toast_id;
+            self.next_toast_id += 1;
+            let secs = if result.is_err() { 8 } else { 3 };
+            self.toasts.push(Toast { id, result });
+            tasks.push(Task::perform(tokio::time::sleep(Duration::from_secs(secs)), move |_| Message::DismissToast(id)));
+        }
+        // 너무 많이 쌓이면 오래된 것부터 버린다.
+        if self.toasts.len() > 4 {
+            let extra = self.toasts.len() - 4;
+            self.toasts.drain(..extra);
+        }
+        Task::batch(tasks)
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DismissToast(id) => {
+                self.toasts.retain(|t| t.id != id);
+                Task::none()
+            }
+            Message::CopyToast(s) => iced::clipboard::write(s),
             Message::TabSelected(tab) => {
                 if tab == Tab::Services {
                     self.services.refresh();
@@ -165,7 +206,17 @@ impl App {
         .height(Length::Fill)
         .style(|_| container::Style { background: Some(Background::Color(p().app_bg)), ..Default::default() });
 
-        row![self.sidebar(), theme::vdivider(), content].into()
+        let base = row![self.sidebar(), theme::vdivider(), content];
+        // 토스트가 없어도 항상 stack 으로 감싼다 — 루트 위젯 종류가 바뀌면
+        // 입력 중인 text_input 의 포커스·커서 상태가 초기화된다.
+        let toasts = column(self.toasts.iter().map(toast_view)).spacing(8).width(380);
+        let layer = container(toasts)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(20)
+            .align_x(iced::alignment::Horizontal::Right)
+            .align_y(iced::alignment::Vertical::Bottom);
+        stack![base, layer].into()
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
@@ -233,4 +284,34 @@ impl App {
             })
             .into()
     }
+}
+
+fn toast_view(t: &Toast) -> Element<'_, Message> {
+    use theme::{Kind, Tone, btn};
+    let (msg, tone, title) = match &t.result {
+        Ok(m) => (m.as_str(), Tone::Success, "완료"),
+        Err(e) => (e.as_str(), Tone::Danger, "오류"),
+    };
+    let mut actions = row![].spacing(4);
+    if t.result.is_err() {
+        actions = actions.push(btn("복사", Some(Icon::Copy), Kind::Ghost).on_press(Message::CopyToast(msg.to_string())));
+    }
+    actions = actions.push(btn("닫기", Some(Icon::X), Kind::Ghost).on_press(Message::DismissToast(t.id)));
+    let accent = theme::tone_dot_color(tone);
+    container(
+        column![
+            row![theme::status(title, tone), Space::with_width(Length::Fill), actions].align_y(iced::Alignment::Center),
+            text(msg).size(13).color(p().fg),
+        ]
+        .spacing(4),
+    )
+    .padding(iced::Padding { top: 8.0, bottom: 14.0, left: 14.0, right: 8.0 })
+    .width(Length::Fill)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(p().c1)),
+        border: iced::Border { color: accent, width: 1.0, radius: theme::R_CARD.into() },
+        shadow: iced::Shadow { color: p().shadow, offset: iced::Vector::new(0.0, 4.0), blur_radius: 16.0 },
+        ..Default::default()
+    })
+    .into()
 }

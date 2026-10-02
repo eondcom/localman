@@ -272,14 +272,29 @@ pub fn write_site(id: &str, conf: &str) -> Result<(), String> {
         eprintln!("[localman] vhost cp 실패: {err}");
         return Err(format!("vhost 파일 쓰기 실패: {err}"));
     }
-    Command::new("sudo")
+    let ln_out = Command::new("sudo")
         .args(["ln", "-sf", &conf_path, &enable_path])
         .output()
         .map_err(|e| e.to_string())?;
-    Command::new("sudo")
+    if !ln_out.status.success() {
+        let err = String::from_utf8_lossy(&ln_out.stderr).trim().to_string();
+        return Err(format!("vhost 활성화(ln) 실패: {err}"));
+    }
+    // reload 가 실패하면 설정 파일은 바뀌었어도 Apache 에 반영되지 않는다.
+    // 예전엔 종료 코드를 무시해서 "저장됐는데 반영이 안 되는" 상태가 조용히 생겼다.
+    let reload_out = Command::new("sudo")
         .args(["systemctl", "reload", "apache2"])
         .output()
         .map_err(|e| e.to_string())?;
+    if !reload_out.status.success() {
+        let err = String::from_utf8_lossy(&reload_out.stderr).trim().to_string();
+        let configtest = Command::new("apache2ctl")
+            .arg("configtest")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
+            .unwrap_or_default();
+        return Err(format!("Apache 재적용(reload) 실패 — 저장됐지만 반영 안 됨: {err} {configtest}"));
+    }
     Ok(())
 }
 

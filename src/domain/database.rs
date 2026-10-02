@@ -66,7 +66,7 @@ pub fn save_db_connection(engine: DbEngine, user: &str, password: &str) -> Resul
         list.truncate(12);
     }
     let data = serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?;
-    std::fs::write(credentials_path(), data).map_err(|e| e.to_string())?;
+    super::write_atomic(&credentials_path(), data.as_bytes())?;
     Ok(list)
 }
 

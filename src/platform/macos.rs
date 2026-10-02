@@ -216,6 +216,8 @@ fn ensure_httpd_base() -> Result<(), String> {
         "proxy_module", "proxy_http_module", "proxy_wstunnel_module", "rewrite_module",
         // https: ssl 과 그 세션 캐시, X-Forwarded-Proto 를 붙일 headers
         "ssl_module", "socache_shmcb_module", "headers_module",
+        // vhost 의 `Require local` (같은 와이파이의 다른 기기 차단)
+        "authz_host_module",
     ];
     let mut lines: Vec<String> = Vec::new();
     let mut in_block = false;

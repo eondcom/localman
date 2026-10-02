@@ -16,7 +16,7 @@ pub enum ServicesMessage {
     ToolsChecked(Vec<(Tool, Option<String>)>),
     LtsFetched(Option<(String, String)>),
     InstallTool(Tool),
-    ToolInstalled(Tool, Result<String, String>),
+    ToolInstalled(Result<String, String>),
 }
 
 pub struct ServicesState {
@@ -156,10 +156,10 @@ impl ServicesState {
                 self.tool_log.clear();
                 Task::perform(
                     async move { tokio::task::spawn_blocking(move || install_tool(t)).await.unwrap_or_else(|e| Err(e.to_string())) },
-                    move |r| ServicesMessage::ToolInstalled(t, r),
+                    ServicesMessage::ToolInstalled,
                 )
             }
-            ServicesMessage::ToolInstalled(_, r) => {
+            ServicesMessage::ToolInstalled(r) => {
                 self.tool_installing = None;
                 self.tool_log = vec![match r {
                     Ok(m) => format!("✓ {m}"),

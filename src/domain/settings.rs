@@ -42,5 +42,5 @@ pub fn load_settings() -> Settings {
 
 pub fn save_settings(s: &Settings) -> Result<(), String> {
     let data = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    fs::write(settings_path(), data).map_err(|e| e.to_string())
+    super::write_atomic(&settings_path(), data.as_bytes())
 }

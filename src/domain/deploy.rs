@@ -95,7 +95,7 @@ pub fn save_target(id: &str, t: &DeployTarget) -> Result<(), String> {
     let mut all = load_all();
     all.insert(id.to_string(), t.clone());
     let path = store_path();
-    fs::write(&path, serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    super::write_atomic(&path, serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?.as_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -54,8 +54,8 @@ fn save_running(map: &HashMap<String, RunningProc>) {
     let path = running_state_path();
     match serde_json::to_string_pretty(map) {
         Ok(s) => {
-            if let Err(e) = fs::write(&path, s) {
-                eprintln!("[localman] 실행 상태 저장 실패 {}: {e}", path.display());
+            if let Err(e) = super::write_atomic(&path, s.as_bytes()) {
+                eprintln!("[localman] 실행 상태 저장 실패: {e}");
             }
         }
         Err(e) => eprintln!("[localman] 실행 상태 직렬화 실패: {e}"),

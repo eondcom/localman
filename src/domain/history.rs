@@ -62,7 +62,7 @@ pub fn append_history(rec: TransferRecord) {
     }
     match serde_json::to_string_pretty(&list) {
         Ok(s) => {
-            if let Err(e) = fs::write(path(), s) {
+            if let Err(e) = super::write_atomic(&path(), s.as_bytes()) {
                 eprintln!("[localman] 이전 기록 저장 실패: {e}");
             }
         }

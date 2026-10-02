@@ -6,7 +6,24 @@ use super::settings::{load_settings, save_settings};
 use super::tls::{self, CertPaths};
 use crate::platform;
 
+/// 이 PC 에서 온 요청만 받는다.
+///
+/// Apache 는 기본으로 모든 인터페이스(0.0.0.0:80)에서 받으므로, 공용 와이파이 같은
+/// 망에서 다른 사람이 `Host: pma.localhost` 헤더만 붙이면 Adminer·dev 프로젝트에 닿는다.
+/// `<Location />` 은 `<Directory>` 보다 나중에 병합되고 ProxyPass 요청에도 적용되므로
+/// PHP·프록시 vhost 모두 이것 하나로 막힌다. (:443 은 :80 설정을 복제하므로 함께 막힌다)
+const LOCAL_ONLY: &str = "\x20   <Location />\n\
+                          \x20       Require local\n\
+                          \x20   </Location>\n";
+
 pub(crate) fn build_vhost_conf(p: &VhostProject) -> String {
+    let conf = build_vhost_body(p);
+    // 모든 템플릿이 "</VirtualHost>\n" 으로 끝난다
+    let end = conf.rfind("</VirtualHost>").expect("vhost 템플릿에 </VirtualHost> 가 없다");
+    format!("{}{LOCAL_ONLY}{}", &conf[..end], &conf[end..])
+}
+
+fn build_vhost_body(p: &VhostProject) -> String {
     match p.project_type {
         ProjectType::Php => format!(
             "<VirtualHost *:80>\n\
@@ -186,6 +203,19 @@ mod tests {
         assert!(tls.contains("SSLCertificateFile \"/Users/me/Library/Application Support/"));
         // 웹소켓(HMR) 프록시 규칙도 그대로 있어야 한다
         assert!(tls.contains("RewriteRule ^/?(.*) ws://127.0.0.1:5005/$1 [P,L]"));
+    }
+
+    #[test]
+    fn every_vhost_accepts_local_requests_only() {
+        for t in [ProjectType::Php, ProjectType::Python, ProjectType::NextJs] {
+            let conf = build_vhost_conf(&project(t.clone(), "/srv/x", "", 5001));
+            let loc = conf.find("    <Location />\n        Require local\n    </Location>\n").expect("Require local 없음");
+            assert!(loc < conf.find("</VirtualHost>").unwrap());
+            assert!(conf.ends_with("</VirtualHost>\n"));
+            // https 가상호스트도 같은 제한을 갖는다
+            let paths = CertPaths { cert: "/c.pem".into(), key: "/k.pem".into() };
+            assert!(tls_vhost(&conf, &paths).contains("Require local"));
+        }
     }
 
     #[test]

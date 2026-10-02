@@ -128,8 +128,15 @@ pub fn update_project(
     let mut list = list_projects();
     // 충돌 방지를 위해 mutable borrow 전에 다른 프로젝트 포트 수집
     let used_ports: Vec<u16> = list.iter().filter(|x| x.id != id).map(|x| x.port).collect();
-    let p = list.iter_mut().find(|p| p.id == id)
-        .ok_or_else(|| "프로젝트를 찾을 수 없습니다.".to_string())?;
+    let empty = list.is_empty();
+    let p = list.iter_mut().find(|p| p.id == id).ok_or_else(|| {
+        if empty {
+            // 화면엔 목록이 있는데 파일이 비었다 = 저장 파일이 날아간 것(예: 디스크 꽉 참)
+            format!("프로젝트를 찾을 수 없습니다 — {} 가 비었거나 깨졌습니다 (디스크 공간·백업 확인)", data_path().display())
+        } else {
+            "프로젝트를 찾을 수 없습니다.".to_string()
+        }
+    })?;
     let type_changed = p.project_type != project_type;
     p.name = name;
     p.path = path;
@@ -180,7 +187,7 @@ pub fn remove_project(id: &str) -> Result<(), String> {
 
 fn save_projects(list: &[VhostProject]) -> Result<(), String> {
     let data = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
-    fs::write(data_path(), data).map_err(|e| e.to_string())
+    super::write_atomic(&data_path(), data.as_bytes())
 }
 #[cfg(test)]
 mod tests {

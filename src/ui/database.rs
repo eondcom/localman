@@ -83,9 +83,15 @@ pub struct DatabaseState {
     edit_user_name: String,
     edit_user_password: String,
     user_status: Option<Result<String, String>>,
+    // App 이 꺼내 토스트로 띄울 알림
+    toasts: Vec<Result<String, String>>,
 }
 
 impl DatabaseState {
+    pub fn take_toasts(&mut self) -> Vec<Result<String, String>> {
+        std::mem::take(&mut self.toasts)
+    }
+
     pub fn new() -> (Self, Task<DatabaseMessage>) {
         // 저장된 자격증명이 있으면 미리 채운다. 없으면 기본 root.
         let saved_connections = load_db_connections();
@@ -115,6 +121,7 @@ impl DatabaseState {
             edit_user_name: String::new(),
             edit_user_password: String::new(),
             user_status: None,
+            toasts: Vec::new(),
         };
         // 저장된 자격증명이 있으면 시작 시 자동으로 연결한다.
         let task = if autoconnect {
@@ -206,8 +213,9 @@ impl DatabaseState {
                 self.db_users = users;
                 self.status = if self.connected {
                     // 연결 성공 시 자격증명 저장 (다음 실행 때 자동 입력)
-                    if let Ok(list) = save_db_connection(self.engine, &self.user, &self.password) {
-                        self.saved_connections = list;
+                    match save_db_connection(self.engine, &self.user, &self.password) {
+                        Ok(list) => self.saved_connections = list,
+                        Err(e) => self.toasts.push(Err(format!("접속 정보 저장 실패: {e}"))),
                     }
                     Some(Ok(format!(
                         "{} / {} 연결 성공 (접속 목록에 저장됨)",
@@ -261,6 +269,7 @@ impl DatabaseState {
                 let new_name = self.edit_db_name.trim().to_string();
                 if new_name.is_empty() {
                     self.status = Some(Err("새 DB 이름을 입력하세요.".to_string()));
+                    self.toasts.push(Err("새 DB 이름을 입력하세요.".to_string()));
                     return Task::none();
                 }
                 let u = self.user.clone();
@@ -361,11 +370,15 @@ impl DatabaseState {
                         open_url(&url);
                         self.status = Some(Ok(format!("Adminer 열림: {url}")));
                     }
-                    Err(e) => self.status = Some(Err(e)),
+                    Err(e) => {
+                        self.toasts.push(Err(e.clone()));
+                        self.status = Some(Err(e));
+                    }
                 }
                 Task::none()
             }
             DatabaseMessage::Done(result) => {
+                self.toasts.push(result.clone());
                 if result.is_ok() {
                     let u = self.user.clone();
                     let p = self.password.clone();
@@ -431,6 +444,7 @@ impl DatabaseState {
                 let new_password = self.edit_user_password.clone();
                 if new_user.is_empty() {
                     self.user_status = Some(Err("새 사용자명을 입력하세요.".to_string()));
+                    self.toasts.push(Err("새 사용자명을 입력하세요.".to_string()));
                     return Task::none();
                 }
                 let admin = self.user.clone();
@@ -474,6 +488,7 @@ impl DatabaseState {
                 )
             }
             DatabaseMessage::UserActionDone(result) => {
+                self.toasts.push(result.clone());
                 if result.is_ok() {
                     let u = self.user.clone();
                     let p = self.password.clone();
