@@ -11,6 +11,7 @@ use crate::domain::{
     is_rhymix_project, rx_reset_admin_password,
 };
 use crate::platform::{error_log_path, read_log, clear_log};
+use crate::domain::history::{last_for_project, load_history, summary_line};
 use rfd;
 
 /// 타입에 맞는 실행 명령어를 자동 감지한다.
@@ -89,6 +90,10 @@ pub enum ProjectsMessage {
     RxResetPassword,
     RxResetPasswordDone(Result<String, String>),
     CloseRxPasswordModal,
+    // 더보기(⋯) 메뉴
+    ToggleMenu(String),
+    /// 다른 PC로 보내기 — App 이 백업·이전 탭으로 넘겨 처리한다
+    SendToPc(String),
 }
 
 pub struct ProjectsState {
@@ -116,12 +121,37 @@ pub struct ProjectsState {
     // 메시지
     error: Option<String>,
     server_message: Option<Result<String, String>>,
+    // 더보기 메뉴가 열린 project id
+    menu_open: Option<String>,
+    // project id → (마지막 이전 한 줄, 최근 이전 기록 줄들). 그릴 때마다 파일을 읽지 않게 미리 만든다
+    transfers: std::collections::HashMap<String, (String, Vec<String>)>,
+}
+
+fn load_transfers(projects: &[VhostProject]) -> std::collections::HashMap<String, (String, Vec<String>)> {
+    let history = load_history();
+    projects
+        .iter()
+        .filter_map(|p| {
+            let last = last_for_project(&history, &p.id)?;
+            let recent: Vec<String> = history
+                .iter()
+                .rev()
+                .filter(|r| r.projects.iter().any(|x| x == &p.id))
+                .take(5)
+                .map(summary_line)
+                .collect();
+            Some((p.id.clone(), (summary_line(&last), recent)))
+        })
+        .collect()
 }
 
 impl ProjectsState {
     pub fn new() -> Self {
+        let projects = list_projects();
         Self {
-            projects: list_projects(),
+            transfers: load_transfers(&projects),
+            menu_open: None,
+            projects,
             new_name: String::new(),
             new_id: String::new(),
             new_path: String::new(),
@@ -146,6 +176,16 @@ impl ProjectsState {
         match msg {
             ProjectsMessage::Refresh => {
                 self.projects = list_projects();
+                self.transfers = load_transfers(&self.projects);
+                Task::none()
+            }
+            ProjectsMessage::ToggleMenu(id) => {
+                self.menu_open = if self.menu_open.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+                Task::none()
+            }
+            ProjectsMessage::SendToPc(_) => {
+                // App 이 탭을 바꾸고 백업·이전 탭에 프로젝트를 넘긴다
+                self.menu_open = None;
                 Task::none()
             }
             ProjectsMessage::NameChanged(v) => {
@@ -628,7 +668,10 @@ impl ProjectsState {
                     project_row_editing(p, &self.edit_name, &self.edit_path, &self.edit_start_command, &self.edit_app_dir, &self.edit_type)
                 } else {
                     let is_setting_up = self.setting_up.contains(&p.id);
-                    project_row_view_with_state(p, editing_id.is_some(), is_setting_up)
+                    let transfer = self.transfers.get(&p.id);
+                    let menu = (self.menu_open.as_deref() == Some(p.id.as_str()))
+                        .then(|| transfer.map(|t| t.1.as_slice()).unwrap_or(&[]));
+                    project_row_view_with_state(p, editing_id.is_some(), is_setting_up, transfer.map(|t| t.0.as_str()), menu)
                 }
             }).collect();
             scrollable(column(items).spacing(8)).into()
@@ -686,11 +729,16 @@ impl ProjectsState {
 }
 
 // 일반 보기 모드 카드
-fn project_row_view(p: &VhostProject, any_editing: bool) -> Element<'_, ProjectsMessage> {
-    project_row_view_with_state(p, any_editing, false)
-}
-
-fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: bool) -> Element<'_, ProjectsMessage> {
+/// last_transfer: 마지막 이전 한 줄. menu: 더보기가 열려 있으면 Some(최근 이전 기록)
+fn project_row_view_with_state<'a>(
+    p: &'a VhostProject,
+    any_editing: bool,
+    setting_up: bool,
+    last_transfer: Option<&'a str>,
+    menu: Option<&'a [String]>,
+) -> Element<'a, ProjectsMessage> {
+    let id_menu = p.id.clone();
+    let id_send = p.id.clone();
     let id = p.id.clone();
     let id_edit = p.id.clone();
     let id_srv = p.id.clone();
@@ -815,7 +863,7 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
         ).push(Space::with_width(6));
     }
 
-    container(
+    container(with_menu(
         row![
             column![
                 row![
@@ -839,7 +887,9 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
                 } else {
                     format!(":{} · {}/ · {}", p.port, p.app_dir, p.start_command)
                 }).size(11).color(Color::from_rgb(0.5, 0.5, 0.5)),
-            ].width(Length::Fill),
+            ]
+            .push_maybe(last_transfer.map(|t| text(t).size(11).color(Color::from_rgb(0.55, 0.65, 0.8))))
+            .width(Length::Fill),
             controls_row,
             button(text("로그").size(12))
                 .on_press(ProjectsMessage::ViewLog(id_log))
@@ -862,8 +912,25 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
                     text_color: Color::WHITE,
                     ..Default::default()
                 }),
+            Space::with_width(6),
+            button(text("⋯").size(14))
+                .on_press(ProjectsMessage::ToggleMenu(id_menu))
+                .padding([3, 10])
+                .style(move |_, _| button::Style {
+                    background: Some(iced::Background::Color(if menu.is_some() {
+                        Color::from_rgb(0.3, 0.3, 0.38)
+                    } else {
+                        Color::from_rgb(0.2, 0.2, 0.25)
+                    })),
+                    border: iced::Border { radius: 5.0.into(), ..Default::default() },
+                    text_color: Color::WHITE,
+                    ..Default::default()
+                }),
         ].align_y(iced::Alignment::Center)
-    )
+        .into(),
+        menu,
+        id_send,
+    ))
     .padding(16)
     .width(Length::Fill)
     .style(|_| container::Style {
@@ -871,6 +938,48 @@ fn project_row_view_with_state(p: &VhostProject, any_editing: bool, setting_up: 
         border: iced::Border { radius: 8.0.into(), color: Color::from_rgb(0.2, 0.2, 0.25), width: 1.0 },
         ..Default::default()
     })
+    .into()
+}
+
+/// 더보기 메뉴가 열려 있으면 카드 아래에 동작과 최근 이전 기록을 붙인다.
+fn with_menu<'a>(
+    main: Element<'a, ProjectsMessage>,
+    menu: Option<&'a [String]>,
+    id: String,
+) -> Element<'a, ProjectsMessage> {
+    let Some(recent) = menu else {
+        return main;
+    };
+    let muted = Color::from_rgb(0.55, 0.55, 0.6);
+    let mut history = column![text("이전 기록").size(12).color(muted)].spacing(3);
+    if recent.is_empty() {
+        history = history.push(text("아직 다른 PC와 주고받은 적이 없습니다.").size(11).color(muted));
+    }
+    for l in recent {
+        let c = if l.contains("일부 실패") { Color::from_rgb(0.9, 0.7, 0.3) } else { Color::from_rgb(0.75, 0.75, 0.8) };
+        history = history.push(text(l).size(11).color(c));
+    }
+    column![
+        main,
+        Space::with_height(12),
+        container(
+            row![
+                button(text("다른 PC로 보내기").size(12))
+                    .on_press(ProjectsMessage::SendToPc(id))
+                    .padding([6, 14]),
+                Space::with_width(20),
+                history.width(Length::Fill),
+            ]
+            .align_y(iced::Alignment::Start),
+        )
+        .padding(12)
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.12))),
+            border: iced::Border { radius: 6.0.into(), ..Default::default() },
+            ..Default::default()
+        }),
+    ]
     .into()
 }
 

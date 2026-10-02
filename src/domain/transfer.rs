@@ -103,6 +103,8 @@ pub fn default_bundle_name() -> String {
 // ── 내보내기 ──────────────────────────────────────────────────────────
 
 pub struct ExportOptions {
+    /// 담을 프로젝트 id. None 이면 전부.
+    pub projects: Option<Vec<String>>,
     /// 덤프해서 담을 DB 목록
     pub databases: Vec<(DbEngine, String)>,
     /// 저장된 DB 접속 정보(평문 비밀번호)를 담을지
@@ -118,7 +120,10 @@ pub fn export_bundle(dest: &Path, opts: &ExportOptions) -> Result<String, String
 }
 
 fn export_into(work: &Path, dest: &Path, opts: &ExportOptions) -> Result<String, String> {
-    let projects = list_projects();
+    let mut projects = list_projects();
+    if let Some(ids) = &opts.projects {
+        projects.retain(|p| ids.contains(&p.id));
+    }
     let mut notes: Vec<String> = Vec::new();
 
     // DB 덤프
@@ -385,7 +390,7 @@ pub fn import_bundle(bundle: &Bundle, opts: &ImportOptions) -> Vec<String> {
         }
         let mut notes: Vec<String> = Vec::new();
         if let Some(old) = plan.port_changed_from {
-            notes.push(format!("포트 {old}→{} (충돌)", p.port));
+            notes.push(format!("포트 {old}에서 {}(으)로 바꿈 (충돌)", p.port));
         }
         if !plan.folder_exists {
             notes.push(format!("폴더 없음: {} — 소스를 옮긴 뒤 사용", p.path));

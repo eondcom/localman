@@ -227,8 +227,7 @@ impl ServicesState {
             );
         }
         for l in &self.https_log {
-            let c = if l.starts_with('✗') { Color::from_rgb(1.0, 0.4, 0.4) } else { muted };
-            info = info.push(text(l).size(12).color(c));
+            info = info.push(super::status_line(l));
         }
         container(
             row![

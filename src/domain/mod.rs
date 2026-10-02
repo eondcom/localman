@@ -3,7 +3,9 @@
 pub mod apache;
 pub mod database;
 pub mod detect;
+pub mod history;
 pub mod integrations;
+pub mod lan;
 pub mod project;
 pub mod server;
 pub mod settings;

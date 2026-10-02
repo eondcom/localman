@@ -79,6 +79,14 @@ impl App {
                 self.services.update(msg).map(Message::Services)
             }
             Message::Projects(msg) => {
+                // 더보기 → "다른 PC로 보내기": 백업·이전 탭으로 넘어가 그 프로젝트를 골라 둔다
+                if let ProjectsMessage::SendToPc(id) = &msg {
+                    let id = id.clone();
+                    self.active_tab = Tab::Transfer;
+                    let t = self.projects.update(msg).map(Message::Projects);
+                    let preset = self.transfer.update(TransferMessage::PresetProject(id)).map(Message::Transfer);
+                    return Task::batch([t, preset]);
+                }
                 self.projects.update(msg).map(Message::Projects)
             }
             Message::Database(msg) => {
@@ -86,7 +94,13 @@ impl App {
             }
             Message::Transfer(msg) => {
                 // 가져오기로 프로젝트가 바뀌면 프로젝트 탭 목록도 다시 읽는다
-                let imported = matches!(msg, TransferMessage::Imported(_));
+                // 받기가 끝나도 프로젝트 목록(과 이전 기록 표시)을 다시 읽는다
+                let imported = matches!(
+                    msg,
+                    TransferMessage::Imported(_)
+                        | TransferMessage::RecvEvent(crate::domain::lan::LanEvent::Done(_))
+                        | TransferMessage::SendEvent(crate::domain::lan::LanEvent::Done(_))
+                );
                 let task = self.transfer.update(msg).map(Message::Transfer);
                 if imported {
                     let refresh = self.projects.update(ProjectsMessage::Refresh).map(Message::Projects);
@@ -189,5 +203,34 @@ fn tab_button(label: &str, active: bool, msg: Message) -> Element<'_, Message> {
         text_color: Color::WHITE,
         ..Default::default()
     })
+    .into()
+}
+
+/// "✓ …" / "✗ …" / "· …" 결과 줄을 색 점 + 글자로 그린다.
+/// (나눔고딕에 ✓·✗ 글리프가 없어 그대로 쓰면 네모로 깨진다)
+pub(crate) fn status_line<'a, M: 'a>(line: &'a str) -> Element<'a, M> {
+    let (color, rest) = if let Some(r) = line.strip_prefix('✓') {
+        (Color::from_rgb(0.45, 0.85, 0.5), r)
+    } else if let Some(r) = line.strip_prefix('✗') {
+        (Color::from_rgb(0.95, 0.4, 0.4), r)
+    } else if let Some(r) = line.strip_prefix('·') {
+        (Color::from_rgb(0.6, 0.6, 0.6), r)
+    } else {
+        (Color::from_rgb(0.6, 0.6, 0.6), line)
+    };
+    let dot = container(Space::with_width(6)).width(6).height(6).style(move |_| container::Style {
+        background: Some(iced::Background::Color(color)),
+        border: iced::Border { radius: 3.0.into(), ..Default::default() },
+        ..Default::default()
+    });
+    row![
+        column![Space::with_height(5), dot],
+        text(rest.trim_start()).size(12).color(if color == Color::from_rgb(0.6, 0.6, 0.6) {
+            color
+        } else {
+            Color::from_rgb(0.85, 0.85, 0.88)
+        }),
+    ]
+    .spacing(7)
     .into()
 }
