@@ -8,6 +8,8 @@ mod unix;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "macos")]
+mod macos_mysql;
 
 pub use unix::*;
 #[cfg(target_os = "linux")]

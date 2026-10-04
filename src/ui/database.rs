@@ -509,7 +509,7 @@ impl DatabaseState {
                     field(
                         "엔진",
                         segmented(
-                            &[(DbEngine::MariaDb, "MariaDB"), (DbEngine::PostgreSql, "PostgreSQL")],
+                            &[(DbEngine::MariaDb, "MariaDB·MySQL"), (DbEngine::PostgreSql, "PostgreSQL")],
                             &self.engine,
                             DatabaseMessage::EngineSelected,
                         ),

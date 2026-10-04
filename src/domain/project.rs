@@ -222,3 +222,4 @@ mod tests {
         assert_eq!(list[0].project_type, ProjectType::Python);
     }
 }
+

@@ -17,7 +17,7 @@ impl Default for DbEngine {
 impl DbEngine {
     pub fn label(self) -> &'static str {
         match self {
-            DbEngine::MariaDb => "MariaDB",
+            DbEngine::MariaDb => "MariaDB/MySQL",
             DbEngine::PostgreSql => "PostgreSQL",
         }
     }

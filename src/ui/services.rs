@@ -13,7 +13,7 @@ pub enum ServicesMessage {
     Refresh,
     Toggled(String, Result<(), String>),
     Installed(String, Result<(), String>),
-    ToolsChecked(Vec<(Tool, Option<String>)>),
+    ToolsChecked(Vec<(Tool, Option<String>)>, bool),
     LtsFetched(Option<(String, String)>, Option<serde_json::Value>),
     InstallTool(Tool),
     ToolInstalled(Result<String, String>),
@@ -25,19 +25,30 @@ pub struct ServicesState {
     postgresql_status: ServiceStatus,
     installing: Option<String>,
     error: Option<String>,
+    /// DB 서버 이름 — OS·설치 상태에 따라 다르다 (맥 Intel 은 앱이 설치한 MySQL).
+    /// brew 조회가 느려 새로 고칠 때만 정한다.
+    db_label: &'static str,
     tools: Vec<(Tool, Option<String>)>,
     /// nodejs.org 의 지금 LTS (버전, 이름)
     lts: Option<(String, String)>,
     /// nodejs/Release 의 릴리스 일정 (설치된 Node 가 지원 중인지 판단)
     node_schedule: Option<serde_json::Value>,
+    /// Apache 용 PHP 모듈이 있는지 (php 명령만 있고 모듈이 없을 수 있다 — MAMP 등)
+    php_apache: bool,
     tool_installing: Option<Tool>,
     tool_log: Vec<String>,
 }
 
 fn check_tools() -> Task<ServicesMessage> {
     Task::perform(
-        async { tokio::task::spawn_blocking(|| TOOLS.iter().map(|t| (*t, installed_version(*t))).collect()).await.unwrap_or_default() },
-        ServicesMessage::ToolsChecked,
+        async {
+            tokio::task::spawn_blocking(|| {
+                (TOOLS.iter().map(|t| (*t, installed_version(*t))).collect(), crate::platform::php_module_ready())
+            })
+            .await
+            .unwrap_or_default()
+        },
+        |(list, php)| ServicesMessage::ToolsChecked(list, php),
     )
 }
 
@@ -66,9 +77,11 @@ impl ServicesState {
             postgresql_status: ServiceStatus::Unknown,
             installing: None,
             error: None,
+            db_label: "MariaDB",
             tools: Vec::new(),
             lts: None,
             node_schedule: None,
+            php_apache: false,
             tool_installing: None,
             tool_log: Vec::new(),
         };
@@ -95,6 +108,11 @@ impl ServicesState {
         self.apache_status = get_service_status("apache2");
         self.mariadb_status = get_service_status("mariadb");
         self.postgresql_status = get_service_status("postgresql");
+        self.db_label = crate::platform::db_service_label();
+    }
+
+    fn display_name(&self, name: &'static str, id: &str) -> &'static str {
+        if id == "mariadb" { self.db_label } else { name }
     }
 
     fn status_of(&self, id: &str) -> &ServiceStatus {
@@ -107,7 +125,7 @@ impl ServicesState {
 
     /// 사이드바 아래 요약용: (이름, 상태)
     pub fn summary(&self) -> Vec<(&'static str, &ServiceStatus)> {
-        SERVICES.iter().map(|(name, id, ..)| (*name, self.status_of(id))).collect()
+        SERVICES.iter().map(|(name, id, ..)| (self.display_name(name, id), self.status_of(id))).collect()
     }
 
     pub fn update(&mut self, msg: ServicesMessage) -> Task<ServicesMessage> {
@@ -146,8 +164,9 @@ impl ServicesState {
                 }
                 Task::none()
             }
-            ServicesMessage::ToolsChecked(list) => {
+            ServicesMessage::ToolsChecked(list, php) => {
                 self.tools = list;
+                self.php_apache = php;
                 Task::none()
             }
             ServicesMessage::LtsFetched(lts, sch) => {
@@ -193,7 +212,7 @@ impl ServicesState {
         let refresh = btn("새로고침", Some(Icon::Refresh), Kind::Surface).on_press(ServicesMessage::Refresh);
 
         let tiles = SERVICES.iter().fold(row![].spacing(12), |r, (name, id, desc, ic)| {
-            r.push(self.tile(name, id, desc, *ic))
+            r.push(self.tile(self.display_name(name, id), id, desc, *ic))
         });
 
         let mut col = column![
@@ -222,8 +241,10 @@ impl ServicesState {
                 (Tool::Node, Some(v), Some(sch)) => Some(node_support(sch, v, &today())),
                 _ => None,
             };
+            let php_unlinked = *t == Tool::Php && ver.is_some() && !self.php_apache;
             let status: Element<ServicesMessage> = match (ver, &support) {
                 (None, _) => chip("미설치", Tone::Warning),
+                (Some(v), _) if php_unlinked => chip(format!("v{v} · Apache 연결 안 됨"), Tone::Warning),
                 (Some(v), Some(NodeSupport::ActiveLts(n))) => chip(format!("v{v} · {n} LTS"), Tone::Success),
                 (Some(v), Some(NodeSupport::MaintenanceLts(n, end))) => {
                     chip(format!("v{v} · {n} 유지보수 LTS ({} 종료)", &end[..end.len().min(7)]), Tone::Warning)
@@ -235,10 +256,12 @@ impl ServicesState {
             let label: String = match (t, lts) {
                 (Tool::Node, Some((l, name))) => format!("{l} {name} LTS 설치"),
                 (Tool::Node, None) => "LTS 설치".into(),
+                (Tool::Php, _) if php_unlinked => "Apache용 PHP 설치".into(),
                 _ => "설치".into(),
             };
             // 없거나·지원 종료·LTS 아님 → 주 버튼, 유지보수 LTS → 보조 버튼
             let kind = match (ver, &support) {
+                _ if php_unlinked => Some(Kind::Primary),
                 (None, _) | (_, Some(NodeSupport::Eol | NodeSupport::Current)) => Some(Kind::Primary),
                 (_, Some(NodeSupport::MaintenanceLts(..))) => Some(Kind::Flat),
                 _ => None,

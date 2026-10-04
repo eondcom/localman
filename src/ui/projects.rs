@@ -1286,7 +1286,7 @@ fn project_row_editing<'a>(
             "DB (용량 표시·서버 배포에 씀)",
             row![
                 segmented(
-                    &[(DbEngine::MariaDb, "MariaDB"), (DbEngine::PostgreSql, "PostgreSQL")],
+                    &[(DbEngine::MariaDb, "MariaDB·MySQL"), (DbEngine::PostgreSql, "PostgreSQL")],
                     &edit_db_engine,
                     ProjectsMessage::EditDbEngineSelected,
                 ),

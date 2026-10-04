@@ -5,6 +5,7 @@
 //! MariaDB/PostgreSQL은 사용자 권한의 `brew services`로 돌린다.
 
 use super::ServiceStatus;
+use super::macos_mysql;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -88,6 +89,16 @@ pub fn get_service_status(name: &str) -> ServiceStatus {
         }
         return if httpd_running() { ServiceStatus::Running } else { ServiceStatus::Stopped };
     }
+    if name == "mariadb" && !brew_installed(&formula) {
+        // Homebrew MariaDB 가 없으면 앱이 설치한 MySQL 8.4 LTS 를 쓴다
+        return if !macos_mysql::installed() {
+            ServiceStatus::NotInstalled
+        } else if macos_mysql::running() {
+            ServiceStatus::Running
+        } else {
+            ServiceStatus::Stopped
+        };
+    }
     if !brew_installed(&formula) {
         return ServiceStatus::NotInstalled;
     }
@@ -107,6 +118,11 @@ pub fn get_service_status(name: &str) -> ServiceStatus {
 pub fn install_service(service: &str) -> Result<(), String> {
     let formula = formula_for(service)
         .ok_or_else(|| format!("설치할 수 있는 서비스가 아닙니다: {service}"))?;
+    if service == "mariadb" {
+        // Intel 맥 등 Homebrew 가 미리 빌드한 MariaDB 를 주지 않는 환경에서도 되도록
+        // 공식 MySQL 8.4 LTS 바이너리를 앱 전용 폴더에 설치한다
+        return macos_mysql::install().map(|m| eprintln!("[localman] {m}"));
+    }
     let output = brew()
         .args(["install", &formula])
         .output()
@@ -118,6 +134,12 @@ pub fn install_service(service: &str) -> Result<(), String> {
         ensure_httpd_base()?;
     }
     Ok(())
+}
+
+/// Apache 에서 PHP 를 돌릴 모듈이 있는지 (Homebrew php 의 libphp).
+/// MAMP 등 다른 곳의 php 명령이 있어도 Homebrew httpd 에는 연결되지 않는다.
+pub fn php_module_ready() -> bool {
+    Path::new(&format!("{}/opt/php/lib/httpd/modules/libphp.so", brew_prefix())).exists()
 }
 
 pub fn install_tool(key: &str) -> Result<String, String> {
@@ -147,6 +169,9 @@ pub fn toggle_service(name: &str, start: bool) -> Result<(), String> {
     eprintln!("[localman] 서비스 {action}: {name}");
     let formula = formula_for(name).ok_or_else(|| format!("알 수 없는 서비스: {name}"))?;
 
+    if name == "mariadb" && !brew_installed(&formula) {
+        return if start { macos_mysql::start() } else { macos_mysql::stop() };
+    }
     let output = if name == "apache2" {
         if start {
             ensure_httpd_base()?;
@@ -413,6 +438,11 @@ pub fn init_env() {
             std::env::var("PATH").unwrap_or_default().split(':').map(String::from).collect()
         });
 
+    // 앱이 설치한 MySQL 클라이언트를 가장 먼저 찾게 한다 (서버와 같은 판)
+    let mysql_bin = macos_mysql::bin_dir().to_string_lossy().to_string();
+    if macos_mysql::installed() && !paths.contains(&mysql_bin) {
+        paths.insert(0, mysql_bin);
+    }
     let prefix = brew_prefix();
     let mut extra = vec![format!("{prefix}/bin"), format!("{prefix}/sbin")];
     extra.push(format!("{prefix}/opt/{}/bin", postgres_formula()));
@@ -433,6 +463,11 @@ pub fn system_prefers_dark() -> bool {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "Dark")
         .unwrap_or(false)
+}
+
+/// 서비스 탭에 보일 DB 서버 이름 (Homebrew MariaDB 가 없으면 앱이 설치한 MySQL)
+pub fn db_service_label() -> &'static str {
+    if brew_installed("mariadb") { "MariaDB" } else { "MySQL" }
 }
 
 /// 기본 브라우저로 URL을 연다.
@@ -465,5 +500,6 @@ pub fn acquire_single_instance() -> bool {
         false
     }
 }
+
 
 

@@ -50,7 +50,7 @@ pub struct DbDump {
     pub file: String,
 }
 
-fn engine_dir(engine: DbEngine) -> &'static str {
+pub(crate) fn engine_dir(engine: DbEngine) -> &'static str {
     match engine {
         DbEngine::MariaDb => "mariadb",
         DbEngine::PostgreSql => "postgresql",
@@ -62,11 +62,11 @@ fn connection_for(engine: DbEngine) -> Option<DbCredentials> {
     load_db_connections().into_iter().find(|c| c.engine == engine)
 }
 
-fn home_dir() -> String {
+pub(crate) fn home_dir() -> String {
     dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
 }
 
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::process::Command::new("hostname")
         .output()
         .ok()
@@ -75,7 +75,7 @@ fn hostname() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn scratch_dir(tag: &str) -> Result<PathBuf, String> {
+pub(crate) fn scratch_dir(tag: &str) -> Result<PathBuf, String> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let dir = std::env::temp_dir().join(format!("localman-{tag}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&dir).map_err(|e| format!("임시 폴더 생성 실패: {e}"))?;
@@ -160,7 +160,20 @@ fn export_into(work: &Path, dest: &Path, opts: &ExportOptions) -> Result<String,
             .map_err(|e| e.to_string())?;
     }
 
-    // tar.gz로 묶는다. 실패하면 반쯤 쓰인 파일을 남기지 않는다.
+    pack_dir(work, dest)?;
+
+    let mut summary = vec![format!(
+        "✓ 내보내기 완료: 프로젝트 {}개, DB {}개{}",
+        projects.len(),
+        dumps.len(),
+        if opts.include_credentials { ", DB 접속 정보 포함" } else { "" }
+    )];
+    summary.extend(notes);
+    Ok(summary.join("\n"))
+}
+
+/// 준비된 폴더를 백업 묶음(tar.gz)으로 만든다. 실패하면 반쯤 쓰인 파일을 남기지 않는다.
+pub(crate) fn pack_dir(work: &Path, dest: &Path) -> Result<(), String> {
     let write = || -> Result<(), String> {
         let file = fs::File::create(dest).map_err(|e| format!("파일 만들기 실패: {e}"))?;
         let mut tar = tar::Builder::new(GzEncoder::new(file, Compression::default()));
@@ -174,18 +187,10 @@ fn export_into(work: &Path, dest: &Path, opts: &ExportOptions) -> Result<String,
         let _ = fs::remove_file(dest);
         return Err(e);
     }
-
-    let mut summary = vec![format!(
-        "✓ 내보내기 완료: 프로젝트 {}개, DB {}개{}",
-        projects.len(),
-        dumps.len(),
-        if opts.include_credentials { ", DB 접속 정보 포함" } else { "" }
-    )];
-    summary.extend(notes);
-    Ok(summary.join("\n"))
+    Ok(())
 }
 
-fn json<T: Serialize>(v: &T) -> Result<String, String> {
+pub(crate) fn json<T: Serialize>(v: &T) -> Result<String, String> {
     serde_json::to_string_pretty(v).map_err(|e| e.to_string())
 }
 

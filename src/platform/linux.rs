@@ -85,6 +85,16 @@ pub fn tool_packages(key: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// Apache 에서 PHP 를 돌릴 모듈(libapache2-mod-php)이 있는지
+pub fn php_module_ready() -> bool {
+    fs::read_dir("/etc/apache2/mods-available")
+        .map(|rd| rd.flatten().any(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.starts_with("php") && n.ends_with(".load")
+        }))
+        .unwrap_or(false)
+}
+
 pub fn install_tool(key: &str) -> Result<String, String> {
     let pkgs = tool_packages(key).ok_or_else(|| format!("설치할 수 있는 도구가 아닙니다: {key}"))?;
     let mut args = vec!["-n", "/usr/bin/apt-get", "install", "-y"];
@@ -362,6 +372,10 @@ pub fn system_prefers_dark() -> bool {
             .unwrap_or_default()
     };
     get("color-scheme").contains("dark") || get("gtk-theme").contains("dark")
+}
+
+pub fn db_service_label() -> &'static str {
+    "MariaDB"
 }
 
 /// 기본 브라우저로 URL을 연다.

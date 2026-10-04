@@ -7,6 +7,7 @@ pub mod detect;
 pub mod history;
 pub mod integrations;
 pub mod lan;
+pub mod mamp;
 pub mod project;
 pub mod server;
 pub mod settings;

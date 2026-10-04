@@ -19,6 +19,7 @@ use crate::domain::lan::{
     LanEvent, Peer, ReceiveOptions, SendPlan, TRANSFER_PORT, discover, human_bytes, receive, send,
 };
 use crate::domain::list_projects;
+use crate::domain::mamp::{MampExport, MampInfo, detect as detect_mamp, export_bundle as export_mamp, vhost_to_project};
 
 use crate::domain::transfer::{
     Bundle, ExportOptions, ImportOptions, PlannedProject, default_bundle_name, export_bundle,
@@ -60,6 +61,17 @@ pub enum TransferMessage {
     StartReceive,
     StopReceive,
     RecvEvent(LanEvent),
+    // MAMP 에서 옮기기
+    MampDetected(Option<MampInfo>),
+    MampToggleDb(usize, bool),
+    MampToggleAllDbs(bool),
+    MampToggleVhost(usize, bool),
+    MampUserChanged(String),
+    MampPasswordChanged(String),
+    MampExport,
+    MampEvent(LanEvent),
+    /// 방금 만든 MAMP 백업 파일을 이 PC 가져오기로 연다
+    MampImportHere,
 }
 
 /// 보낼 범위
@@ -160,6 +172,14 @@ pub struct TransferState {
     recv_code: Option<(String, String)>,
     receiving: LanJob,
     history: Vec<String>,
+    // MAMP 에서 옮기기
+    mamp: Option<MampInfo>,
+    mamp_dbs: Vec<bool>,
+    mamp_vhosts: Vec<bool>,
+    mamp_user: String,
+    mamp_password: String,
+    mamp_job: LanJob,
+    mamp_output: Option<PathBuf>,
 }
 
 fn recent_history() -> Vec<String> {
@@ -209,8 +229,22 @@ impl TransferState {
             recv_code: None,
             receiving: LanJob::default(),
             history: recent_history(),
+            mamp: None,
+            mamp_dbs: Vec::new(),
+            mamp_vhosts: Vec::new(),
+            mamp_user: "root".into(),
+            mamp_password: "root".into(),
+            mamp_job: LanJob::default(),
+            mamp_output: None,
         };
-        (s, Task::done(TransferMessage::LoadDatabases))
+        (
+            s,
+            Task::batch([
+                Task::done(TransferMessage::LoadDatabases),
+                // DB 폴더 크기를 재므로 작업 스레드에서
+                Task::perform(blocking(detect_mamp), TransferMessage::MampDetected),
+            ]),
+        )
     }
 
     fn import_options(&self) -> ImportOptions {
@@ -476,6 +510,108 @@ impl TransferState {
                 }
                 Task::none()
             }
+            TransferMessage::MampDetected(info) => {
+                if let Some(i) = &info {
+                    // DB 는 전부, 사이트는 폴더가 남아 있는 것만 기본으로 고른다
+                    self.mamp_dbs = vec![true; i.databases.len()];
+                    self.mamp_vhosts = i.vhosts.iter().map(|v| v.exists && vhost_to_project(v).is_some()).collect();
+                }
+                self.mamp = info;
+                Task::none()
+            }
+            TransferMessage::MampToggleDb(i, on) => {
+                if let Some(x) = self.mamp_dbs.get_mut(i) {
+                    *x = on;
+                }
+                Task::none()
+            }
+            TransferMessage::MampToggleAllDbs(on) => {
+                self.mamp_dbs.iter_mut().for_each(|x| *x = on);
+                Task::none()
+            }
+            TransferMessage::MampToggleVhost(i, on) => {
+                if let Some(x) = self.mamp_vhosts.get_mut(i) {
+                    *x = on;
+                }
+                Task::none()
+            }
+            TransferMessage::MampUserChanged(v) => {
+                self.mamp_user = v;
+                Task::none()
+            }
+            TransferMessage::MampPasswordChanged(v) => {
+                self.mamp_password = v;
+                Task::none()
+            }
+            TransferMessage::MampExport => {
+                let Some(info) = &self.mamp else { return Task::none() };
+                let opts = MampExport {
+                    databases: info.databases.iter().zip(&self.mamp_dbs).filter(|(_, on)| **on).map(|(d, _)| d.name.clone()).collect(),
+                    projects: info
+                        .vhosts
+                        .iter()
+                        .zip(&self.mamp_vhosts)
+                        .filter(|(_, on)| **on)
+                        .filter_map(|(v, _)| vhost_to_project(v))
+                        .collect(),
+                    user: self.mamp_user.clone(),
+                    password: self.mamp_password.clone(),
+                };
+                self.mamp_job.start();
+                self.mamp_output = None;
+                let name = default_bundle_name().replace("localman-backup-", "localman-mamp-");
+                Task::run(
+                    {
+                        let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+                        std::thread::spawn(move || {
+                            // 저장 위치는 작업 스레드에서 묻는다 (GUI 를 멈추지 않게)
+                            let dest = rfd::FileDialog::new()
+                                .set_title("MAMP 백업 파일 저장 위치")
+                                .set_file_name(&name)
+                                .add_filter("localman 백업", &["gz"])
+                                .save_file();
+                            let r = match dest {
+                                None => Err(String::new()),
+                                Some(dest) => {
+                                    let tx2 = tx.clone();
+                                    export_mamp(&dest, &opts, move |m| {
+                                        let _ = tx2.unbounded_send(LanEvent::Status(m));
+                                    })
+                                    .map(|mut l| {
+                                        l.push(format!("__path:{}", dest.display()));
+                                        l
+                                    })
+                                }
+                            };
+                            let _ = tx.unbounded_send(LanEvent::Done(r));
+                        });
+                        rx
+                    },
+                    TransferMessage::MampEvent,
+                )
+            }
+            TransferMessage::MampEvent(e) => {
+                let e = match e {
+                    // 저장 창에서 취소
+                    LanEvent::Done(Err(m)) if m.is_empty() => {
+                        self.mamp_job = LanJob::default();
+                        return Task::none();
+                    }
+                    LanEvent::Done(Ok(lines)) => {
+                        let (paths, rest): (Vec<String>, Vec<String>) = lines.into_iter().partition(|l| l.starts_with("__path:"));
+                        self.mamp_output = paths.first().map(|p| PathBuf::from(p.trim_start_matches("__path:")));
+                        LanEvent::Done(Ok(rest))
+                    }
+                    other => other,
+                };
+                self.mamp_job.apply(e);
+                Task::none()
+            }
+            TransferMessage::MampImportHere => {
+                let Some(path) = self.mamp_output.clone() else { return Task::none() };
+                self.opening = true;
+                Task::perform(blocking(move || Some(open_bundle(&path))), TransferMessage::BundleOpened)
+            }
             TransferMessage::CloseBundle => {
                 if let Some(b) = self.bundle.take() {
                     b.close();
@@ -498,6 +634,11 @@ impl TransferState {
             section_label("같은 네트워크로 바로 이전"),
             row![card(self.send_view()), card(self.receive_view())].spacing(12),
             Space::with_height(14),
+        ];
+        if self.mamp.is_some() {
+            col = col.push(section_label("MAMP에서 옮기기")).push(card(self.mamp_view())).push(Space::with_height(14));
+        }
+        col = col.push(column![
             section_label("함께 옮길 데이터베이스"),
             card(self.selection_view()),
             Space::with_height(14),
@@ -506,7 +647,7 @@ impl TransferState {
             Space::with_height(14),
             section_label("최근 이전 기록"),
             card(self.history_view()),
-        ];
+        ]);
         if let Some(e) = &self.error {
             col = col.push(Space::with_height(12)).push(result_line(format!("✗ {e}")));
         }
@@ -740,6 +881,102 @@ impl TransferState {
                 c.push(row![theme::dot(tone), text(l).size(12).color(p().fg2)].spacing(8).align_y(iced::Alignment::Center))
             })
             .into()
+    }
+}
+
+impl TransferState {
+    fn mamp_view(&self) -> Element<'_, TransferMessage> {
+        let Some(info) = &self.mamp else { return Space::with_height(0).into() };
+        let busy = self.mamp_job.running;
+        let mut c = column![
+            card_title(Icon::Database, "MAMP 자료 백업·이전"),
+            muted("MAMP의 사이트와 MySQL DB를 로컬맨 백업 파일로 만듭니다. 이 PC로 바로 가져오거나 리눅스로 옮길 수 있습니다. MAMP 폴더는 읽기만 합니다."),
+            Space::with_height(10),
+        ]
+        .spacing(4);
+
+        // 사이트(가상호스트)
+        c = c.push(label("사이트 (가상호스트)"));
+        let mut any_site = false;
+        for (i, v) in info.vhosts.iter().enumerate() {
+            let Some(proj) = vhost_to_project(v) else { continue };
+            any_site = true;
+            let on = self.mamp_vhosts.get(i).copied().unwrap_or(false);
+            c = c.push(
+                row![
+                    check(format!("{} → {}", v.server_name, proj.domain), on).on_toggle(move |x| TransferMessage::MampToggleVhost(i, x)),
+                    if v.exists { chip("폴더 있음", Tone::Success) } else { chip("폴더 없음", Tone::Warning) },
+                    text(v.doc_root.clone()).size(11).color(p().fg4),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        if !any_site {
+            c = c.push(muted("옮길 가상호스트가 없습니다."));
+        }
+
+        // DB
+        let total: u64 = info.databases.iter().zip(&self.mamp_dbs).filter(|(_, on)| **on).map(|(d, _)| d.bytes).sum();
+        let all_on = !self.mamp_dbs.is_empty() && self.mamp_dbs.iter().all(|x| *x);
+        c = c.push(Space::with_height(8)).push(
+            row![
+                label("MySQL DB").width(Length::Fill),
+                muted(format!("고른 것 {}", human_bytes(total))),
+                check("전체", all_on).on_toggle(TransferMessage::MampToggleAllDbs),
+            ]
+            .spacing(12)
+            .align_y(iced::Alignment::Center),
+        );
+        let mut grid = column![].spacing(4);
+        for chunk in info.databases.iter().enumerate().collect::<Vec<_>>().chunks(3) {
+            let mut r = row![].spacing(12);
+            for (i, d) in chunk {
+                let i = *i;
+                let on = self.mamp_dbs.get(i).copied().unwrap_or(false);
+                r = r.push(
+                    container(check(format!("{} · {}", d.name, human_bytes(d.bytes)), on).on_toggle(move |x| TransferMessage::MampToggleDb(i, x)))
+                        .width(Length::FillPortion(1)),
+                );
+            }
+            for _ in chunk.len()..3 {
+                r = r.push(Space::with_width(Length::FillPortion(1)));
+            }
+            grid = grid.push(r);
+        }
+        c = c.push(grid);
+
+        c = c.push(Space::with_height(8)).push(
+            row![
+                container(column![label("MAMP MySQL 사용자"), input("root", &self.mamp_user).on_input(TransferMessage::MampUserChanged)].spacing(4)).width(160),
+                container(
+                    column![
+                        label("비밀번호"),
+                        input("root", &self.mamp_password).on_input(TransferMessage::MampPasswordChanged).secure(true),
+                    ]
+                    .spacing(4),
+                )
+                .width(160),
+                column![
+                    Space::with_height(19),
+                    {
+                        let b = btn(if busy { "만드는 중…" } else { "MAMP 백업 파일 만들기" }, Some(Icon::HardDrive), Kind::Primary);
+                        if busy { b } else { b.on_press(TransferMessage::MampExport) }
+                    },
+                ],
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::End),
+        );
+        c = c.push(muted("MAMP MySQL이 꺼져 있으면 덤프하는 동안만 포트 없이 띄웠다가 다시 내립니다 (로컬맨 MySQL과 부딪치지 않음)."));
+        c = c.push(job_view(&self.mamp_job));
+        if self.mamp_output.is_some() && !busy {
+            c = c.push(Space::with_height(6)).push(
+                btn("이 PC로 바로 가져오기", Some(Icon::Download), Kind::Primary).on_press(TransferMessage::MampImportHere),
+            );
+            c = c.push(muted("아래 [파일에서 가져오기]에 열립니다. 경로·덮어쓰기를 확인한 뒤 [가져오기]를 누르세요."));
+        }
+        c.into()
     }
 }
 

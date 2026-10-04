@@ -71,7 +71,11 @@ sudo ./scripts/linux/install-sudoers.sh
 
 ### 맥
 
-- [Homebrew](https://brew.sh) — httpd·MariaDB·PostgreSQL은 서비스 탭의 [설치하기]로 `brew install` 된다
+- [Homebrew](https://brew.sh) — httpd·PostgreSQL은 서비스 탭의 [설치하기]로 `brew install` 된다
+- DB 서버(MariaDB 자리): Homebrew가 Intel 맥용 MariaDB를 더 이상 미리 빌드해 주지 않아(Xcode 없이는 빌드 불가),
+  [설치하기]는 **MySQL 8.4 LTS 공식 바이너리**를 `<데이터 폴더>/tools/mysql`에 설치한다 (sudo 불필요, 3306·`/tmp/mysql.sock`,
+  root 비밀번호 `root`). 서비스 탭에는 "MySQL"로 보인다. Homebrew MariaDB가 이미 있으면 그것을 쓴다
+- 개발 도구의 PHP는 Apache 모듈까지 본다 — MAMP 등의 php 명령만 있고 Homebrew `libphp`가 없으면 "Apache 연결 안 됨"
 - Apache는 Homebrew `httpd`를 80포트로 띄운다. vhost는 `$(brew --prefix)/etc/httpd/localman/*.conf`에 생기고,
   `httpd.conf` 끝에 localman 관리 블록(Listen 80, 실행 사용자, proxy·rewrite 모듈, mod_php, Include)이 들어간다
 - PHP 프로젝트는 `brew install php`가 있으면 mod_php로 연결된다
@@ -141,6 +145,15 @@ sudo ./scripts/macos/install-sudoers.sh
   받는 쪽은 틀린 코드 3번이면 멈춘다. 코드는 한 번만 쓴다
 - 포트: 발견 UDP 47800, 전송 TCP 47801. 맥은 처음 받을 때 방화벽이 수신 연결 허용을 물을 수 있다
 - 보내고 받은 기록은 [최근 이전 기록]과 프로젝트 줄("↗ 10/03 14:20 맥북(으)로 보냄"), 더보기 메뉴에 남는다
+
+### MAMP에서 옮기기 (맥)
+
+MAMP가 있으면 [백업·이전]에 나타난다. MAMP의 가상호스트(폴더가 남은 것)와 MySQL DB를 골라
+**로컬맨 백업 파일과 같은 형식**으로 만든다 → [이 PC로 바로 가져오기] 또는 리눅스로 옮겨 가져오기.
+
+- DB 크기는 MAMP 데이터 폴더에서 바로 잰다 (MySQL을 켜지 않는다)
+- MAMP MySQL이 꺼져 있으면 덤프하는 동안만 포트 없이 소켓으로 띄웠다가 다시 내린다 (로컬맨 MySQL 3306과 충돌 없음)
+- MAMP 폴더는 읽기만 한다. MAMP MySQL 계정 기본값 root/root
 
 ### 파일로 옮기기
 
