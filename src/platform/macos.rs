@@ -136,10 +136,53 @@ pub fn install_service(service: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Apache 에서 PHP 를 돌릴 모듈이 있는지 (Homebrew php 의 libphp).
-/// MAMP 등 다른 곳의 php 명령이 있어도 Homebrew httpd 에는 연결되지 않는다.
+/// Apache 에 연결할 PHP 모듈 (모듈 이름, 경로).
+/// Homebrew php 가 있으면 그것을, 없으면 MAMP 에 든 가장 높은 PHP 의 모듈을 쓴다.
+/// (Intel 맥은 Homebrew 가 php 를 미리 빌드해 주지 않는다. MAMP 모듈도 prefork·x86_64 로 같다)
+pub fn php_module() -> Option<(String, String)> {
+    let brew = format!("{}/opt/php/lib/httpd/modules/libphp.so", brew_prefix());
+    if Path::new(&brew).exists() {
+        return Some(("php_module".into(), brew));
+    }
+    let mut versions: Vec<(Vec<u32>, PathBuf)> = fs::read_dir("/Applications/MAMP/bin/php")
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let ver: Vec<u32> = name.strip_prefix("php")?.split('.').filter_map(|x| x.parse().ok()).collect();
+            (!ver.is_empty()).then(|| (ver, e.path()))
+        })
+        .collect();
+    versions.sort();
+    let (ver, dir) = versions.pop()?;
+    let (module, file) = match ver[0] {
+        8.. => ("php_module", "libphp.so"),
+        7 => ("php7_module", "libphp7.so"),
+        _ => ("php5_module", "libphp5.so"),
+    };
+    let path = dir.join("modules").join(file);
+    path.exists().then(|| (module.to_string(), path.to_string_lossy().to_string()))
+}
+
+/// MAMP PHP 모듈이 @rpath 로 찾는 라이브러리(libzip 등)는 MAMP 의 Apache 만 찾을 수 있다.
+/// 같은 이름(install name)의 라이브러리를 LoadFile 로 먼저 올려 두면 dyld 가 그것을 쓴다.
+fn php_preloads(module_path: &str) -> Vec<String> {
+    if !module_path.starts_with("/Applications/MAMP/") {
+        return Vec::new();
+    }
+    let out = Command::new("otool").args(["-L", module_path]).output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("@rpath/")?.split_whitespace().next().map(str::to_string))
+        .map(|name| format!("/Applications/MAMP/Library/lib/{name}"))
+        .filter(|p| Path::new(p).exists())
+        .collect()
+}
+
+/// Apache 에서 PHP 를 돌릴 모듈이 있는지
 pub fn php_module_ready() -> bool {
-    Path::new(&format!("{}/opt/php/lib/httpd/modules/libphp.so", brew_prefix())).exists()
+    php_module().is_some()
 }
 
 pub fn install_tool(key: &str) -> Result<String, String> {
@@ -283,9 +326,17 @@ fn ensure_httpd_base() -> Result<(), String> {
         "ServerName localhost".to_string(),
         "Listen 443".to_string(),
     ];
-    let libphp = format!("{prefix}/opt/php/lib/httpd/modules/libphp.so");
-    if Path::new(&libphp).exists() {
-        block.push(format!("LoadModule php_module {libphp}"));
+    if let Some((module, path)) = php_module() {
+        for lib in php_preloads(&path) {
+            block.push(format!("LoadFile \"{lib}\""));
+        }
+        block.push(format!("LoadModule {module} \"{path}\""));
+        // MAMP 의 php.ini 는 DB 소켓을 MAMP MySQL 로 고정한다. MAMP 파일은 건드리지 않고
+        // 여기서 로컬맨 DB 서버(/tmp/mysql.sock) 쪽으로 덮어써 'localhost' 접속이 되게 한다.
+        block.push(format!(
+            "<IfModule {module}>\n    php_admin_value mysqli.default_socket {sock}\n    php_admin_value pdo_mysql.default_socket {sock}\n</IfModule>",
+            sock = macos_mysql::SOCKET
+        ));
         block.push("<FilesMatch \\.php$>\n    SetHandler application/x-httpd-php\n</FilesMatch>".to_string());
         block.push("DirectoryIndex index.php index.html".to_string());
     }
