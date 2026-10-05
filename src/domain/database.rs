@@ -520,6 +520,9 @@ pub fn import_sql(
         "s/utf8mb4_0900_bin/utf8mb4_bin/g",
     );
     let mut sed_child = Command::new("sed")
+        // 바이트 단위로 처리한다. UTF-8 로캘이면 맥(BSD) sed 는 _binary 값 같은 이진 바이트에서
+        // "illegal byte sequence" 로 멈추고, 그 뒤 덤프가 잘린 채 mysql 에 들어간다.
+        .env("LC_ALL", "C")
         .arg("-E")
         .arg(sed_script)
         .stdin(sed_stdin)
@@ -558,9 +561,17 @@ pub fn import_sql(
     let db_out = db_child
         .wait_with_output()
         .map_err(|e| e.to_string())?;
-    let _ = sed_child.wait();
-    if let Some(mut gz) = gunzip_child {
-        let _ = gz.wait();
+    // sed·gunzip 이 중간에 실패하면 mysql 은 잘린 입력을 정상 종료로 받는다 → 반드시 따로 확인한다
+    let sed_status = sed_child.wait().map_err(|e| e.to_string())?;
+    let gz_status = match gunzip_child {
+        Some(mut gz) => Some(gz.wait().map_err(|e| e.to_string())?),
+        None => None,
+    };
+    if !sed_status.success() {
+        return Err("덤프 정리(sed) 중 실패해 가져오기가 중간에 끊겼습니다. 일부 표만 들어갔을 수 있습니다.".into());
+    }
+    if gz_status.is_some_and(|s| !s.success()) {
+        return Err("압축 풀기(gunzip) 중 실패해 가져오기가 중간에 끊겼습니다. 일부 표만 들어갔을 수 있습니다.".into());
     }
 
     if db_out.status.success() {
