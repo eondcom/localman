@@ -47,6 +47,9 @@ fn mysqld_args() -> Vec<String> {
         format!("--pid-file={}", d.join("mysql.pid").display()),
         format!("--log-error={}", d.join("mysql.err").display()),
         "--bind-address=127.0.0.1".into(),
+        // X 프로토콜(33060)은 기본으로 모든 네트워크에 열린다. 로컬맨은 쓰지 않으니 끈다
+        // (같은 와이파이의 다른 기기가 접속을 시도하지 못하게).
+        "--mysqlx=OFF".into(),
     ]
 }
 
