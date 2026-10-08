@@ -127,6 +127,8 @@ pub enum ProjectsMessage {
     DeployDone(Result<Vec<String>, String>),
     /// 도메인을 브라우저로 연다
     OpenSite(String),
+    /// 프로젝트 폴더를 Finder·파일 관리자로 연다
+    OpenFolder(String),
     // 더보기(⋯) 메뉴
     ToggleMenu(String),
     /// 다른 PC로 보내기 — App 이 백업·이전 탭으로 넘겨 처리한다
@@ -467,6 +469,14 @@ impl ProjectsState {
             ProjectsMessage::OpenSite(domain) => {
                 let scheme = if load_settings().https { "https" } else { "http" };
                 open_url(&format!("{scheme}://{domain}"));
+                Task::none()
+            }
+            ProjectsMessage::OpenFolder(path) => {
+                if std::path::Path::new(&path).is_dir() {
+                    open_url(&path);
+                } else {
+                    self.toasts.push(Err(trf("폴더가 없습니다: {0}", &[&path])));
+                }
                 Task::none()
             }
             ProjectsMessage::ToggleMenu(id) => {
@@ -1118,18 +1128,29 @@ fn project_row_view_with_state<'a>(
         .padding(0)
         .on_press(ProjectsMessage::OpenSite(p_.domain.clone()))
         .style(|_, _| iced::widget::button::Style::default()),
-        text(if p_.project_type == ProjectType::Php {
-            p_.work_dir()
-        } else if p_.app_dir.is_empty() {
-            format!(":{} · {}", p_.port, p_.start_command)
-        } else {
-            format!(":{} · {}/ · {}", p_.port, p_.app_dir, p_.start_command)
-        })
-        .size(12)
-        .color(c.fg4),
+        // 경로 — 누르면 Finder·파일 관리자로 연다
+        iced::widget::button(
+            row![icon(Icon::FolderOpen, 12.0, c.fg3), text(&p_.path).size(12).color(c.fg3)]
+                .spacing(5)
+                .align_y(iced::Alignment::Center),
+        )
+        .padding(0)
+        .on_press(ProjectsMessage::OpenFolder(p_.path.clone()))
+        .style(|_, _| iced::widget::button::Style::default()),
     ]
     .spacing(4)
     .width(Length::Fill);
+    if p_.project_type != ProjectType::Php {
+        info = info.push(
+            text(if p_.app_dir.is_empty() {
+                format!(":{} · {}", p_.port, p_.start_command)
+            } else {
+                format!(":{} · {}/ · {}", p_.port, p_.app_dir, p_.start_command)
+            })
+            .size(12)
+            .color(c.fg4),
+        );
+    }
     if let Some(u) = usage {
         let db = match (&u.db, u.db_bytes) {
             (Some(d), Some(b)) => format!(" · DB {} {}", d.name, human_bytes(b)),
@@ -1199,11 +1220,16 @@ fn project_row_view_with_state<'a>(
         .push(icon_btn(Icon::Ellipsis, menu.is_some()).on_press(ProjectsMessage::ToggleMenu(id.clone())));
 
     let main = row![info, actions].spacing(16).align_y(iced::Alignment::Center);
-    card(with_menu(main.into(), menu, id))
+    card(with_menu(main.into(), menu, id, p_.path.clone()))
 }
 
 /// 더보기 메뉴가 열려 있으면 카드 아래에 동작과 최근 이전 기록을 붙인다.
-fn with_menu<'a>(main: Element<'a, ProjectsMessage>, menu: Option<&'a [(bool, String)]>, id: String) -> Element<'a, ProjectsMessage> {
+fn with_menu<'a>(
+    main: Element<'a, ProjectsMessage>,
+    menu: Option<&'a [(bool, String)]>,
+    id: String,
+    path: String,
+) -> Element<'a, ProjectsMessage> {
     let Some(recent) = menu else {
         return main;
     };
@@ -1227,6 +1253,7 @@ fn with_menu<'a>(main: Element<'a, ProjectsMessage>, menu: Option<&'a [(bool, St
             column![
                 btn(tr("다른 PC로 보내기"), Some(Icon::Send), Kind::Primary).on_press(ProjectsMessage::SendToPc(id.clone())),
                 btn(tr("서버 배포"), Some(Icon::Upload), Kind::Flat).on_press(ProjectsMessage::OpenDeploy(id)),
+                btn(tr("폴더 열기"), Some(Icon::FolderOpen), Kind::Flat).on_press(ProjectsMessage::OpenFolder(path)),
             ]
             .spacing(6),
             Space::with_width(24),

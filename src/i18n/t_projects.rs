@@ -133,4 +133,6 @@ pub const T: &[(&str, &str, &str)] = &[
     ("(로그가 비어 있습니다)", "(The log is empty)", "（ログは空です）"),
     ("로그를 클립보드에 복사했습니다.", "Copied the log to the clipboard.", "ログをクリップボードにコピーしました。"),
     ("로그를 비웠습니다.", "Cleared the log.", "ログをクリアしました。"),
+    ("폴더 열기", "Open folder", "フォルダを開く"),
+    ("폴더가 없습니다: {0}", "Folder not found: {0}", "フォルダがありません: {0}"),
 ];
