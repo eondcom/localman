@@ -179,7 +179,17 @@ cargo build --release
 ./scripts/linux/run.sh
 ```
 
-맥 앱으로 설치 (`/Applications/LocalMan.app`, 아이콘·임시 서명 포함, 다시 실행하면 덮어쓴다):
+맥 — Homebrew로 설치 (Intel·Apple Silicon 겸용):
+
+```bash
+brew install --cask eondcom/tap/localman
+sudo /Applications/LocalMan.app/Contents/Resources/install-sudoers.sh   # 처음 한 번
+```
+
+LocalMan은 Apple 미서명 앱이라 처음 실행할 때 우클릭 → **열기**, 또는 시스템 설정 → 개인정보 보호 및 보안에서 허용한다.
+화면 언어는 설정 탭에서 한국어·English·日本語(기본: 시스템 언어)로 바꾼다.
+
+소스에서 맥 앱으로 설치 (`/Applications/LocalMan.app`, 아이콘·임시 서명 포함, 다시 실행하면 덮어쓴다):
 
 ```bash
 ./scripts/macos/make-app.sh

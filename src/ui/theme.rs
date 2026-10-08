@@ -2,7 +2,7 @@
 //!
 //! 원칙: 테두리 대신 밝기(바탕 → c1 카드 → c2 겹침 → c3 선택)로 층을 나누고, 색은 토큰으로만 쓴다.
 //! 색 값은 mac-fan-control/App/Design/EUTheme.swift 와 같다 (HeroUI 팔레트).
-//! iced 가 화면을 직접 그리고 글꼴(Pretendard)·아이콘(Lucide)을 앱에 넣으므로 맥·리눅스가 똑같이 보인다.
+//! iced 가 화면을 직접 그리고 글꼴(Pretendard JP)·아이콘(Lucide)을 앱에 넣으므로 맥·리눅스가 똑같이 보인다.
 
 use iced::widget::{button, checkbox, column, container, pick_list, progress_bar, row, text, text_input, toggler, Space};
 use iced::{font, Background, Border, Color, Element, Font, Length, Shadow, Theme, Vector};
@@ -10,19 +10,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── 글꼴 ───────────────────────────────────────────────────────────────
 
-pub const FONT_FILES: [&[u8]; 8] = [
-    include_bytes!("../../assets/fonts/Pretendard-Regular.otf"),
-    include_bytes!("../../assets/fonts/Pretendard-Medium.otf"),
-    include_bytes!("../../assets/fonts/Pretendard-SemiBold.otf"),
-    include_bytes!("../../assets/fonts/Pretendard-Bold.otf"),
-    include_bytes!("../../assets/fonts/lucide.ttf"),
-    // 일본어 가나·한자 — iced 는 시스템 글꼴을 쓰지 않으므로 없는 글자를 이 글꼴에서 찾게 한다
+/// 글꼴은 Pretendard JP 하나로 쓴다 — 한글·가나·한자·영문이 모두 들어 있다.
+/// (한국어판 Pretendard 에는 한자가 없어 일본어 화면의 한자가 네모로 깨졌다. iced 는 시스템 글꼴로
+///  대신 그려 주지 않으므로 필요한 글자가 다 든 글꼴 하나를 쓰는 게 가장 확실하다)
+pub const FONT_FILES: [&[u8]; 5] = [
     include_bytes!("../../assets/fonts/PretendardJP-Regular.otf"),
+    include_bytes!("../../assets/fonts/PretendardJP-Medium.otf"),
     include_bytes!("../../assets/fonts/PretendardJP-SemiBold.otf"),
     include_bytes!("../../assets/fonts/PretendardJP-Bold.otf"),
+    include_bytes!("../../assets/fonts/lucide.ttf"),
 ];
 
-pub const REGULAR: Font = Font::with_name("Pretendard");
+pub const REGULAR: Font = Font::with_name("Pretendard JP");
 pub const MEDIUM: Font = Font { weight: font::Weight::Medium, ..REGULAR };
 pub const SEMIBOLD: Font = Font { weight: font::Weight::Semibold, ..REGULAR };
 pub const BOLD: Font = Font { weight: font::Weight::Bold, ..REGULAR };
