@@ -103,7 +103,7 @@ mod tests {
                     continue;
                 }
                 let src = std::fs::read_to_string(&p).unwrap();
-                for pat in ["tr(\"", "trf(\""] {
+                for pat in ["tr(", "trf("] {
                     let mut rest = src.as_str();
                     while let Some(i) = rest.find(pat) {
                         // 다른 이름(attr( 등)의 꼬리에 걸리지 않게 앞 글자를 본다
@@ -112,8 +112,11 @@ mod tests {
                         if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
                             continue;
                         }
-                        if let Some(end) = rest.find('"') {
-                            out.push((rest[..end].to_string(), p.display().to_string()));
+                        // 원문이 다음 줄에서 시작하는 호출(trf(\n    "…")도 잡는다
+                        let trimmed = rest.trim_start();
+                        let Some(lit) = trimmed.strip_prefix('"') else { continue };
+                        if let Some(end) = lit.find('"') {
+                            out.push((lit[..end].to_string(), p.display().to_string()));
                         }
                     }
                 }

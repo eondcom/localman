@@ -8,7 +8,7 @@ pub const T: &[(&str, &str, &str)] = &[
     ("PostgreSQL 데이터베이스와 사용자를 관리하고 백업·복원합니다", "Manage PostgreSQL databases and users, back up and restore", "PostgreSQL のデータベースとユーザーを管理し、バックアップ・復元します"),
     ("Adminer 열기", "Open Adminer", "Adminer を開く"),
     ("엔진", "Engine", "エンジン"),
-    ("사용자", "Users", "ユーザー"),
+    ("사용자", "User", "ユーザー"),
     ("비밀번호", "Password", "パスワード"),
     ("숨기기", "Hide", "隠す"),
     ("보기", "Show", "表示"),

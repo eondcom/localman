@@ -5,7 +5,7 @@ pub const T: &[(&str, &str, &str)] = &[
     ("Next.js·프론트 빌드용. 지금의 LTS를 앱 전용 폴더에 설치 (sudo 불필요)", "For Next.js and frontend builds. Installs the current LTS in an app-only folder (no sudo needed)", "Next.js・フロントエンドのビルド用。現在の LTS をアプリ専用フォルダにインストールします（sudo 不要）"),
     ("Python 프로젝트·venv", "Python projects and venv", "Python プロジェクト・venv"),
     ("PHP 프로젝트 (Apache 연결 포함)", "PHP projects (including Apache integration)", "PHP プロジェクト（Apache 連携を含む）"),
-    ("서버 배포", "Server deployment", "サーバーへのデプロイ"),
+    ("서버 배포", "Deploy to server", "サーバーへデプロイ"),
     ("curl 실행 실패: {0}", "Failed to run curl: {0}", "curl の実行に失敗しました: {0}"),
     ("{0} 받기 실패: {1}", "Failed to download {0}: {1}", "{0} のダウンロードに失敗しました: {1}"),
     ("배포 목록 형식 오류: {0}", "Invalid release list format: {0}", "リリース一覧の形式が正しくありません: {0}"),

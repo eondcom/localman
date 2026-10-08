@@ -50,7 +50,7 @@ pub const T: &[(&str, &str, &str)] = &[
     ("중지됨", "Stopped", "停止中"),
     ("패키지 설치", "Install packages", "パッケージをインストール"),
     ("중지", "Stop", "停止"),
-    ("시작", "Start", "起動"),
+    ("시작", "Start", "開始"),
     ("Apache 실행 중", "Apache running", "Apache 実行中"),
     ("Apache 중지됨", "Apache stopped", "Apache 停止中"),
     ("관리자 비번", "Admin password", "管理者パスワード"),
@@ -66,7 +66,7 @@ pub const T: &[(&str, &str, &str)] = &[
     // ── 더보기 메뉴 ──
     ("이전 기록", "Transfer history", "移行履歴"),
     ("아직 다른 PC와 주고받은 적이 없습니다.", "Nothing has been sent to or received from another PC yet.", "まだ他の PC とやり取りしたことはありません。"),
-    ("다른 PC로 보내기", "Send to another PC", "他の PC へ送る"),
+    ("다른 PC로 보내기", "Send to another PC", "別の PC へ送信"),
     ("서버 배포", "Deploy to server", "サーバーへデプロイ"),
 
     // ── 수정 카드 ──
@@ -128,7 +128,7 @@ pub const T: &[(&str, &str, &str)] = &[
 
     // ── 에러 로그 ──
     ("에러 로그 · {0}", "Error log · {0}", "エラーログ · {0}"),
-    ("새로고침", "Refresh", "再読み込み"),
+    ("새로고침", "Refresh", "更新"),
     ("비우기", "Clear", "クリア"),
     ("(로그가 비어 있습니다)", "(The log is empty)", "（ログは空です）"),
     ("로그를 클립보드에 복사했습니다.", "Copied the log to the clipboard.", "ログをクリップボードにコピーしました。"),
