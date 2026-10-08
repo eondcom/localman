@@ -1,6 +1,7 @@
 use std::process::Command;
 use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use crate::i18n::{tr, trf};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DbEngine {
@@ -193,7 +194,7 @@ pub fn drop_database(engine: DbEngine, user: &str, password: &str, db_name: &str
 
 pub fn rename_database(engine: DbEngine, user: &str, password: &str, old_name: &str, new_name: &str) -> Result<(), String> {
     match engine {
-        DbEngine::MariaDb => Err("MariaDB/MySQL은 안전한 DB 이름 변경을 직접 지원하지 않습니다. 새 DB 생성 후 덤프/복원으로 이관하세요.".to_string()),
+        DbEngine::MariaDb => Err(tr("MariaDB/MySQL은 안전한 DB 이름 변경을 직접 지원하지 않습니다. 새 DB 생성 후 덤프/복원으로 이관하세요.").to_string()),
         DbEngine::PostgreSql => {
             let sql = format!("ALTER DATABASE {} RENAME TO {};", pg_ident(old_name), pg_ident(new_name));
             run_postgres_sql(user, password, "postgres", &sql)
@@ -460,11 +461,11 @@ pub fn import_sql(
     use std::process::Stdio;
 
     if db_name.trim().is_empty() {
-        return Err("대상 데이터베이스 이름이 비어 있습니다.".to_string());
+        return Err(tr("대상 데이터베이스 이름이 비어 있습니다.").to_string());
     }
     let path = Path::new(sql_path);
     if !path.exists() {
-        return Err("SQL 파일을 찾을 수 없습니다.".to_string());
+        return Err(tr("SQL 파일을 찾을 수 없습니다.").to_string());
     }
 
     // 1) 필요 시 대상 DB 생성
@@ -473,7 +474,7 @@ pub fn import_sql(
     }
 
     // 2) 입력 파일 열기
-    let file = std::fs::File::open(path).map_err(|e| format!("파일 열기 실패: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| trf("파일 열기 실패: {0}", &[&e]))?;
     let is_gzip = path
         .extension()
         .and_then(|e| e.to_str())
@@ -490,11 +491,11 @@ pub fn import_sql(
             .stdin(Stdio::from(file))
             .stdout(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("gunzip 실행 실패(설치 여부 확인): {e}"))?;
+            .map_err(|e| trf("gunzip 실행 실패(설치 여부 확인): {0}", &[&e]))?;
         let out = gunzip
             .stdout
             .take()
-            .ok_or_else(|| "gunzip 출력 파이프 생성 실패".to_string())?;
+            .ok_or_else(|| tr("gunzip 출력 파이프 생성 실패").to_string())?;
         gunzip_child = Some(gunzip);
         Stdio::from(out)
     } else {
@@ -528,11 +529,11 @@ pub fn import_sql(
         .stdin(sed_stdin)
         .stdout(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("sed 실행 실패: {e}"))?;
+        .map_err(|e| trf("sed 실행 실패: {0}", &[&e]))?;
     let sed_stdout = sed_child
         .stdout
         .take()
-        .ok_or_else(|| "sed 출력 파이프 생성 실패".to_string())?;
+        .ok_or_else(|| tr("sed 출력 파이프 생성 실패").to_string())?;
 
     // 5) DB 클라이언트 실행 (sed 출력을 stdin으로)
     let db_child = match engine {
@@ -546,14 +547,14 @@ pub fn import_sql(
             .stdin(Stdio::from(sed_stdout))
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("mysql 실행 실패: {e}"))?,
+            .map_err(|e| trf("mysql 실행 실패: {0}", &[&e]))?,
         DbEngine::PostgreSql => {
             let mut cmd = postgres_command(user, password, db_name);
             cmd.args(["-v", "ON_ERROR_STOP=1"])
                 .stdin(Stdio::from(sed_stdout))
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|e| format!("psql 실행 실패: {e}"))?
+                .map_err(|e| trf("psql 실행 실패: {0}", &[&e]))?
         }
     };
 
@@ -568,10 +569,10 @@ pub fn import_sql(
         None => None,
     };
     if !sed_status.success() {
-        return Err("덤프 정리(sed) 중 실패해 가져오기가 중간에 끊겼습니다. 일부 표만 들어갔을 수 있습니다.".into());
+        return Err(tr("덤프 정리(sed) 중 실패해 가져오기가 중간에 끊겼습니다. 일부 표만 들어갔을 수 있습니다.").into());
     }
     if gz_status.is_some_and(|s| !s.success()) {
-        return Err("압축 풀기(gunzip) 중 실패해 가져오기가 중간에 끊겼습니다. 일부 표만 들어갔을 수 있습니다.".into());
+        return Err(tr("압축 풀기(gunzip) 중 실패해 가져오기가 중간에 끊겼습니다. 일부 표만 들어갔을 수 있습니다.").into());
     }
 
     if db_out.status.success() {
@@ -579,7 +580,7 @@ pub fn import_sql(
     } else {
         let err = String::from_utf8_lossy(&db_out.stderr).trim().to_string();
         if err.is_empty() {
-            Err("가져오기 실패 (원인 불명)".to_string())
+            Err(tr("가져오기 실패 (원인 불명)").to_string())
         } else {
             Err(err)
         }

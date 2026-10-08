@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use super::apache::write_vhost;
 use super::project::{ProjectType, VhostProject, join_dir};
 use super::setup::strip_ansi;
+use crate::i18n::{tr, trf};
 use crate::platform::update_hosts;
 
 /// pma.localhost 에 Adminer(단일 PHP 파일 DB 관리도구)를 설치하고 URL을 반환한다.
@@ -15,7 +16,7 @@ pub fn ensure_adminer_site() -> Result<String, String> {
     let mut dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     dir.push("localman");
     dir.push("pma");
-    fs::create_dir_all(&dir).map_err(|e| format!("pma 디렉토리 생성 실패: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| trf("pma 디렉토리 생성 실패: {0}", &[&e]))?;
 
     let index = dir.join("index.php");
     if !index.exists() {
@@ -43,7 +44,7 @@ pub fn ensure_adminer_site() -> Result<String, String> {
 /// adminer.org에서 최신 Adminer를 내려받아 dest에 저장한다(curl 우선, 실패 시 wget).
 fn download_adminer(dest: &Path) -> Result<(), String> {
     let url = "https://www.adminer.org/latest.php";
-    let dest_str = dest.to_str().ok_or_else(|| "경로 변환 실패".to_string())?;
+    let dest_str = dest.to_str().ok_or_else(|| tr("경로 변환 실패").to_string())?;
 
     let curl = std::process::Command::new("curl")
         .args(["-fsSL", url, "-o", dest_str])
@@ -61,7 +62,7 @@ fn download_adminer(dest: &Path) -> Result<(), String> {
             return Ok(());
         }
     }
-    Err("Adminer 다운로드 실패 (curl/wget·인터넷 연결 확인)".to_string())
+    Err(tr("Adminer 다운로드 실패 (curl/wget·인터넷 연결 확인)").to_string())
 }
 
 /// 프로젝트 작업 디렉토리가 라이믹스(Rhymix) 설치본인지 판별한다.
@@ -88,25 +89,25 @@ fn find_rx_cli() -> Option<PathBuf> {
 pub fn rx_reset_admin_password(project: &VhostProject, user_id: &str, new_password: &str) -> Result<String, String> {
     let user_id = user_id.trim();
     if user_id.is_empty() {
-        return Err("관리자 ID를 입력하세요.".to_string());
+        return Err(tr("관리자 ID를 입력하세요.").to_string());
     }
     if new_password.is_empty() {
-        return Err("새 비밀번호를 입력하세요.".to_string());
+        return Err(tr("새 비밀번호를 입력하세요.").to_string());
     }
     let rx_bin = find_rx_cli().ok_or_else(|| {
-        "rx-cli(rx 명령)를 찾을 수 없습니다. rxdashboard 모듈의 bin/rx를 PATH에 심볼릭 링크로 등록하세요.".to_string()
+        tr("rx-cli(rx 명령)를 찾을 수 없습니다. rxdashboard 모듈의 bin/rx를 PATH에 심볼릭 링크로 등록하세요.").to_string()
     })?;
 
     let output = std::process::Command::new(&rx_bin)
         .args(["member", "reset-password", user_id, new_password])
         .current_dir(project.work_dir())
         .output()
-        .map_err(|e| format!("rx-cli 실행 실패: {e}"))?;
+        .map_err(|e| trf("rx-cli 실행 실패: {0}", &[&e]))?;
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout)).trim().to_string();
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr)).trim().to_string();
     if output.status.success() {
-        Ok(if stdout.is_empty() { "비밀번호를 변경했습니다.".to_string() } else { stdout })
+        Ok(if stdout.is_empty() { tr("비밀번호를 변경했습니다.").to_string() } else { stdout })
     } else {
         Err(if stderr.is_empty() { stdout } else { stderr })
     }

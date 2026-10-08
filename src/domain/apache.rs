@@ -4,6 +4,7 @@
 use super::project::{ProjectType, VhostProject, list_projects};
 use super::settings::{load_settings, save_settings};
 use super::tls::{self, CertPaths};
+use crate::i18n::trf;
 use crate::platform;
 
 /// 이 PC 에서 온 요청만 받는다.
@@ -152,8 +153,8 @@ pub fn renew_certs() -> Vec<String> {
     results
         .into_iter()
         .map(|r| match r {
-            Ok(d) => format!("✓ 인증서 갱신: {d}"),
-            Err(e) => format!("✗ 인증서 갱신 실패: {e}"),
+            Ok(d) => format!("✓ {}", trf("인증서 갱신: {0}", &[&d])),
+            Err(e) => format!("✗ {}", trf("인증서 갱신 실패: {0}", &[&e])),
         })
         .collect()
 }

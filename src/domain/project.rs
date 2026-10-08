@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use super::apache::{remove_vhost, write_vhost};
 use super::detect::sync_port_in_command;
+use crate::i18n::{tr, trf};
 use crate::platform::{ensure_proxy_module, update_hosts};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -132,9 +133,9 @@ pub fn update_project(
     let p = list.iter_mut().find(|p| p.id == id).ok_or_else(|| {
         if empty {
             // 화면엔 목록이 있는데 파일이 비었다 = 저장 파일이 날아간 것(예: 디스크 꽉 참)
-            format!("프로젝트를 찾을 수 없습니다 — {} 가 비었거나 깨졌습니다 (디스크 공간·백업 확인)", data_path().display())
+            trf("프로젝트를 찾을 수 없습니다 — {0} 가 비었거나 깨졌습니다 (디스크 공간·백업 확인)", &[&data_path().display()])
         } else {
-            "프로젝트를 찾을 수 없습니다.".to_string()
+            tr("프로젝트를 찾을 수 없습니다.").to_string()
         }
     })?;
     let type_changed = p.project_type != project_type;
@@ -170,7 +171,7 @@ pub fn update_project(
 /// 사이트와 DB 연결만 바꾼다 (vhost 는 그대로).
 pub fn set_project_db(id: &str, db: Option<ProjectDb>) -> Result<(), String> {
     let mut list = list_projects();
-    let p = list.iter_mut().find(|p| p.id == id).ok_or_else(|| "프로젝트를 찾을 수 없습니다.".to_string())?;
+    let p = list.iter_mut().find(|p| p.id == id).ok_or_else(|| tr("프로젝트를 찾을 수 없습니다.").to_string())?;
     p.db = db;
     save_projects(&list)
 }
