@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use super::detect::detect_package_manager;
+use crate::i18n::{tr, trf};
 use super::project::{ProjectType, VhostProject};
 
 /// 해당 명령이 PATH에 있는지 확인
@@ -18,7 +19,9 @@ pub fn setup_node_modules(project: &VhostProject) -> Result<String, String> {
     let dir = project.work_dir();
     if !Path::new(&format!("{dir}/package.json")).exists() {
         return Err(format!(
-            "package.json이 없습니다: {dir}\n하위 디렉토리 설정을 확인하세요."
+            "{}\n{}",
+            trf("package.json이 없습니다: {0}", &[&dir]),
+            tr("하위 디렉토리 설정을 확인하세요.")
         ));
     }
 
@@ -48,13 +51,13 @@ pub fn setup_node_modules(project: &VhostProject) -> Result<String, String> {
         .env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0")
         .current_dir(&dir)
         .output()
-        .map_err(|e| format!("{program} 실행 실패: {e}\nPATH에 Node.js가 있는지 확인하세요."))?;
+        .map_err(|e| format!("{}\n{}", trf("{0} 실행 실패: {1}", &[&program, &e]), tr("PATH에 Node.js가 있는지 확인하세요.")))?;
 
     if !r.status.success() {
         let err = String::from_utf8_lossy(&r.stderr);
         let tail: String = err.lines().rev().take(15).collect::<Vec<_>>()
             .into_iter().rev().collect::<Vec<_>>().join("\n");
-        return Err(format!("의존성 설치 실패 ({program}):\n{tail}"));
+        return Err(format!("{}\n{tail}", trf("의존성 설치 실패 ({0}):", &[&program])));
     }
 
     let via = if program == "corepack" { format!("corepack {pm}") } else { program.to_string() };
@@ -67,12 +70,12 @@ pub fn setup_node_modules(project: &VhostProject) -> Result<String, String> {
         // 설치는 성공했지만 반쪽이다. postinstall로 실제 코드를 받아오는 패키지
         // (@heroui-pro/react 등)가 여기 걸리면 import가 조용히 깨진다.
         return Ok(format!(
-            "의존성 설치 완료 ({via}) — 다만 빌드 스크립트가 차단된 패키지가 있습니다: {pkgs}\n\
-             postinstall로 코드를 받아오는 패키지면 import가 실패합니다. \
-             해당 폴더에서 `pnpm approve-builds` 실행 후 다시 설치하세요."
+            "{}\n{}",
+            trf("의존성 설치 완료 ({0}) — 다만 빌드 스크립트가 차단된 패키지가 있습니다: {1}", &[&via, &pkgs]),
+            tr("postinstall로 코드를 받아오는 패키지면 import가 실패합니다. 해당 폴더에서 `pnpm approve-builds` 실행 후 다시 설치하세요.")
         ));
     }
-    Ok(format!("의존성 설치 완료 ({via})"))
+    Ok(trf("의존성 설치 완료 ({0})", &[&via]))
 }
 
 /// pnpm이 "빌드 스크립트를 무시했다"고 알릴 때 그 패키지 목록을 뽑는다.
@@ -99,7 +102,7 @@ fn ignored_build_scripts(output: &str) -> Option<String> {
         })
         .collect();
     if names.is_empty() {
-        Some("(이름 확인 불가 — 설치 로그를 확인하세요)".to_string())
+        Some(tr("(이름 확인 불가 — 설치 로그를 확인하세요)").to_string())
     } else {
         Some(names.join(", "))
     }
@@ -129,7 +132,7 @@ pub fn setup_project(project: &VhostProject) -> Result<String, String> {
     match project.project_type {
         ProjectType::Python => setup_venv(project),
         ProjectType::NextJs => setup_node_modules(project),
-        ProjectType::Php => Ok("PHP 프로젝트는 설치할 의존성이 없습니다.".to_string()),
+        ProjectType::Php => Ok(tr("PHP 프로젝트는 설치할 의존성이 없습니다.").to_string()),
     }
 }
 
@@ -156,9 +159,9 @@ pub fn setup_venv(project: &VhostProject) -> Result<String, String> {
         let r = std::process::Command::new("python3")
             .args(["-m", "venv", &venv])
             .output()
-            .map_err(|e| format!("venv 생성 실패: {e}"))?;
+            .map_err(|e| trf("venv 생성 실패: {0}", &[&e]))?;
         if !r.status.success() {
-            return Err(format!("venv 생성 실패:\n{}", String::from_utf8_lossy(&r.stderr)));
+            return Err(format!("{}\n{}", tr("venv 생성 실패:"), String::from_utf8_lossy(&r.stderr)));
         }
         eprintln!("[localman] venv 생성 완료");
     } else {
@@ -179,10 +182,10 @@ pub fn setup_venv(project: &VhostProject) -> Result<String, String> {
             .output()
             .map_err(|e| e.to_string())?;
         if !r.status.success() {
-            return Err(format!("패키지 설치 실패:\n{}", String::from_utf8_lossy(&r.stderr)));
+            return Err(format!("{}\n{}", tr("패키지 설치 실패:"), String::from_utf8_lossy(&r.stderr)));
         }
         build_frontend_if_needed(project)?;
-        return Ok(format!("패키지 설치 완료 (requirements.txt)"));
+        return Ok(tr("패키지 설치 완료 (requirements.txt)").to_string());
     }
 
     // pyproject.toml (poetry/pip editable)
@@ -206,17 +209,17 @@ pub fn setup_venv(project: &VhostProject) -> Result<String, String> {
                 .output()
                 .map_err(|e| e.to_string())?;
             if !r2.status.success() {
-                return Err(format!("패키지 설치 실패:\n{}", String::from_utf8_lossy(&r2.stderr)));
+                return Err(format!("{}\n{}", tr("패키지 설치 실패:"), String::from_utf8_lossy(&r2.stderr)));
             }
         }
         build_frontend_if_needed(project)?;
-        return Ok("패키지 설치 완료 (pyproject.toml)".to_string());
+        return Ok(tr("패키지 설치 완료 (pyproject.toml)").to_string());
     }
 
     // web/ 디렉토리가 있으면 프론트엔드 빌드
     build_frontend_if_needed(project)?;
 
-    Ok("venv 생성 완료 (설치할 패키지 파일 없음)".to_string())
+    Ok(tr("venv 생성 완료 (설치할 패키지 파일 없음)").to_string())
 }
 
 /// web/ 디렉토리에 package.json이 있으면 npm install + npm run build
@@ -233,9 +236,9 @@ pub fn build_frontend_if_needed(project: &VhostProject) -> Result<(), String> {
         .args(["install", "--legacy-peer-deps"])
         .current_dir(&web_dir)
         .output()
-        .map_err(|e| format!("npm install 실패: {e}"))?;
+        .map_err(|e| trf("npm install 실패: {0}", &[&e]))?;
     if !install.status.success() {
-        return Err(format!("npm install 실패:\n{}", String::from_utf8_lossy(&install.stderr)));
+        return Err(format!("{}\n{}", tr("npm install 실패:"), String::from_utf8_lossy(&install.stderr)));
     }
 
     // npm run build
@@ -243,9 +246,9 @@ pub fn build_frontend_if_needed(project: &VhostProject) -> Result<(), String> {
         .args(["run", "build"])
         .current_dir(&web_dir)
         .output()
-        .map_err(|e| format!("npm run build 실패: {e}"))?;
+        .map_err(|e| trf("npm run build 실패: {0}", &[&e]))?;
     if !build.status.success() {
-        return Err(format!("npm run build 실패:\n{}", String::from_utf8_lossy(&build.stderr)));
+        return Err(format!("{}\n{}", tr("npm run build 실패:"), String::from_utf8_lossy(&build.stderr)));
     }
 
     eprintln!("[localman] 프론트엔드 빌드 완료");

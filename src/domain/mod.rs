@@ -46,8 +46,8 @@ pub fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
         // ENOSPC(28)
-        let hint = if e.raw_os_error() == Some(28) { " — 디스크 공간 부족" } else { "" };
-        return Err(format!("{} 저장 실패{hint}: {e}", path.display()));
+        let hint = if e.raw_os_error() == Some(28) { format!(" — {}", crate::i18n::tr("디스크 공간 부족")) } else { String::new() };
+        return Err(crate::i18n::trf("{0} 저장 실패{1}: {2}", &[&path.display(), &hint, &e]));
     }
     Ok(())
 }

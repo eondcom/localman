@@ -10,6 +10,7 @@ use crate::domain::{
     rename_database, list_users, create_user, drop_user, rename_user, change_user_password, grant_privileges, DbUser,
     DbCredentials, DbEngine, load_db_connections, save_db_connection, ensure_adminer_site,
 };
+use crate::i18n::{tr, trf};
 use crate::platform::open_url;
 use rfd;
 
@@ -175,7 +176,7 @@ impl DatabaseState {
                     self.connected = false;
                     self.databases.clear();
                     self.db_users.clear();
-                    self.status = Some(Ok(format!("저장된 연결 선택: {} / {}", self.engine.label(), self.user)));
+                    self.status = Some(Ok(trf("저장된 연결 선택: {0} / {1}", &[&self.engine.label(), &self.user])));
                     self.new_user_host = if self.engine == DbEngine::PostgreSql {
                         "local".to_string()
                     } else {
@@ -215,19 +216,11 @@ impl DatabaseState {
                     // 연결 성공 시 자격증명 저장 (다음 실행 때 자동 입력)
                     match save_db_connection(self.engine, &self.user, &self.password) {
                         Ok(list) => self.saved_connections = list,
-                        Err(e) => self.toasts.push(Err(format!("접속 정보 저장 실패: {e}"))),
+                        Err(e) => self.toasts.push(Err(trf("접속 정보 저장 실패: {0}", &[&e]))),
                     }
-                    Some(Ok(format!(
-                        "{} / {} 연결 성공 (접속 목록에 저장됨)",
-                        self.engine.label(),
-                        self.user
-                    )))
+                    Some(Ok(trf("{0} / {1} 연결 성공 (접속 목록에 저장됨)", &[&self.engine.label(), &self.user])))
                 } else {
-                    Some(Err(format!(
-                        "{} / {} 연결 실패 또는 DB 없음",
-                        self.engine.label(),
-                        self.user
-                    )))
+                    Some(Err(trf("{0} / {1} 연결 실패 또는 DB 없음", &[&self.engine.label(), &self.user])))
                 };
                 Task::none()
             }
@@ -241,7 +234,7 @@ impl DatabaseState {
                 Task::perform(
                     async move {
                         create_database(engine, &u, &p, &name)
-                            .map(|_| format!("'{name}' 생성 완료"))
+                            .map(|_| trf("'{0}' 생성 완료", &[&name]))
                     },
                     DatabaseMessage::Done,
                 )
@@ -254,7 +247,7 @@ impl DatabaseState {
                 Task::perform(
                     async move {
                         drop_database(engine, &u, &p, &n)
-                            .map(|_| format!("'{n}' 삭제 완료"))
+                            .map(|_| trf("'{0}' 삭제 완료", &[&n]))
                     },
                     DatabaseMessage::Done,
                 )
@@ -268,8 +261,8 @@ impl DatabaseState {
             DatabaseMessage::SaveDbEdit(old_name) => {
                 let new_name = self.edit_db_name.trim().to_string();
                 if new_name.is_empty() {
-                    self.status = Some(Err("새 DB 이름을 입력하세요.".to_string()));
-                    self.toasts.push(Err("새 DB 이름을 입력하세요.".to_string()));
+                    self.status = Some(Err(tr("새 DB 이름을 입력하세요.").to_string()));
+                    self.toasts.push(Err(tr("새 DB 이름을 입력하세요.").to_string()));
                     return Task::none();
                 }
                 let u = self.user.clone();
@@ -280,7 +273,7 @@ impl DatabaseState {
                 Task::perform(
                     async move {
                         rename_database(engine, &u, &p, &old_name, &new_name)
-                            .map(|_| format!("'{old_name}' → '{new_name}' 이름 변경 완료"))
+                            .map(|_| trf("'{0}' → '{1}' 이름 변경 완료", &[&old_name, &new_name]))
                     },
                     DatabaseMessage::Done,
                 )
@@ -303,7 +296,7 @@ impl DatabaseState {
                     return Task::perform(
                         async move {
                             backup_database(engine, &u, &p, &name, &path)
-                                .map(|_| format!("백업 완료: {path}"))
+                                .map(|_| trf("백업 완료: {0}", &[&path]))
                         },
                         DatabaseMessage::Done,
                     );
@@ -323,7 +316,7 @@ impl DatabaseState {
                     return Task::perform(
                         async move {
                             restore_database(engine, &u, &p, &name, &path)
-                                .map(|_| format!("복원 완료: {name}"))
+                                .map(|_| trf("복원 완료: {0}", &[&name]))
                         },
                         DatabaseMessage::Done,
                     );
@@ -347,7 +340,7 @@ impl DatabaseState {
                     return Task::perform(
                         async move {
                             import_sql(engine, &u, &p, &db_name, &path, true)
-                                .map(|_| format!("가져오기 완료: {db_name} ← {path}"))
+                                .map(|_| trf("가져오기 완료: {0} ← {1}", &[&db_name, &path]))
                         },
                         DatabaseMessage::Done,
                     );
@@ -358,7 +351,7 @@ impl DatabaseState {
                 return iced::clipboard::write(s);
             }
             DatabaseMessage::OpenAdminer => {
-                self.status = Some(Ok("Adminer 준비 중...".to_string()));
+                self.status = Some(Ok(tr("Adminer 준비 중...").to_string()));
                 Task::perform(
                     async move { ensure_adminer_site() },
                     DatabaseMessage::AdminerReady,
@@ -368,7 +361,7 @@ impl DatabaseState {
                 match result {
                     Ok(url) => {
                         open_url(&url);
-                        self.status = Some(Ok(format!("Adminer 열림: {url}")));
+                        self.status = Some(Ok(trf("Adminer 열림: {0}", &[&url])));
                     }
                     Err(e) => {
                         self.toasts.push(Err(e.clone()));
@@ -398,7 +391,7 @@ impl DatabaseState {
             DatabaseMessage::NewUserHostChanged(v) => { self.new_user_host = v; Task::none() }
             DatabaseMessage::CreateUser => {
                 if self.new_user_name.is_empty() || self.new_user_password.is_empty() {
-                    self.user_status = Some(Err("사용자명과 비밀번호를 입력하세요.".to_string()));
+                    self.user_status = Some(Err(tr("사용자명과 비밀번호를 입력하세요.").to_string()));
                     return Task::none();
                 }
                 let admin = self.user.clone();
@@ -412,7 +405,7 @@ impl DatabaseState {
                 Task::perform(
                     async move {
                         create_user(engine, &admin, &admin_pw, &new_user, &new_pw, &host)
-                            .map(|_| format!("'{new_user}'@'{host}' 생성 완료"))
+                            .map(|_| trf("'{0}'@'{1}' 생성 완료", &[&new_user, &host]))
                     },
                     DatabaseMessage::UserActionDone,
                 )
@@ -426,7 +419,7 @@ impl DatabaseState {
                 Task::perform(
                     async move {
                         drop_user(engine, &admin, &admin_pw, &t, &h)
-                            .map(|_| format!("'{t}'@'{h}' 삭제 완료"))
+                            .map(|_| trf("'{0}'@'{1}' 삭제 완료", &[&t, &h]))
                     },
                     DatabaseMessage::UserActionDone,
                 )
@@ -443,8 +436,8 @@ impl DatabaseState {
                 let new_user = self.edit_user_name.trim().to_string();
                 let new_password = self.edit_user_password.clone();
                 if new_user.is_empty() {
-                    self.user_status = Some(Err("새 사용자명을 입력하세요.".to_string()));
-                    self.toasts.push(Err("새 사용자명을 입력하세요.".to_string()));
+                    self.user_status = Some(Err(tr("새 사용자명을 입력하세요.").to_string()));
+                    self.toasts.push(Err(tr("새 사용자명을 입력하세요.").to_string()));
                     return Task::none();
                 }
                 let admin = self.user.clone();
@@ -461,7 +454,7 @@ impl DatabaseState {
                         if !new_password.is_empty() {
                             change_user_password(engine, &admin, &admin_pw, &new_user, &host, &new_password)?;
                         }
-                        Ok(format!("'{target}' 사용자 편집 완료"))
+                        Ok(trf("'{0}' 사용자 편집 완료", &[&target]))
                     },
                     DatabaseMessage::UserActionDone,
                 )
@@ -482,7 +475,7 @@ impl DatabaseState {
                 Task::perform(
                     async move {
                         grant_privileges(engine, &admin, &admin_pw, &t, &h, &d)
-                            .map(|_| format!("'{t}'@'{h}' → {d} 권한 부여 완료"))
+                            .map(|_| trf("'{0}'@'{1}' → {2} 권한 부여 완료", &[&t, &h, &d]))
                     },
                     DatabaseMessage::UserActionDone,
                 )
@@ -501,28 +494,28 @@ impl DatabaseState {
     }
 
     pub fn view(&self) -> Element<'_, DatabaseMessage> {
-        let adminer = btn("Adminer 열기", Some(Icon::ExternalLink), Kind::Surface).on_press(DatabaseMessage::OpenAdminer);
+        let adminer = btn(tr("Adminer 열기"), Some(Icon::ExternalLink), Kind::Surface).on_press(DatabaseMessage::OpenAdminer);
 
         let conn = card(
             column![
                 row![
                     field(
-                        "엔진",
+                        tr("엔진"),
                         segmented(
                             &[(DbEngine::MariaDb, "MariaDB·MySQL"), (DbEngine::PostgreSql, "PostgreSQL")],
                             &self.engine,
                             DatabaseMessage::EngineSelected,
                         ),
                     ),
-                    container(field("사용자", input("root", &self.user).on_input(DatabaseMessage::UserChanged).into())).width(160),
+                    container(field(tr("사용자"), input("root", &self.user).on_input(DatabaseMessage::UserChanged).into())).width(160),
                     container(field(
-                        "비밀번호",
+                        tr("비밀번호"),
                         row![
                             input("password", &self.password)
                                 .on_input(DatabaseMessage::PasswordChanged)
                                 .secure(!self.show_password)
                                 .width(Length::Fill),
-                            btn(if self.show_password { "숨기기" } else { "보기" }, None, Kind::Ghost)
+                            btn(if self.show_password { tr("숨기기") } else { tr("보기") }, None, Kind::Ghost)
                                 .on_press(DatabaseMessage::TogglePasswordVisibility),
                         ]
                         .spacing(4)
@@ -530,14 +523,14 @@ impl DatabaseState {
                         .into(),
                     ))
                     .width(Length::Fill),
-                    column![Space::with_height(19), btn("연결", Some(Icon::Zap), Kind::Primary).on_press(DatabaseMessage::Connect)],
+                    column![Space::with_height(19), btn(tr("연결"), Some(Icon::Zap), Kind::Primary).on_press(DatabaseMessage::Connect)],
                 ]
                 .spacing(12)
                 .align_y(iced::Alignment::End),
                 Space::with_height(8),
                 muted(match self.engine {
-                    DbEngine::MariaDb => "기본 root 비밀번호: root",
-                    DbEngine::PostgreSql => "기본 사용자: postgres · 포트 5432",
+                    DbEngine::MariaDb => tr("기본 root 비밀번호: root"),
+                    DbEngine::PostgreSql => tr("기본 사용자: postgres · 포트 5432"),
                 }),
                 saved_connections_view(&self.saved_connections),
             ]
@@ -545,7 +538,7 @@ impl DatabaseState {
         );
 
         let tabs = segmented(
-            &[(SubTab::Databases, "데이터베이스"), (SubTab::Users, "사용자")],
+            &[(SubTab::Databases, tr("데이터베이스")), (SubTab::Users, tr("사용자"))],
             &self.subtab,
             DatabaseMessage::SubTabSelected,
         );
@@ -556,11 +549,11 @@ impl DatabaseState {
         };
 
         let subtitle: &'static str = match self.engine {
-            DbEngine::MariaDb => "MariaDB 데이터베이스와 사용자를 관리하고 백업·복원합니다",
-            DbEngine::PostgreSql => "PostgreSQL 데이터베이스와 사용자를 관리하고 백업·복원합니다",
+            DbEngine::MariaDb => tr("MariaDB 데이터베이스와 사용자를 관리하고 백업·복원합니다"),
+            DbEngine::PostgreSql => tr("PostgreSQL 데이터베이스와 사용자를 관리하고 백업·복원합니다"),
         };
         let mut col = column![
-            page_header("데이터베이스", subtitle, Some(adminer.into())),
+            page_header(tr("데이터베이스"), subtitle, Some(adminer.into())),
             Space::with_height(20),
             conn,
             Space::with_height(16),
@@ -576,10 +569,10 @@ impl DatabaseState {
     fn view_databases(&self) -> Element<'_, DatabaseMessage> {
         let create = card(
             row![
-                input("새 데이터베이스 이름", &self.new_db_name)
+                input(tr("새 데이터베이스 이름"), &self.new_db_name)
                     .on_input(DatabaseMessage::NewDbNameChanged)
                     .width(Length::Fill),
-                btn("만들기", Some(Icon::Plus), Kind::Primary).on_press(DatabaseMessage::CreateDb),
+                btn(tr("만들기"), Some(Icon::Plus), Kind::Primary).on_press(DatabaseMessage::CreateDb),
             ]
             .spacing(8)
             .align_y(iced::Alignment::Center),
@@ -587,16 +580,16 @@ impl DatabaseState {
 
         let import = card(
             column![
-                row![icon(Icon::Upload, 14.0, p().fg2), theme::title("SQL 가져오기 · 복원")]
+                row![icon(Icon::Upload, 14.0, p().fg2), theme::title(tr("SQL 가져오기 · 복원"))]
                     .spacing(8)
                     .align_y(iced::Alignment::Center),
-                muted(".sql 또는 .sql.gz 덤프를 고르면 대상 DB로 가져옵니다. DB가 없으면 새로 만듭니다."),
+                muted(tr(".sql 또는 .sql.gz 덤프를 고르면 대상 DB로 가져옵니다. DB가 없으면 새로 만듭니다.")),
                 Space::with_height(8),
                 row![
-                    input("대상 DB 이름 (비우면 파일 이름)", &self.import_db_name)
+                    input(tr("대상 DB 이름 (비우면 파일 이름)"), &self.import_db_name)
                         .on_input(DatabaseMessage::ImportDbNameChanged)
                         .width(Length::Fill),
-                    btn("파일 골라 가져오기", Some(Icon::FolderOpen), Kind::Flat).on_press(DatabaseMessage::ImportSql),
+                    btn(tr("파일 골라 가져오기"), Some(Icon::FolderOpen), Kind::Flat).on_press(DatabaseMessage::ImportSql),
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
@@ -605,7 +598,7 @@ impl DatabaseState {
         );
 
         let list: Element<DatabaseMessage> = if self.databases.is_empty() {
-            card(empty_state(if self.connected { "데이터베이스가 없습니다" } else { "연결하면 목록이 나옵니다" }))
+            card(empty_state(if self.connected { tr("데이터베이스가 없습니다") } else { tr("연결하면 목록이 나옵니다") }))
         } else {
             group(
                 self.databases
@@ -618,7 +611,7 @@ impl DatabaseState {
         column![
             row![create, import].spacing(12),
             Space::with_height(14),
-            theme::section_label("데이터베이스 목록"),
+            theme::section_label(tr("데이터베이스 목록")),
             list,
         ]
         .into()
@@ -627,20 +620,20 @@ impl DatabaseState {
     fn view_users(&self) -> Element<'_, DatabaseMessage> {
         let create = card(
             column![
-                theme::title("새 사용자"),
+                theme::title(tr("새 사용자")),
                 Space::with_height(10),
                 row![
-                    field("사용자 이름", input("dbuser", &self.new_user_name).on_input(DatabaseMessage::NewUserNameChanged).into()),
+                    field(tr("사용자 이름"), input("dbuser", &self.new_user_name).on_input(DatabaseMessage::NewUserNameChanged).into()),
                     field(
-                        "비밀번호",
+                        tr("비밀번호"),
                         input("password", &self.new_user_password)
                             .on_input(DatabaseMessage::NewUserPasswordChanged)
                             .secure(true)
                             .into(),
                     ),
-                    container(field("호스트", input("localhost", &self.new_user_host).on_input(DatabaseMessage::NewUserHostChanged).into()))
+                    container(field(tr("호스트"), input("localhost", &self.new_user_host).on_input(DatabaseMessage::NewUserHostChanged).into()))
                         .width(140),
-                    column![Space::with_height(19), btn("추가", Some(Icon::Plus), Kind::Primary).on_press(DatabaseMessage::CreateUser)],
+                    column![Space::with_height(19), btn(tr("추가"), Some(Icon::Plus), Kind::Primary).on_press(DatabaseMessage::CreateUser)],
                 ]
                 .spacing(12)
                 .align_y(iced::Alignment::End),
@@ -648,7 +641,7 @@ impl DatabaseState {
         );
 
         let list: Element<DatabaseMessage> = if self.db_users.is_empty() {
-            card(empty_state(if self.connected { "사용자가 없습니다" } else { "연결하면 목록이 나옵니다" }))
+            card(empty_state(if self.connected { tr("사용자가 없습니다") } else { tr("연결하면 목록이 나옵니다") }))
         } else {
             group(
                 self.db_users
@@ -662,7 +655,7 @@ impl DatabaseState {
         if let Some(status) = &self.user_status {
             col = col.push(status_card(status)).push(Space::with_height(12));
         }
-        col.push(theme::section_label("사용자 목록")).push(list).into()
+        col.push(theme::section_label(tr("사용자 목록"))).push(list).into()
     }
 }
 
@@ -689,7 +682,7 @@ fn status_card(status: &Result<String, String>) -> Element<'_, DatabaseMessage> 
     card(
         row![
             container(result_line(line)).width(Length::Fill),
-            btn("복사", Some(Icon::Copy), Kind::Ghost).on_press(DatabaseMessage::CopyText(raw)),
+            btn(tr("복사"), Some(Icon::Copy), Kind::Ghost).on_press(DatabaseMessage::CopyText(raw)),
         ]
         .align_y(iced::Alignment::Center),
     )
@@ -707,7 +700,7 @@ fn saved_connections_view(saved: &[DbCredentials]) -> Element<'_, DatabaseMessag
     });
     column![
         Space::with_height(12),
-        text("저장된 연결").size(12).font(theme::MEDIUM).color(p().fg3),
+        text(tr("저장된 연결")).size(12).font(theme::MEDIUM).color(p().fg3),
         Space::with_height(6),
         chips,
     ]
@@ -717,9 +710,9 @@ fn saved_connections_view(saved: &[DbCredentials]) -> Element<'_, DatabaseMessag
 fn db_row<'a>(db: &'a str, users: &'a [DbUser], editing_db: Option<&'a str>, edit_db_name: &'a str) -> Element<'a, DatabaseMessage> {
     if editing_db == Some(db) {
         return row![
-            input("DB 이름", edit_db_name).on_input(DatabaseMessage::EditDbNameChanged).width(Length::Fill),
-            btn("저장", Some(Icon::Check), Kind::Primary).on_press(DatabaseMessage::SaveDbEdit(db.to_string())),
-            btn("취소", None, Kind::Ghost).on_press(DatabaseMessage::CancelDbEdit),
+            input(tr("DB 이름"), edit_db_name).on_input(DatabaseMessage::EditDbNameChanged).width(Length::Fill),
+            btn(tr("저장"), Some(Icon::Check), Kind::Primary).on_press(DatabaseMessage::SaveDbEdit(db.to_string())),
+            btn(tr("취소"), None, Kind::Ghost).on_press(DatabaseMessage::CancelDbEdit),
         ]
         .spacing(6)
         .align_y(iced::Alignment::Center)
@@ -734,7 +727,7 @@ fn db_row<'a>(db: &'a str, users: &'a [DbUser], editing_db: Option<&'a str>, edi
     .spacing(6)
     .width(Length::Fill);
     if !users.is_empty() {
-        let grants = users.iter().fold(row![muted("권한 주기")].spacing(4).align_y(iced::Alignment::Center), |r, u| {
+        let grants = users.iter().fold(row![muted(tr("권한 주기"))].spacing(4).align_y(iced::Alignment::Center), |r, u| {
             r.push(
                 theme::chip_btn(u.username.clone(), Kind::Flat)
                     .on_press(DatabaseMessage::GrantPrivileges(u.username.clone(), u.host.clone(), db.to_string())),
@@ -745,10 +738,10 @@ fn db_row<'a>(db: &'a str, users: &'a [DbUser], editing_db: Option<&'a str>, edi
 
     row![
         left,
-        btn("이름 변경", Some(Icon::Pencil), Kind::Flat).on_press(DatabaseMessage::EditDb(db.to_string())),
-        btn("백업", Some(Icon::Download), Kind::Flat).on_press(DatabaseMessage::BackupDb(db.to_string())),
-        btn("복원", Some(Icon::Upload), Kind::Flat).on_press(DatabaseMessage::RestoreDb(db.to_string())),
-        btn("삭제", Some(Icon::Trash), Kind::Danger).on_press(DatabaseMessage::DropDb(db.to_string())),
+        btn(tr("이름 변경"), Some(Icon::Pencil), Kind::Flat).on_press(DatabaseMessage::EditDb(db.to_string())),
+        btn(tr("백업"), Some(Icon::Download), Kind::Flat).on_press(DatabaseMessage::BackupDb(db.to_string())),
+        btn(tr("복원"), Some(Icon::Upload), Kind::Flat).on_press(DatabaseMessage::RestoreDb(db.to_string())),
+        btn(tr("삭제"), Some(Icon::Trash), Kind::Danger).on_press(DatabaseMessage::DropDb(db.to_string())),
     ]
     .spacing(6)
     .align_y(iced::Alignment::Center)
@@ -764,16 +757,16 @@ fn user_row<'a>(
     let is_editing = editing_user.map(|(name, host)| name == &u.username && host == &u.host).unwrap_or(false);
     if is_editing {
         return row![
-            field("사용자 이름", input("사용자 이름", edit_user_name).on_input(DatabaseMessage::EditUserNameChanged).into()),
+            field(tr("사용자 이름"), input(tr("사용자 이름"), edit_user_name).on_input(DatabaseMessage::EditUserNameChanged).into()),
             field(
-                "새 비밀번호",
-                input("비워 두면 그대로", edit_user_password)
+                tr("새 비밀번호"),
+                input(tr("비워 두면 그대로"), edit_user_password)
                     .on_input(DatabaseMessage::EditUserPasswordChanged)
                     .secure(true)
                     .into(),
             ),
-            btn("저장", Some(Icon::Check), Kind::Primary).on_press(DatabaseMessage::SaveUserEdit(u.username.clone(), u.host.clone())),
-            btn("취소", None, Kind::Ghost).on_press(DatabaseMessage::CancelUserEdit),
+            btn(tr("저장"), Some(Icon::Check), Kind::Primary).on_press(DatabaseMessage::SaveUserEdit(u.username.clone(), u.host.clone())),
+            btn(tr("취소"), None, Kind::Ghost).on_press(DatabaseMessage::CancelUserEdit),
         ]
         .spacing(8)
         .align_y(iced::Alignment::End)
@@ -782,12 +775,12 @@ fn user_row<'a>(
     row![
         column![
             text(&u.username).size(14).font(theme::MEDIUM).color(p().fg),
-            muted(format!("호스트 {}", u.host)),
+            muted(trf("호스트 {0}", &[&u.host])),
         ]
         .spacing(2)
         .width(Length::Fill),
-        btn("수정", Some(Icon::Pencil), Kind::Flat).on_press(DatabaseMessage::EditUser(u.username.clone(), u.host.clone())),
-        btn("삭제", Some(Icon::Trash), Kind::Danger).on_press(DatabaseMessage::DropUser(u.username.clone(), u.host.clone())),
+        btn(tr("수정"), Some(Icon::Pencil), Kind::Flat).on_press(DatabaseMessage::EditUser(u.username.clone(), u.host.clone())),
+        btn(tr("삭제"), Some(Icon::Trash), Kind::Danger).on_press(DatabaseMessage::DropUser(u.username.clone(), u.host.clone())),
     ]
     .spacing(6)
     .align_y(iced::Alignment::Center)
@@ -796,7 +789,7 @@ fn user_row<'a>(
 
 async fn pick_save_file(db_name: String) -> Option<String> {
     let result = rfd::AsyncFileDialog::new()
-        .set_title("백업 파일 저장 위치")
+        .set_title(tr("백업 파일 저장 위치"))
         .set_file_name(&format!("{db_name}.sql"))
         .add_filter("SQL", &["sql"])
         .save_file()
@@ -835,7 +828,7 @@ fn derive_db_name(path: &str) -> String {
 
 async fn pick_open_file() -> Option<String> {
     let result = rfd::AsyncFileDialog::new()
-        .set_title("복원할 SQL 파일 선택")
+        .set_title(tr("복원할 SQL 파일 선택"))
         .add_filter("SQL", &["sql"])
         .pick_file()
         .await;

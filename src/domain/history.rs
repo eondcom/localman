@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::settings::data_dir;
+use crate::i18n::{tr, trf};
 
 /// 기록이 끝없이 늘지 않게 최근 것만 남긴다.
 const KEEP: usize = 500;
@@ -110,13 +111,20 @@ pub fn format_time(at: u64) -> String {
     }
 }
 
-/// 프로젝트 줄에 붙일 한 줄 요약. 예: "↗ 10/03 14:20 eond-mac(으)로 보냄"
+/// 요약 줄의 실패 표시 문구 (현재 언어). 화면에서 `l.contains(failure_marker())` 로 색을 고른다.
+pub fn failure_marker() -> &'static str {
+    tr("일부 실패")
+}
+
+/// 프로젝트 줄에 붙일 한 줄 요약. 예: "↗ 10/03 14:20 eond-mac(으)로 보냄 · 파일 3개"
 pub fn summary_line(r: &TransferRecord) -> String {
-    let (arrow, verb) = match r.direction {
-        Direction::Sent => ("↗", "(으)로 보냄"),
-        Direction::Received => ("↙", "에서 받음"),
-        Direction::Deployed => ("↑", "에 배포"),
+    let status = if r.ok { String::new() } else { format!(" ({})", failure_marker()) };
+    let (time, peer, files) = (format_time(r.at), &r.peer, r.files);
+    let args: [&dyn std::fmt::Display; 4] = [&time, peer, &status, &files];
+    let (arrow, body) = match r.direction {
+        Direction::Sent => ("↗", trf("{0} {1}(으)로 보냄{2} · 파일 {3}개", &args)),
+        Direction::Received => ("↙", trf("{0} {1}에서 받음{2} · 파일 {3}개", &args)),
+        Direction::Deployed => ("↑", trf("{0} {1}에 배포{2} · 파일 {3}개", &args)),
     };
-    let status = if r.ok { "" } else { " (일부 실패)" };
-    format!("{arrow} {} {}{verb}{status} · 파일 {}개", format_time(r.at), r.peer, r.files)
+    format!("{arrow} {body}")
 }

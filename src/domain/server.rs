@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use super::detect::{auto_detect_next_command, auto_detect_start_command};
 use super::project::{ProjectType, VhostProject};
 use super::setup::{deps_ready, setup_project};
+use crate::i18n::{tr, trf};
 use crate::platform;
 
 /// 실행 중인 dev server 한 건.
@@ -117,13 +118,13 @@ pub fn start_server(project: &VhostProject) -> Result<u32, String> {
 
     let dir = project.work_dir();
     if !std::path::Path::new(&dir).is_dir() {
-        return Err(format!("디렉토리가 없습니다: {dir}"));
+        return Err(trf("디렉토리가 없습니다: {0}", &[&dir]));
     }
 
     // 의존성이 없으면 자동 설치 (Python: venv, Next.js: node_modules)
     match project.project_type {
         ProjectType::Php => {
-            return Err("PHP 프로젝트는 Apache가 직접 서빙하므로 dev server가 없습니다.".to_string());
+            return Err(tr("PHP 프로젝트는 Apache가 직접 서빙하므로 dev server가 없습니다.").to_string());
         }
         _ if !deps_ready(project) => {
             eprintln!("[localman] 의존성 없음 → 자동 설치");
@@ -143,7 +144,7 @@ pub fn start_server(project: &VhostProject) -> Result<u32, String> {
 
     let parts: Vec<&str> = command.split_whitespace().collect();
     if parts.is_empty() {
-        return Err("실행 명령어가 올바르지 않습니다.".to_string());
+        return Err(tr("실행 명령어가 올바르지 않습니다.").to_string());
     }
     eprintln!("[localman] 서버 시작: {command} in {dir}");
     let pid = platform::spawn_in_new_group(parts[0], &parts[1..], &dir)?;
@@ -176,7 +177,7 @@ pub fn stop_server(id: &str) -> Result<(), String> {
         g.as_ref().and_then(|m| m.get(id).cloned())
     };
     let Some(rec) = rec else {
-        return Err("실행 중인 서버가 없습니다.".to_string());
+        return Err(tr("실행 중인 서버가 없습니다.").to_string());
     };
 
     // 기록만 남고 실제로는 이미 죽은 경우. 기록만 지우고 정상 처리한다.
@@ -189,7 +190,7 @@ pub fn stop_server(id: &str) -> Result<(), String> {
     }
 
     eprintln!("[localman] 서버 중지 PID={} PGID={}", rec.pid, rec.pgid);
-    platform::signal_group(rec.pgid, "TERM").map_err(|e| format!("kill 실패: {e}"))?;
+    platform::signal_group(rec.pgid, "TERM").map_err(|e| trf("kill 실패: {0}", &[&e]))?;
 
     // 정상 종료를 최대 5초 기다린다.
     let mut terminated = false;
@@ -203,7 +204,7 @@ pub fn stop_server(id: &str) -> Result<(), String> {
 
     if !terminated {
         eprintln!("[localman] SIGTERM 무응답 → SIGKILL PGID={}", rec.pgid);
-        platform::signal_group(rec.pgid, "KILL").map_err(|e| format!("kill -9 실패: {e}"))?;
+        platform::signal_group(rec.pgid, "KILL").map_err(|e| trf("kill -9 실패: {0}", &[&e]))?;
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
 
