@@ -1180,7 +1180,7 @@ fn project_row_view_with_state<'a>(
             });
         }
     } else {
-        let apache_running = crate::platform::get_service_status("apache2") == crate::platform::ServiceStatus::Running;
+        let apache_running = super::services::apache_running();
         actions = actions.push(status(
             if apache_running { tr("Apache 실행 중") } else { tr("Apache 중지됨") },
             if apache_running { Tone::Success } else { Tone::Neutral },

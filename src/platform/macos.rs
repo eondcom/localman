@@ -31,24 +31,23 @@ fn brew() -> Command {
     cmd
 }
 
+/// formula 가 설치돼 있는지 — Cellar 폴더만 본다.
+/// `brew list` 는 한 번에 1초 넘게 걸려 화면 갱신마다 부르기엔 느리다.
 fn brew_installed(formula: &str) -> bool {
-    brew()
-        .args(["list", "--versions", formula])
-        .output()
-        .map(|o| o.status.success() && !o.stdout.is_empty())
+    fs::read_dir(format!("{}/Cellar/{formula}", brew_prefix()))
+        .map(|mut rd| rd.next().is_some())
         .unwrap_or(false)
 }
 
 /// 설치된 postgresql@N 중 가장 높은 버전. 없으면 설치할 기본 버전.
 fn postgres_formula() -> String {
-    let installed = brew()
-        .args(["list", "--formula", "-1"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-    installed
-        .lines()
-        .filter_map(|l| l.strip_prefix("postgresql@").and_then(|v| v.parse::<u32>().ok()))
+    fs::read_dir(format!("{}/Cellar", brew_prefix()))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            e.file_name().to_str()?.strip_prefix("postgresql@")?.parse::<u32>().ok()
+        })
         .max()
         .map(|v| format!("postgresql@{v}"))
         .unwrap_or_else(|| "postgresql@17".to_string())
@@ -103,15 +102,11 @@ pub fn get_service_status(name: &str) -> ServiceStatus {
     if !brew_installed(&formula) {
         return ServiceStatus::NotInstalled;
     }
-    let out = match brew().args(["services", "info", &formula, "--json"]).output() {
-        Ok(o) if o.status.success() => o,
-        _ => return ServiceStatus::Unknown,
-    };
-    let info: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    let running = info
-        .get(0)
-        .and_then(|s| s.get("running"))
-        .and_then(|r| r.as_bool())
+    // `brew services info` 는 1초 넘게 걸린다 — 그 formula 의 서버 프로세스가 있는지만 본다
+    let running = Command::new("pgrep")
+        .args(["-f", &format!("/(opt|Cellar)/{formula}/(.*/)?bin/")])
+        .output()
+        .map(|o| o.status.success())
         .unwrap_or(false);
     if running { ServiceStatus::Running } else { ServiceStatus::Stopped }
 }

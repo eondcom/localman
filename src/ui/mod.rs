@@ -78,6 +78,7 @@ impl App {
             toasts: Vec::new(),
             next_toast_id: 0,
         };
+        let services_task = app.services.init_task().map(Message::Services);
         (
             app,
             Task::batch([
@@ -87,7 +88,7 @@ impl App {
                 Task::done(Message::Settings(SettingsMessage::RenewCerts)),
                 // 사이트별 용량은 폴더를 훑어야 하므로 시작할 때 한 번 백그라운드로 잰다
                 Task::done(Message::Projects(ProjectsMessage::ComputeUsage)),
-                services::ServicesState::init_task().map(Message::Services),
+                services_task,
             ]),
         )
     }
@@ -127,11 +128,14 @@ impl App {
             }
             Message::CopyToast(s) => iced::clipboard::write(s),
             Message::TabSelected(tab) => {
-                if tab == Tab::Services {
-                    self.services.refresh();
-                }
+                // 서비스·프로젝트 화면은 Apache 등 상태를 보여주므로 들어갈 때 백그라운드로 다시 확인한다
+                let services = matches!(tab, Tab::Services | Tab::Projects);
                 self.active_tab = tab;
-                Task::none()
+                if services {
+                    self.services.refresh().map(Message::Services)
+                } else {
+                    Task::none()
+                }
             }
             Message::Services(msg) => self.services.update(msg).map(Message::Services),
             Message::Projects(msg) => {

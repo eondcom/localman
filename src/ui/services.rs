@@ -12,6 +12,8 @@ pub enum ServicesMessage {
     Toggle(String, bool),
     Install(String),
     Refresh,
+    /// (Apache, DB, PostgreSQL, DB 이름) — 백그라운드에서 확인한 상태
+    Refreshed(ServiceStatus, ServiceStatus, ServiceStatus, &'static str),
     Toggled(String, Result<(), String>),
     Installed(String, Result<(), String>),
     ToolsChecked(Vec<(Tool, Option<String>)>, bool),
@@ -38,6 +40,13 @@ pub struct ServicesState {
     php_apache: bool,
     tool_installing: Option<Tool>,
     tool_log: Vec<String>,
+}
+
+/// 마지막으로 확인한 Apache 실행 여부 — 프로젝트 목록이 그릴 때마다 pgrep 을 부르지 않게
+static APACHE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn apache_running() -> bool {
+    APACHE_RUNNING.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 fn check_tools() -> Task<ServicesMessage> {
@@ -86,13 +95,13 @@ impl ServicesState {
             tool_installing: None,
             tool_log: Vec::new(),
         };
-        s.refresh();
         s
     }
 
     /// 앱 시작 때: 도구 버전과 Node LTS 를 백그라운드로 확인한다
-    pub fn init_task() -> Task<ServicesMessage> {
+    pub fn init_task(&self) -> Task<ServicesMessage> {
         Task::batch([
+            self.refresh(),
             check_tools(),
             Task::perform(
                 async {
@@ -105,11 +114,23 @@ impl ServicesState {
         ])
     }
 
-    pub fn refresh(&mut self) {
-        self.apache_status = get_service_status("apache2");
-        self.mariadb_status = get_service_status("mariadb");
-        self.postgresql_status = get_service_status("postgresql");
-        self.db_label = crate::platform::db_service_label();
+    /// 서비스 상태를 백그라운드에서 확인한다 — 외부 명령(brew·systemctl·mysqladmin)이 화면을 멈추지 않게
+    pub fn refresh(&self) -> Task<ServicesMessage> {
+        Task::perform(
+            async {
+                tokio::task::spawn_blocking(|| {
+                    (
+                        get_service_status("apache2"),
+                        get_service_status("mariadb"),
+                        get_service_status("postgresql"),
+                        crate::platform::db_service_label(),
+                    )
+                })
+                .await
+                .unwrap_or((ServiceStatus::Unknown, ServiceStatus::Unknown, ServiceStatus::Unknown, "MariaDB"))
+            },
+            |(a, m, p, label)| ServicesMessage::Refreshed(a, m, p, label),
+        )
     }
 
     fn display_name(&self, name: &'static str, id: &str) -> &'static str {
@@ -131,14 +152,23 @@ impl ServicesState {
 
     pub fn update(&mut self, msg: ServicesMessage) -> Task<ServicesMessage> {
         match msg {
-            ServicesMessage::Refresh => {
-                self.refresh();
+            ServicesMessage::Refresh => self.refresh(),
+            ServicesMessage::Refreshed(a, m, p, label) => {
+                APACHE_RUNNING.store(a == ServiceStatus::Running, std::sync::atomic::Ordering::Relaxed);
+                self.apache_status = a;
+                self.mariadb_status = m;
+                self.postgresql_status = p;
+                self.db_label = label;
                 Task::none()
             }
             ServicesMessage::Toggle(name, start) => {
                 let n = name.clone();
                 Task::perform(
-                    async move { toggle_service(&n, start) },
+                    async move {
+                        tokio::task::spawn_blocking(move || toggle_service(&n, start))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                    },
                     move |r| ServicesMessage::Toggled(name.clone(), r),
                 )
             }
@@ -146,25 +176,24 @@ impl ServicesState {
                 self.installing = Some(name.clone());
                 let service = name.clone();
                 Task::perform(
-                    async move { install_service(&service) },
+                    async move {
+                        tokio::task::spawn_blocking(move || install_service(&service))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                    },
                     move |result| ServicesMessage::Installed(name.clone(), result),
                 )
             }
-            ServicesMessage::Toggled(name, result) => {
-                match result {
-                    Ok(_) => {
-                        self.error = None;
-                        match name.as_str() {
-                            "apache2" => self.apache_status = get_service_status("apache2"),
-                            "mariadb" => self.mariadb_status = get_service_status("mariadb"),
-                            "postgresql" => self.postgresql_status = get_service_status("postgresql"),
-                            _ => {}
-                        }
-                    }
-                    Err(e) => self.error = Some(e),
+            ServicesMessage::Toggled(_, result) => match result {
+                Ok(_) => {
+                    self.error = None;
+                    self.refresh()
                 }
-                Task::none()
-            }
+                Err(e) => {
+                    self.error = Some(e);
+                    Task::none()
+                }
+            },
             ServicesMessage::ToolsChecked(list, php) => {
                 self.tools = list;
                 self.php_apache = php;
@@ -200,11 +229,13 @@ impl ServicesState {
                 match result {
                     Ok(_) => {
                         self.error = None;
-                        self.refresh();
+                        self.refresh()
                     }
-                    Err(error) => self.error = Some(error),
+                    Err(error) => {
+                        self.error = Some(error);
+                        Task::none()
+                    }
                 }
-                Task::none()
             }
         }
     }
