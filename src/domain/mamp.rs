@@ -13,6 +13,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::database::DbEngine;
+use crate::i18n::{tr, trf};
 use super::project::{ProjectType, VhostProject};
 use super::transfer::{DbDump, FORMAT_VERSION, Manifest, engine_dir, home_dir, hostname, json, pack_dir, scratch_dir};
 
@@ -200,7 +201,7 @@ fn start_socket_only(data_dir: &Path) -> Result<bool, String> {
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    Err(format!("MAMP MySQL을 띄우지 못했습니다. 로그: {MAMP_ROOT}/logs/mysql_error.log"))
+    Err(trf("MAMP MySQL을 띄우지 못했습니다. 로그: {0}", &[&format!("{MAMP_ROOT}/logs/mysql_error.log")]))
 }
 
 /// 우리가 띄운 MAMP MySQL 을 내린다 (비밀번호 없이 pid 로 정상 종료 신호를 보낸다)
@@ -226,18 +227,18 @@ pub struct MampExport {
 
 /// MAMP 자료로 로컬맨 백업 묶음을 만든다. 결과 줄을 돌려준다.
 pub fn export_bundle(dest: &Path, opts: &MampExport, progress: impl Fn(String)) -> Result<Vec<String>, String> {
-    let info = detect().ok_or("MAMP를 찾지 못했습니다.")?;
+    let info = detect().ok_or(tr("MAMP를 찾지 못했습니다."))?;
     let work = scratch_dir("mamp")?;
     let result = (|| -> Result<Vec<String>, String> {
         let mut log = Vec::new();
         let mut dumps = Vec::new();
         if !opts.databases.is_empty() {
-            progress("MAMP MySQL 준비 중…".into());
+            progress(tr("MAMP MySQL 준비 중…").into());
             let started = start_socket_only(&info.data_dir)?;
             let dump_all = (|| -> Result<(), String> {
                 fs::create_dir_all(work.join("databases").join(engine_dir(DbEngine::MariaDb))).map_err(|e| e.to_string())?;
                 for (i, db) in opts.databases.iter().enumerate() {
-                    progress(format!("DB 덤프 {}/{} · {db}", i + 1, opts.databases.len()));
+                    progress(trf("DB 덤프 {0}/{1} · {2}", &[&(i + 1), &opts.databases.len(), db]));
                     let rel = format!("databases/{}/{db}.sql", engine_dir(DbEngine::MariaDb));
                     let out = mamp_mysql("mysqldump", &opts.user, &opts.password)
                         .args(["--single-transaction", "--routines", "--triggers", "--default-character-set=utf8mb4", db])
@@ -249,7 +250,7 @@ pub fn export_bundle(dest: &Path, opts: &MampExport, progress: impl Fn(String)) 
                     } else {
                         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
                         if err.contains("Access denied") {
-                            return Err(format!("MAMP MySQL 로그인 실패 — 사용자·비밀번호를 확인하세요 (MAMP 기본 root/root): {err}"));
+                            return Err(trf("MAMP MySQL 로그인 실패 — 사용자·비밀번호를 확인하세요 (MAMP 기본 root/root): {0}", &[&err]));
                         }
                         log.push(format!("✗ DB {db}: {err}"));
                     }
@@ -257,11 +258,11 @@ pub fn export_bundle(dest: &Path, opts: &MampExport, progress: impl Fn(String)) 
                 Ok(())
             })();
             if started {
-                progress("MAMP MySQL 내리는 중…".into());
+                progress(tr("MAMP MySQL 내리는 중…").into());
                 stop_ours();
             }
             dump_all?;
-            log.insert(0, format!("✓ MAMP DB {}개 덤프", dumps.len()));
+            log.insert(0, format!("✓ {}", trf("MAMP DB {0}개 덤프", &[&dumps.len()])));
         }
 
         let manifest = Manifest {
@@ -276,9 +277,9 @@ pub fn export_bundle(dest: &Path, opts: &MampExport, progress: impl Fn(String)) 
         };
         fs::write(work.join("manifest.json"), json(&manifest)?).map_err(|e| e.to_string())?;
         fs::write(work.join("projects.json"), json(&opts.projects)?).map_err(|e| e.to_string())?;
-        progress("묶는 중…".into());
+        progress(tr("묶는 중…").into());
         pack_dir(&work, dest)?;
-        log.push(format!("✓ 사이트 {}개 · 백업 파일: {}", opts.projects.len(), dest.display()));
+        log.push(format!("✓ {}", trf("사이트 {0}개 · 백업 파일: {1}", &[&opts.projects.len(), &dest.display()])));
         Ok(log)
     })();
     let _ = fs::remove_dir_all(&work);

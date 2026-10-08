@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use time::{Duration, OffsetDateTime};
 
 use super::settings::data_dir;
+use crate::i18n::{tr, trf};
 
 /// 도메인 인증서 유효 기간. macOS 는 사설 CA 인증서도 825일을 넘으면 거부한다.
 const LEAF_DAYS: i64 = 365;
@@ -51,7 +52,7 @@ struct Meta {
 
 /// 비밀 키 파일은 소유자만 읽게 쓴다.
 fn write_private(path: &Path, data: &str) -> Result<(), String> {
-    fs::write(path, data).map_err(|e| format!("{} 쓰기 실패: {e}", path.display()))?;
+    fs::write(path, data).map_err(|e| trf("{0} 쓰기 실패: {1}", &[&path.display(), &e]))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -108,10 +109,10 @@ pub fn ensure_ca() -> Result<(), String> {
         .unwrap_or_default();
     let common_name = format!("LocalMan Local CA ({host})");
     let not_after = OffsetDateTime::now_utc() + Duration::days(365 * CA_YEARS);
-    let key = KeyPair::generate().map_err(|e| format!("CA 키 생성 실패: {e}"))?;
+    let key = KeyPair::generate().map_err(|e| trf("CA 키 생성 실패: {0}", &[&e]))?;
     let cert = ca_params(&common_name, not_after)
         .self_signed(&key)
-        .map_err(|e| format!("CA 인증서 생성 실패: {e}"))?;
+        .map_err(|e| trf("CA 인증서 생성 실패: {0}", &[&e]))?;
     write_private(&ca_key_path(), &key.serialize_pem())?;
     fs::write(ca_cert_path(), cert.pem()).map_err(|e| e.to_string())?;
     let meta = Meta { common_name, not_after: not_after.unix_timestamp() };
@@ -147,7 +148,7 @@ fn needs_issue(domain: &str) -> bool {
 }
 
 fn issue(domain: &str) -> Result<CertPaths, String> {
-    let (ca, ca_key) = load_ca().ok_or("로컬 인증기관이 없습니다.")?;
+    let (ca, ca_key) = load_ca().ok_or(tr("로컬 인증기관이 없습니다."))?;
     let mut p = CertificateParams::new(vec![domain.to_string()]).map_err(|e| e.to_string())?;
     p.distinguished_name = DistinguishedName::new();
     p.distinguished_name.push(DnType::CommonName, domain);
@@ -159,7 +160,7 @@ fn issue(domain: &str) -> Result<CertPaths, String> {
     p.not_after = not_after;
 
     let key = KeyPair::generate().map_err(|e| e.to_string())?;
-    let cert = p.signed_by(&key, &ca, &ca_key).map_err(|e| format!("{domain} 인증서 발급 실패: {e}"))?;
+    let cert = p.signed_by(&key, &ca, &ca_key).map_err(|e| trf("{0} 인증서 발급 실패: {1}", &[&domain, &e]))?;
     let (paths, meta_path) = cert_paths(domain);
     write_private(&paths.key, &key.serialize_pem())?;
     fs::write(&paths.cert, cert.pem()).map_err(|e| e.to_string())?;

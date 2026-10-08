@@ -22,6 +22,7 @@ use super::database::{
     save_db_connection,
 };
 use super::detect::sync_port_in_command;
+use crate::i18n::{tr, trf};
 use super::project::{ProjectType, VhostProject, add_project, list_projects};
 
 /// 묶음 형식 버전. 읽는 쪽보다 높은 버전은 거부한다.
@@ -78,7 +79,7 @@ pub(crate) fn hostname() -> String {
 pub(crate) fn scratch_dir(tag: &str) -> Result<PathBuf, String> {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let dir = std::env::temp_dir().join(format!("localman-{tag}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&dir).map_err(|e| format!("임시 폴더 생성 실패: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| trf("임시 폴더 생성 실패: {0}", &[&e]))?;
     Ok(dir)
 }
 
@@ -130,7 +131,7 @@ fn export_into(work: &Path, dest: &Path, opts: &ExportOptions) -> Result<String,
     let mut dumps: Vec<DbDump> = Vec::new();
     for (engine, name) in &opts.databases {
         let Some(c) = connection_for(*engine) else {
-            notes.push(format!("✗ {} {name}: 저장된 접속 정보가 없어 건너뜀", engine.label()));
+            notes.push(format!("✗ {}", trf("{0} {1}: 저장된 접속 정보가 없어 건너뜀", &[&engine.label(), name])));
             continue;
         };
         let rel = format!("databases/{}/{name}.sql", engine_dir(*engine));
@@ -138,7 +139,7 @@ fn export_into(work: &Path, dest: &Path, opts: &ExportOptions) -> Result<String,
         fs::create_dir_all(full.parent().unwrap()).map_err(|e| e.to_string())?;
         match backup_database(*engine, &c.user, &c.password, name, &full.to_string_lossy()) {
             Ok(()) => dumps.push(DbDump { engine: *engine, name: name.clone(), file: rel }),
-            Err(e) => notes.push(format!("✗ {} {name}: 덤프 실패 — {}", engine.label(), e.trim())),
+            Err(e) => notes.push(format!("✗ {}", trf("{0} {1}: 덤프 실패 — {2}", &[&engine.label(), name, &e.trim()]))),
         }
     }
 
@@ -162,12 +163,12 @@ fn export_into(work: &Path, dest: &Path, opts: &ExportOptions) -> Result<String,
 
     pack_dir(work, dest)?;
 
-    let mut summary = vec![format!(
-        "✓ 내보내기 완료: 프로젝트 {}개, DB {}개{}",
-        projects.len(),
-        dumps.len(),
-        if opts.include_credentials { ", DB 접속 정보 포함" } else { "" }
-    )];
+    let done = if opts.include_credentials {
+        trf("내보내기 완료: 프로젝트 {0}개, DB {1}개, DB 접속 정보 포함", &[&projects.len(), &dumps.len()])
+    } else {
+        trf("내보내기 완료: 프로젝트 {0}개, DB {1}개", &[&projects.len(), &dumps.len()])
+    };
+    let mut summary = vec![format!("✓ {done}")];
     summary.extend(notes);
     Ok(summary.join("\n"))
 }
@@ -175,12 +176,12 @@ fn export_into(work: &Path, dest: &Path, opts: &ExportOptions) -> Result<String,
 /// 준비된 폴더를 백업 묶음(tar.gz)으로 만든다. 실패하면 반쯤 쓰인 파일을 남기지 않는다.
 pub(crate) fn pack_dir(work: &Path, dest: &Path) -> Result<(), String> {
     let write = || -> Result<(), String> {
-        let file = fs::File::create(dest).map_err(|e| format!("파일 만들기 실패: {e}"))?;
+        let file = fs::File::create(dest).map_err(|e| trf("파일 만들기 실패: {0}", &[&e]))?;
         let mut tar = tar::Builder::new(GzEncoder::new(file, Compression::default()));
-        tar.append_dir_all(".", work).map_err(|e| format!("압축 실패: {e}"))?;
+        tar.append_dir_all(".", work).map_err(|e| trf("압축 실패: {0}", &[&e]))?;
         tar.into_inner()
             .and_then(|gz| gz.finish())
-            .map_err(|e| format!("압축 마무리 실패: {e}"))?;
+            .map_err(|e| trf("압축 마무리 실패: {0}", &[&e]))?;
         Ok(())
     };
     if let Err(e) = write() {
@@ -212,30 +213,30 @@ impl Bundle {
 }
 
 pub fn open_bundle(path: &Path) -> Result<Bundle, String> {
-    let file = fs::File::open(path).map_err(|e| format!("파일 열기 실패: {e}"))?;
+    let file = fs::File::open(path).map_err(|e| trf("파일 열기 실패: {0}", &[&e]))?;
     let dir = scratch_dir("import")?;
     // tar 크레이트의 unpack은 ".." 이나 절대 경로로 폴더 밖에 쓰는 항목을 거부한다.
     if let Err(e) = tar::Archive::new(GzDecoder::new(file)).unpack(&dir) {
         let _ = fs::remove_dir_all(&dir);
-        return Err(format!("localman 백업 파일이 아니거나 손상됐습니다: {e}"));
+        return Err(trf("localman 백업 파일이 아니거나 손상됐습니다: {0}", &[&e]));
     }
     let read = |name: &str| fs::read_to_string(dir.join(name));
 
     let parsed = (|| -> Result<Bundle, String> {
         let manifest: Manifest = serde_json::from_str(
-            &read("manifest.json").map_err(|_| "manifest.json이 없습니다. localman 백업 파일이 아닙니다.")?,
+            &read("manifest.json").map_err(|_| tr("manifest.json이 없습니다. localman 백업 파일이 아닙니다."))?,
         )
-        .map_err(|e| format!("manifest.json 형식 오류: {e}"))?;
+        .map_err(|e| trf("{0} 형식 오류: {1}", &[&"manifest.json", &e]))?;
         if manifest.format > FORMAT_VERSION {
-            return Err(format!(
-                "더 새 버전의 localman(형식 {})에서 만든 파일입니다. localman을 업데이트하세요.",
-                manifest.format
+            return Err(trf(
+                "더 새 버전의 localman(형식 {0})에서 만든 파일입니다. localman을 업데이트하세요.",
+                &[&manifest.format],
             ));
         }
         let projects = serde_json::from_str(&read("projects.json").unwrap_or_else(|_| "[]".into()))
-            .map_err(|e| format!("projects.json 형식 오류: {e}"))?;
+            .map_err(|e| trf("{0} 형식 오류: {1}", &[&"projects.json", &e]))?;
         let credentials = match read("db_credentials.json") {
-            Ok(s) => serde_json::from_str(&s).map_err(|e| format!("db_credentials.json 형식 오류: {e}"))?,
+            Ok(s) => serde_json::from_str(&s).map_err(|e| trf("{0} 형식 오류: {1}", &[&"db_credentials.json", &e]))?,
             Err(_) => Vec::new(),
         };
         Ok(Bundle { dir: dir.clone(), manifest, projects, credentials })
@@ -355,12 +356,12 @@ pub fn import_bundle(bundle: &Bundle, opts: &ImportOptions) -> Vec<String> {
         let existing = load_db_connections();
         for c in &bundle.credentials {
             if existing.iter().any(|e| e.engine == c.engine && e.user == c.user) {
-                log.push(format!("· DB 접속 {} {}: 이 PC 설정 유지", c.engine.label(), c.user));
+                log.push(format!("· {}", trf("DB 접속 {0} {1}: 이 PC 설정 유지", &[&c.engine.label(), &c.user])));
                 continue;
             }
             match save_db_connection(c.engine, &c.user, &c.password) {
-                Ok(_) => log.push(format!("✓ DB 접속 {} {} 추가", c.engine.label(), c.user)),
-                Err(e) => log.push(format!("✗ DB 접속 {} {}: {e}", c.engine.label(), c.user)),
+                Ok(_) => log.push(format!("✓ {}", trf("DB 접속 {0} {1} 추가", &[&c.engine.label(), &c.user]))),
+                Err(e) => log.push(format!("✗ {}", trf("DB 접속 {0} {1}: {2}", &[&c.engine.label(), &c.user, &e]))),
             }
         }
     }
@@ -370,17 +371,23 @@ pub fn import_bundle(bundle: &Bundle, opts: &ImportOptions) -> Vec<String> {
         for d in &bundle.manifest.databases {
             let label = format!("{} {}", d.engine.label(), d.name);
             let Some(c) = connection_for(d.engine) else {
-                log.push(format!("✗ DB {label}: 이 PC에 {} 접속 정보가 없습니다 (데이터베이스 탭에서 먼저 연결)", d.engine.label()));
+                log.push(format!(
+                    "✗ {}",
+                    trf("DB {0}: 이 PC에 {1} 접속 정보가 없습니다 (데이터베이스 탭에서 먼저 연결)", &[&label, &d.engine.label()])
+                ));
                 continue;
             };
             let exists = list_databases(d.engine, &c.user, &c.password).iter().any(|x| x.name == d.name);
             if exists && !opts.overwrite {
-                log.push(format!("· DB {label}: 이미 있어 건너뜀"));
+                log.push(format!("· {}", trf("DB {0}: 이미 있어 건너뜀", &[&label])));
                 continue;
             }
             let file = bundle.dir.join(&d.file);
             match import_sql(d.engine, &c.user, &c.password, &d.name, &file.to_string_lossy(), true) {
-                Ok(()) => log.push(format!("✓ DB {label} 복원{}", if exists { " (덮어씀)" } else { "" })),
+                Ok(()) => log.push(format!(
+                    "✓ {}",
+                    if exists { trf("DB {0} 복원 (덮어씀)", &[&label]) } else { trf("DB {0} 복원", &[&label]) }
+                )),
                 Err(e) => log.push(format!("✗ DB {label}: {}", e.trim())),
             }
         }
@@ -390,25 +397,25 @@ pub fn import_bundle(bundle: &Bundle, opts: &ImportOptions) -> Vec<String> {
     for plan in plan_projects(bundle, opts) {
         let p = plan.project;
         if plan.exists_here && !opts.overwrite {
-            log.push(format!("· 프로젝트 {}: 이미 있어 건너뜀", p.id));
+            log.push(format!("· {}", trf("프로젝트 {0}: 이미 있어 건너뜀", &[&p.id])));
             continue;
         }
         let mut notes: Vec<String> = Vec::new();
         if let Some(old) = plan.port_changed_from {
-            notes.push(format!("포트 {old}에서 {}(으)로 바꿈 (충돌)", p.port));
+            notes.push(trf("포트 {0}에서 {1}(으)로 바꿈 (충돌)", &[&old, &p.port]));
         }
         if !plan.folder_exists {
-            notes.push(format!("폴더 없음: {} — 소스를 옮긴 뒤 사용", p.path));
+            notes.push(trf("폴더 없음: {0} — 소스를 옮긴 뒤 사용", &[&p.path]));
         } else if p.project_type == ProjectType::Python && venv_is_foreign(&p) {
-            notes.push("venv가 다른 OS용 — venv 폴더를 지우고 패키지 설치를 다시 하세요".to_string());
+            notes.push(tr("venv가 다른 OS용 — venv 폴더를 지우고 패키지 설치를 다시 하세요").to_string());
         }
         let id = p.id.clone();
         match add_project(p) {
             Ok(()) => {
                 let extra = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join(", ")) };
-                log.push(format!("✓ 프로젝트 {id}{extra}"));
+                log.push(format!("✓ {}{extra}", trf("프로젝트 {0}", &[&id])));
             }
-            Err(e) => log.push(format!("✗ 프로젝트 {id}: {e}")),
+            Err(e) => log.push(format!("✗ {}", trf("프로젝트 {0}: {1}", &[&id, &e]))),
         }
     }
 

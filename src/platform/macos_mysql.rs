@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use crate::i18n::{tr, trf};
+
 const SERIES: &str = "8.4";
 pub const SOCKET: &str = "/tmp/mysql.sock";
 const PORT: &str = "3306";
@@ -82,7 +84,7 @@ pub fn start() -> Result<(), String> {
         return Ok(());
     }
     if !installed() {
-        return Err("MySQL이 설치돼 있지 않습니다.".into());
+        return Err(tr("MySQL이 설치돼 있지 않습니다.").into());
     }
     let args = mysqld_args();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -91,7 +93,7 @@ pub fn start() -> Result<(), String> {
     if wait_until(true) {
         Ok(())
     } else {
-        Err(format!("MySQL이 시작되지 않았습니다. 로그: {}", data_root().join("mysql.err").display()))
+        Err(trf("MySQL이 시작되지 않았습니다. 로그: {0}", &[&data_root().join("mysql.err").display()]))
     }
 }
 
@@ -105,12 +107,12 @@ pub fn stop() -> Result<(), String> {
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Err(format!(
-            "MySQL 중지 실패 (root 비밀번호를 바꿨다면 데이터베이스 탭에서 중지하세요): {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+        return Err(trf(
+            "MySQL 중지 실패 (root 비밀번호를 바꿨다면 데이터베이스 탭에서 중지하세요): {0}",
+            &[&String::from_utf8_lossy(&out.stderr).trim()],
         ));
     }
-    if wait_until(false) { Ok(()) } else { Err("MySQL이 멈추지 않았습니다.".into()) }
+    if wait_until(false) { Ok(()) } else { Err(tr("MySQL이 멈추지 않았습니다.").into()) }
 }
 
 fn curl_ok(url: &str) -> bool {
@@ -137,7 +139,7 @@ fn find_latest() -> Result<(String, String), String> {
             }
         }
     }
-    Err("MySQL 8.4 배포 파일을 찾지 못했습니다.".into())
+    Err(tr("MySQL 8.4 배포 파일을 찾지 못했습니다.").into())
 }
 
 pub fn install() -> Result<String, String> {
@@ -151,14 +153,14 @@ pub fn install() -> Result<String, String> {
         .arg(&archive)
         .arg(&url)
         .output()
-        .map_err(|e| format!("curl 실행 실패: {e}"))?;
+        .map_err(|e| trf("curl 실행 실패: {0}", &[&e]))?;
     if !out.status.success() {
-        return Err(format!("MySQL 받기 실패: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(trf("MySQL 받기 실패: {0}", &[&String::from_utf8_lossy(&out.stderr).trim()]));
     }
     let out = Command::new("tar").arg("-xzf").arg(&archive).arg("-C").arg(&tools).output().map_err(|e| e.to_string())?;
     let _ = fs::remove_file(&archive);
     if !out.status.success() {
-        return Err(format!("압축 풀기 실패: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(trf("압축 풀기 실패: {0}", &[&String::from_utf8_lossy(&out.stderr).trim()]));
     }
     let dir_name = url.rsplit('/').next().unwrap().trim_end_matches(".tar.gz").to_string();
     let link = home();
@@ -176,7 +178,7 @@ pub fn install() -> Result<String, String> {
             .output()
             .map_err(|e| e.to_string())?;
         if !out.status.success() {
-            return Err(format!("MySQL 데이터 초기화 실패: {}", String::from_utf8_lossy(&out.stderr).trim()));
+            return Err(trf("MySQL 데이터 초기화 실패: {0}", &[&String::from_utf8_lossy(&out.stderr).trim()]));
         }
     }
     start()?;
@@ -187,8 +189,8 @@ pub fn install() -> Result<String, String> {
             .output()
             .map_err(|e| e.to_string())?;
         if !out.status.success() {
-            return Err(format!("root 비밀번호 설정 실패: {}", String::from_utf8_lossy(&out.stderr).trim()));
+            return Err(trf("root 비밀번호 설정 실패: {0}", &[&String::from_utf8_lossy(&out.stderr).trim()]));
         }
     }
-    Ok(format!("MySQL {ver} LTS 설치·시작 완료 (root 비밀번호: {ROOT_PASSWORD})"))
+    Ok(trf("MySQL {0} LTS 설치·시작 완료 (root 비밀번호: {1})", &[&ver, &ROOT_PASSWORD]))
 }
