@@ -2,6 +2,7 @@ use iced::{
     widget::{column, row, text, Space},
     Element, Length, Task,
 };
+use crate::i18n::{tr, trf};
 use crate::platform::{ServiceStatus, get_service_status, install_service, toggle_service};
 use super::theme::{self, Icon, Kind, Tone, btn, card, chip, group, icon, muted, p, page_header, result_line, section_label, setting_row};
 use crate::domain::tools::{NodeSupport, TOOLS, Tool, install as install_tool, installed_version, latest_lts, node_schedule, node_support, today};
@@ -53,7 +54,7 @@ fn check_tools() -> Task<ServicesMessage> {
 }
 
 
-/// (UI 이름, 서비스 id, 설명, 아이콘)
+/// (UI 이름, 서비스 id, 설명, 아이콘) — 설명은 그릴 때 tr() 로 번역한다
 const SERVICES: [(&str, &str, &str, Icon); 3] = [
     ("Apache", "apache2", "웹 서버 · *.localhost", Icon::Globe),
     ("MariaDB", "mariadb", "데이터베이스 서버", Icon::Database),
@@ -62,10 +63,10 @@ const SERVICES: [(&str, &str, &str, Icon); 3] = [
 
 pub fn status_tone(s: &ServiceStatus) -> (&'static str, Tone) {
     match s {
-        ServiceStatus::Running => ("실행 중", Tone::Success),
-        ServiceStatus::Stopped => ("중지됨", Tone::Neutral),
-        ServiceStatus::NotInstalled => ("미설치", Tone::Warning),
-        ServiceStatus::Unknown => ("알 수 없음", Tone::Neutral),
+        ServiceStatus::Running => (tr("실행 중"), Tone::Success),
+        ServiceStatus::Stopped => (tr("중지됨"), Tone::Neutral),
+        ServiceStatus::NotInstalled => (tr("미설치"), Tone::Warning),
+        ServiceStatus::Unknown => (tr("알 수 없음"), Tone::Neutral),
     }
 }
 
@@ -209,18 +210,18 @@ impl ServicesState {
     }
 
     pub fn view(&self) -> Element<'_, ServicesMessage> {
-        let refresh = btn("새로고침", Some(Icon::Refresh), Kind::Surface).on_press(ServicesMessage::Refresh);
+        let refresh = btn(tr("새로고침"), Some(Icon::Refresh), Kind::Surface).on_press(ServicesMessage::Refresh);
 
         let tiles = SERVICES.iter().fold(row![].spacing(12), |r, (name, id, desc, ic)| {
-            r.push(self.tile(self.display_name(name, id), id, desc, *ic))
+            r.push(self.tile(self.display_name(name, id), id, tr(desc), *ic))
         });
 
         let mut col = column![
-            page_header("서비스", "웹 서버와 데이터베이스를 켜고 끕니다", Some(refresh.into())),
+            page_header(tr("서비스"), tr("웹 서버와 데이터베이스를 켜고 끕니다"), Some(refresh.into())),
             Space::with_height(20),
             tiles,
             Space::with_height(18),
-            section_label("개발 도구"),
+            section_label(tr("개발 도구")),
             self.tools_view(),
         ];
 
@@ -243,21 +244,21 @@ impl ServicesState {
             };
             let php_unlinked = *t == Tool::Php && ver.is_some() && !self.php_apache;
             let status: Element<ServicesMessage> = match (ver, &support) {
-                (None, _) => chip("미설치", Tone::Warning),
-                (Some(v), _) if php_unlinked => chip(format!("v{v} · Apache 연결 안 됨"), Tone::Warning),
+                (None, _) => chip(tr("미설치"), Tone::Warning),
+                (Some(v), _) if php_unlinked => chip(trf("v{0} · Apache 연결 안 됨", &[v]), Tone::Warning),
                 (Some(v), Some(NodeSupport::ActiveLts(n))) => chip(format!("v{v} · {n} LTS"), Tone::Success),
                 (Some(v), Some(NodeSupport::MaintenanceLts(n, end))) => {
-                    chip(format!("v{v} · {n} 유지보수 LTS ({} 종료)", &end[..end.len().min(7)]), Tone::Warning)
+                    chip(trf("v{0} · {1} 유지보수 LTS ({2} 종료)", &[v, n, &&end[..end.len().min(7)]]), Tone::Warning)
                 }
-                (Some(v), Some(NodeSupport::Current)) => chip(format!("v{v} · LTS 아님"), Tone::Warning),
-                (Some(v), Some(NodeSupport::Eol)) => chip(format!("v{v} · 지원 종료"), Tone::Danger),
+                (Some(v), Some(NodeSupport::Current)) => chip(trf("v{0} · LTS 아님", &[v]), Tone::Warning),
+                (Some(v), Some(NodeSupport::Eol)) => chip(trf("v{0} · 지원 종료", &[v]), Tone::Danger),
                 (Some(v), _) => chip(format!("v{v}"), Tone::Success),
             };
             let label: String = match (t, lts) {
-                (Tool::Node, Some((l, name))) => format!("{l} {name} LTS 설치"),
-                (Tool::Node, None) => "LTS 설치".into(),
-                (Tool::Php, _) if php_unlinked => "Apache용 PHP 설치".into(),
-                _ => "설치".into(),
+                (Tool::Node, Some((l, name))) => trf("{0} {1} LTS 설치", &[l, name]),
+                (Tool::Node, None) => tr("LTS 설치").into(),
+                (Tool::Php, _) if php_unlinked => tr("Apache용 PHP 설치").into(),
+                _ => tr("설치").into(),
             };
             // 없거나·지원 종료·LTS 아님 → 주 버튼, 유지보수 LTS → 보조 버튼
             let kind = match (ver, &support) {
@@ -267,7 +268,7 @@ impl ServicesState {
                 _ => None,
             };
             let action: Element<ServicesMessage> = if self.tool_installing == Some(*t) {
-                theme::status("설치 중…", Tone::Primary)
+                theme::status(tr("설치 중…"), Tone::Primary)
             } else if let Some(kind) = kind {
                 let b = btn(label, Some(Icon::Download), kind);
                 if self.tool_installing.is_none() { b.on_press(ServicesMessage::InstallTool(*t)).into() } else { b.into() }
@@ -281,7 +282,7 @@ impl ServicesState {
             ));
         }
         if rows.is_empty() {
-            rows.push(muted("도구 버전을 확인하는 중…").into());
+            rows.push(muted(tr("도구 버전을 확인하는 중…")).into());
         }
         if !self.tool_log.is_empty() {
             rows.push(self.tool_log.iter().fold(column![].spacing(4), |c, l| c.push(result_line(l))).into());
@@ -297,13 +298,13 @@ impl ServicesState {
         let not_installed = matches!(status, ServiceStatus::NotInstalled);
 
         let action = if installing {
-            btn("설치 중…", Some(Icon::Download), Kind::Flat)
+            btn(tr("설치 중…"), Some(Icon::Download), Kind::Flat)
         } else if not_installed {
-            btn("설치하기", Some(Icon::Download), Kind::Primary).on_press(ServicesMessage::Install(id.to_string()))
+            btn(tr("설치하기"), Some(Icon::Download), Kind::Primary).on_press(ServicesMessage::Install(id.to_string()))
         } else if running {
-            btn("중지", Some(Icon::Square), Kind::Danger).on_press(ServicesMessage::Toggle(id.to_string(), false))
+            btn(tr("중지"), Some(Icon::Square), Kind::Danger).on_press(ServicesMessage::Toggle(id.to_string(), false))
         } else {
-            btn("시작", Some(Icon::Play), Kind::Success).on_press(ServicesMessage::Toggle(id.to_string(), true))
+            btn(tr("시작"), Some(Icon::Play), Kind::Success).on_press(ServicesMessage::Toggle(id.to_string(), true))
         };
 
         card(

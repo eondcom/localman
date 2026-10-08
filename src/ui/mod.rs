@@ -24,6 +24,7 @@ pub use database::DatabaseMessage;
 pub use settings::SettingsMessage;
 pub use transfer::TransferMessage;
 use theme::{Icon, Tone, p};
+use crate::i18n::tr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tab {
@@ -262,11 +263,11 @@ impl App {
         let col = column![
             logo,
             Space::with_height(22),
-            nav(Icon::Server, "서비스", Tab::Services),
-            nav(Icon::Folder, "프로젝트", Tab::Projects),
-            nav(Icon::Database, "데이터베이스", Tab::Database),
-            nav(Icon::ArrowLeftRight, "백업·이전", Tab::Transfer),
-            nav(Icon::Settings, "설정", Tab::Settings),
+            nav(Icon::Server, tr("서비스"), Tab::Services),
+            nav(Icon::Folder, tr("프로젝트"), Tab::Projects),
+            nav(Icon::Database, tr("데이터베이스"), Tab::Database),
+            nav(Icon::ArrowLeftRight, tr("백업·이전"), Tab::Transfer),
+            nav(Icon::Settings, tr("설정"), Tab::Settings),
             Space::with_height(Length::Fill),
             summary,
         ]
@@ -289,14 +290,14 @@ impl App {
 fn toast_view(t: &Toast) -> Element<'_, Message> {
     use theme::{Kind, Tone, btn};
     let (msg, tone, title) = match &t.result {
-        Ok(m) => (m.as_str(), Tone::Success, "완료"),
-        Err(e) => (e.as_str(), Tone::Danger, "오류"),
+        Ok(m) => (m.as_str(), Tone::Success, tr("완료")),
+        Err(e) => (e.as_str(), Tone::Danger, tr("오류")),
     };
     let mut actions = row![].spacing(4);
     if t.result.is_err() {
-        actions = actions.push(btn("복사", Some(Icon::Copy), Kind::Ghost).on_press(Message::CopyToast(msg.to_string())));
+        actions = actions.push(btn(tr("복사"), Some(Icon::Copy), Kind::Ghost).on_press(Message::CopyToast(msg.to_string())));
     }
-    actions = actions.push(btn("닫기", Some(Icon::X), Kind::Ghost).on_press(Message::DismissToast(t.id)));
+    actions = actions.push(btn(tr("닫기"), Some(Icon::X), Kind::Ghost).on_press(Message::DismissToast(t.id)));
     let accent = theme::tone_dot_color(tone);
     container(
         column![

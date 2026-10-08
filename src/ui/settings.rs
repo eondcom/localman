@@ -8,7 +8,7 @@ use iced::{
 use super::theme::{self, Icon, Kind, Tone, btn, chip, group, muted, result_line, section_label, segmented, setting_row, switch};
 use crate::domain::apache::{renew_certs, set_https};
 use crate::domain::settings::{LangMode, ThemeMode, data_dir, load_settings, save_settings};
-use crate::i18n::{self, Lang};
+use crate::i18n::{self, Lang, tr};
 use crate::domain::tls::{ca_cert_path, ca_exists};
 use crate::platform::{ca_trusted, open_url, system_prefers_dark};
 
@@ -143,20 +143,20 @@ impl SettingsState {
     pub fn view(&self) -> Element<'_, SettingsMessage> {
         let screen = group(vec![
             setting_row(
-                "테마",
+                tr("테마"),
                 None,
                 segmented(
-                    &[(ThemeMode::Dark, "다크"), (ThemeMode::Light, "라이트"), (ThemeMode::System, "시스템")],
+                    &[(ThemeMode::Dark, tr("다크")), (ThemeMode::Light, tr("라이트")), (ThemeMode::System, tr("시스템"))],
                     &self.theme,
                     SettingsMessage::SetTheme,
                 ),
             ),
-            // 언어 이름은 번역하지 않는다 — 모르는 언어 화면에서도 자기 언어를 찾을 수 있게
+            // 언어 이름은 번역하지 않는다 — 모르는 언어 화면에서도 자기 언어를 찾을 수 있게 ("시스템"만 번역)
             setting_row(
-                "언어",
+                tr("언어"),
                 None,
                 segmented(
-                    &[(LangMode::System, "시스템"), (LangMode::Ko, "한국어"), (LangMode::En, "English"), (LangMode::Ja, "日本語")],
+                    &[(LangMode::System, tr("시스템")), (LangMode::Ko, "한국어"), (LangMode::En, "English"), (LangMode::Ja, "日本語")],
                     &self.lang,
                     SettingsMessage::SetLang,
                 ),
@@ -164,29 +164,29 @@ impl SettingsState {
         ]);
 
         let (status, tone) = if !self.https {
-            ("꺼짐", Tone::Neutral)
+            (tr("꺼짐"), Tone::Neutral)
         } else if self.ca_trusted {
-            ("인증기관 신뢰됨", Tone::Success)
+            (tr("인증기관 신뢰됨"), Tone::Success)
         } else {
-            ("신뢰 안 됨 · 브라우저 경고", Tone::Warning)
+            (tr("신뢰 안 됨 · 브라우저 경고"), Tone::Warning)
         };
         let toggle = if self.https_busy {
-            Element::from(muted("처리 중…"))
+            Element::from(muted(tr("처리 중…")))
         } else {
             switch(self.https).on_toggle(SettingsMessage::SetHttps).into()
         };
         let mut https_rows = vec![
             setting_row(
-                "모든 프로젝트를 HTTPS로도 열기",
-                Some("로컬 인증기관으로 https://도메인 인증서를 만들고 만료 30일 전에 자동 갱신합니다"),
+                tr("모든 프로젝트를 HTTPS로도 열기"),
+                Some(tr("로컬 인증기관으로 https://도메인 인증서를 만들고 만료 30일 전에 자동 갱신합니다")),
                 toggle,
             ),
-            setting_row("상태", None, chip(status, tone)),
+            setting_row(tr("상태"), None, chip(status, tone)),
         ];
         if self.https && !self.ca_trusted {
             https_rows.push(setting_row(
-                "신뢰 등록 다시 시도",
-                Some("끄고 다시 켜면 인증기관을 OS에 다시 등록합니다"),
+                tr("신뢰 등록 다시 시도"),
+                Some(tr("끄고 다시 켜면 인증기관을 OS에 다시 등록합니다")),
                 Space::with_width(0).into(),
             ));
         }
@@ -196,29 +196,29 @@ impl SettingsState {
         }
 
         let info = group(vec![
-            setting_row("버전", None, chip(concat!("v", env!("CARGO_PKG_VERSION")), Tone::Neutral)),
+            setting_row(tr("버전"), None, chip(concat!("v", env!("CARGO_PKG_VERSION")), Tone::Neutral)),
             setting_row(
-                "데이터 폴더",
-                Some("프로젝트 목록·DB 접속·인증서·이전 기록이 저장됩니다"),
-                btn("열기", Some(Icon::FolderOpen), Kind::Flat).on_press(SettingsMessage::OpenDataDir).into(),
+                tr("데이터 폴더"),
+                Some(tr("프로젝트 목록·DB 접속·인증서·이전 기록이 저장됩니다")),
+                btn(tr("열기"), Some(Icon::FolderOpen), Kind::Flat).on_press(SettingsMessage::OpenDataDir).into(),
             ),
             setting_row(
-                "만든 곳",
+                tr("만든 곳"),
                 None,
-                btn("이온디 · eond.com", Some(Icon::Globe), Kind::Ghost).on_press(SettingsMessage::OpenSite).into(),
+                btn(tr("이온디 · eond.com"), Some(Icon::Globe), Kind::Ghost).on_press(SettingsMessage::OpenSite).into(),
             ),
         ]);
 
         column![
-            theme::page_header("설정", "화면, HTTPS, 앱 정보", None),
+            theme::page_header(tr("설정"), tr("화면, HTTPS, 앱 정보"), None),
             Space::with_height(16),
-            section_label("화면"),
+            section_label(tr("화면")),
             screen,
             Space::with_height(14),
             section_label("HTTPS"),
             group(https_rows),
             Space::with_height(14),
-            section_label("정보"),
+            section_label(tr("정보")),
             info,
         ]
         .into()
@@ -227,5 +227,5 @@ impl SettingsState {
 
 /// 사이드바 아래 요약에 쓰는 한 줄
 pub fn https_summary(on: bool) -> (&'static str, Tone) {
-    if on { ("HTTPS 켜짐", Tone::Primary) } else { ("HTTPS 꺼짐", Tone::Neutral) }
+    if on { (tr("HTTPS 켜짐"), Tone::Primary) } else { (tr("HTTPS 꺼짐"), Tone::Neutral) }
 }
