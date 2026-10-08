@@ -547,11 +547,11 @@ fn rsync(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<Vec<String
 
 /// 올라갈 파일 목록만 본다 (실제로 보내지 않음)
 pub fn preview_files(p: &VhostProject, t: &DeployTarget, progress: &super::ProgressFn) -> Result<Vec<String>, String> {
-    send(p, t, true, progress).map(|(files, _)| files)
+    send(p, t, true, progress).map(|(files, _, _)| files)
 }
 
 /// 셸·rsync 가 되면 rsync, 아니면 SFTP 로 올린다. (파일 목록, 실제 웹 경로)
-fn send(p: &VhostProject, t: &DeployTarget, dry_run: bool, progress: &super::ProgressFn) -> Result<(Vec<String>, String), String> {
+fn send(p: &VhostProject, t: &DeployTarget, dry_run: bool, progress: &super::ProgressFn) -> Result<(Vec<String>, String, Option<usize>), String> {
     progress(tr("서버에 접속하는 중…").to_string(), None);
     validate(t)?;
     // 로컬 DB 로 바꾼 설정 파일과 그 서버 원본 백업은 늘 뺀다 (운영 사이트가 로컬 DB 를 보게 되면 안 된다)
@@ -569,25 +569,29 @@ fn send(p: &VhostProject, t: &DeployTarget, dry_run: bool, progress: &super::Pro
                 t.remote_path = r;
             }
             progress(tr("rsync로 올리는 중… (바뀐 파일만)").to_string(), None);
-            Ok((rsync(p, &t, dry_run)?, t.remote_path))
+            Ok((rsync(p, &t, dry_run)?, t.remote_path, None))
         }
         _ => {
             if !Path::new(&p.path).is_dir() {
                 return Err(trf("프로젝트 폴더가 없습니다: {0}", &[&p.path]));
             }
-            super::sftp::push(t, Path::new(&p.path), t.excludes.clone(), dry_run, progress.clone())
+            super::sftp::push(t, Path::new(&p.path), t.excludes.clone(), dry_run, progress.clone()).map(|(f, r, n)| (f, r, Some(n)))
         }
     }
 }
 
 /// 바뀐 파일을 서버에 올린다. 서버에만 있는 파일은 그대로 둔다.
 pub fn upload_files(p: &VhostProject, t: &DeployTarget, progress: &super::ProgressFn) -> Result<Vec<String>, String> {
-    let (files, root) = send(p, t, false, progress)?;
-    let mut log = vec![format!("✓ {}", trf("파일 {0}개를 {1}:{2} 에 올림", &[&files.len(), &t.ssh_host, &root]))];
-    log.extend(files.iter().take(30).map(|f| format!("· {f}")));
-    if files.len() > 30 {
-        log.push(format!("· {}", trf("… 외 {0}개", &[&(files.len() - 30)])));
-    }
+    let (files, root, total) = send(p, t, false, progress)?;
+    let mut log = vec![match total {
+        Some(total) => format!(
+            "✓ {}",
+            trf("파일 올리기 완료 — 로컬 파일 {0}개 중 바뀐 {1}개를 {2}:{3} 에 올렸습니다", &[&total, &files.len(), &t.ssh_host, &root])
+        ),
+        None => format!("✓ {}", trf("파일 {0}개를 {1}:{2} 에 올림", &[&files.len(), &t.ssh_host, &root])),
+    }];
+    // 올린 파일 전체 목록 (화면에는 앞부분만, 기록 파일에는 전부 남는다)
+    log.extend(files.iter().map(|f| format!("· {f}")));
     record(p, t, files.len() as u64, vec![], true, &log);
     Ok(log)
 }

@@ -22,9 +22,11 @@ use super::project::{ProjectDb, VhostProject, set_project_db};
 use super::settings::data_dir;
 use crate::i18n::{tr, trf};
 
-/// 로컬에 이미 있으면 서버 것으로 덮지 않을 설정 파일 (rsync 패턴, 로컬 경로)
-const LOCAL_CONFIGS: [(&str, &str); 5] = [
-    ("/files/config/", "files/config"),
+/// 로컬에 이미 있으면 서버 것으로 덮지 않을 설정 파일 (rsync 패턴, 로컬 경로).
+/// 폴더가 아니라 파일로 본다 — 빈 files/config 폴더만 있을 때 설정을 못 받는 일이 없게.
+const LOCAL_CONFIGS: [(&str, &str); 6] = [
+    ("/files/config/config.php", "files/config/config.php"),
+    ("/files/config/db.config.php", "files/config/db.config.php"),
     ("/.env", ".env"),
     ("/wp-config.php", "wp-config.php"),
     ("/data/dbconfig.php", "data/dbconfig.php"),
@@ -35,7 +37,7 @@ const LOCAL_CONFIGS: [(&str, &str); 5] = [
 fn protected(p: &VhostProject) -> Vec<&'static str> {
     LOCAL_CONFIGS
         .iter()
-        .filter(|(_, rel)| Path::new(&p.path).join(rel).exists())
+        .filter(|(_, rel)| Path::new(&p.path).join(rel).is_file())
         .map(|(pat, _)| *pat)
         .collect()
 }
@@ -77,7 +79,14 @@ fn protected_note(keep: &[&str]) -> Option<String> {
 }
 
 /// 셸·rsync 가 되면 rsync, 아니면 SFTP 로 받는다. (파일 목록, 실제 웹 경로, 방식)
-fn receive(p: &VhostProject, t: &DeployTarget, keep: &[&str], dry_run: bool, progress: &ProgressFn) -> Result<(Vec<String>, String, &'static str), String> {
+/// (받은 파일, 실제 웹 경로, 방식, 서버 파일 수 — rsync 는 모름)
+fn receive(
+    p: &VhostProject,
+    t: &DeployTarget,
+    keep: &[&str],
+    dry_run: bool,
+    progress: &ProgressFn,
+) -> Result<(Vec<String>, String, &'static str, Option<usize>), String> {
     progress(tr("서버에 접속하는 중…").to_string(), None);
     validate(t)?;
     match probe_shell(t) {
@@ -86,13 +95,13 @@ fn receive(p: &VhostProject, t: &DeployTarget, keep: &[&str], dry_run: bool, pro
             let mut t = t.clone();
             t.remote_path = root;
             progress(tr("rsync로 받는 중… (바뀐 파일만)").to_string(), None);
-            Ok((run_rsync(p, &t, keep, dry_run)?, t.remote_path, "rsync"))
+            Ok((run_rsync(p, &t, keep, dry_run)?, t.remote_path, "rsync", None))
         }
         _ => {
             let mut excludes = t.pull_excludes.clone();
             excludes.extend(keep.iter().map(|k| k.to_string()));
-            let (files, root) = super::sftp::pull(t, Path::new(&p.path), excludes, dry_run, progress.clone())?;
-            Ok((files, root, "SFTP"))
+            let (files, root, total) = super::sftp::pull(t, Path::new(&p.path), excludes, dry_run, progress.clone())?;
+            Ok((files, root, "SFTP", Some(total)))
         }
     }
 }
@@ -100,7 +109,7 @@ fn receive(p: &VhostProject, t: &DeployTarget, keep: &[&str], dry_run: bool, pro
 /// 받을 파일 목록만 본다
 pub fn preview_pull(p: &VhostProject, t: &DeployTarget, progress: &ProgressFn) -> Result<Vec<String>, String> {
     let keep = protected(p);
-    let (files, root, how) = receive(p, t, &keep, true, progress)?;
+    let (files, root, how, _) = receive(p, t, &keep, true, progress)?;
     let mut log = vec![format!("✓ {}", trf("받을 파일 {0}개 (로컬에만 있는 파일은 지우지 않음)", &[&files.len()]))];
     log.push(format!("· {}", trf("서버 경로 {0} · {1}", &[&root, &how])));
     log.extend(protected_note(&keep));
@@ -116,15 +125,39 @@ pub fn pull_files(p: &VhostProject, t: &DeployTarget, progress: &ProgressFn) -> 
     fs::create_dir_all(&p.path).map_err(|e| trf("프로젝트 폴더를 만들 수 없습니다: {0}", &[&e]))?;
     // 받기 전에 정한다 — 처음 받는 설정 파일은 서버 것을 받는다
     let keep = protected(p);
-    let (files, root, how) = receive(p, t, &keep, false, progress)?;
+    let (files, root, how, total) = receive(p, t, &keep, false, progress)?;
     let count = files.len() as u64;
-    let mut log = vec![format!(
-        "✓ {}",
-        trf("파일 {0}개를 {1}:{2} 에서 받음 ({3})", &[&count, &t.ssh_host, &root, &how])
-    )];
+    let mut log = vec![match total {
+        Some(total) => format!(
+            "✓ {}",
+            trf("파일 받기 완료 — 서버 파일 {0}개 중 바뀐 {1}개를 받았습니다 (나머지 {2}개는 이미 같음 · {3})", &[&total, &count, &(total - files.len()), &how])
+        ),
+        None => format!("✓ {}", trf("파일 {0}개를 {1}:{2} 에서 받음 ({3})", &[&count, &t.ssh_host, &root, &how])),
+    }];
+    log.push(format!("· {}", trf("서버 경로 {0} · {1}", &[&root, &how])));
     log.extend(protected_note(&keep));
+    // 받은 파일 전체 목록 (화면에는 앞부분만, 기록 파일에는 전부 남는다)
+    log.extend(files.iter().map(|f| format!("· {f}")));
     record_as(Direction::Pulled, p, t, count, vec![], true, &log);
     Ok(log)
+}
+
+/// 로컬 DB 의 표 수
+fn list_tables_count(user: &str, password: &str, db: &str, engine: DbEngine) -> Option<usize> {
+    let out = match engine {
+        DbEngine::MariaDb => Command::new("mysql")
+            .env("MYSQL_PWD", password)
+            .args([&format!("-u{user}"), "-N", "-B", "-e"])
+            .arg(format!("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '{}'", db.replace('\'', "")))
+            .output()
+            .ok()?,
+        DbEngine::PostgreSql => Command::new("psql")
+            .env("PGPASSWORD", password)
+            .args(["-h", "127.0.0.1", "-U", user, "-d", db, "-At", "-c", "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'"])
+            .output()
+            .ok()?,
+    };
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 /// 서버 DB 를 가져올 때 넣을 로컬 DB 이름 기본값: 사이트 설정 → 연결된 DB → 서버 DB 이름
@@ -210,6 +243,14 @@ pub fn pull_database(p: &VhostProject, t: &DeployTarget, local_name: &str, progr
         "✓ {}",
         trf("서버 {0} → 로컬 DB {1}", &[&format!("{}@{}", t.db_user, t.db_name), &local_name])
     ));
+    // 다 들어왔는지 — 덤프의 표 수와 로컬 DB 의 표 수를 맞춰 본다
+    let expected = fs::read_to_string(&server_dump).map(|s| s.matches("\nCREATE TABLE ").count()).unwrap_or(0);
+    let actual = list_tables_count(&creds.user, &creds.password, local_name, engine);
+    match actual {
+        Some(n) if n >= expected => log.push(format!("✓ {}", trf("테이블 {0}/{1}개 확인 — 모두 들어왔습니다", &[&n, &expected]))),
+        Some(n) => log.push(format!("✗ {}", trf("테이블 {0}/{1}개만 들어왔습니다 — 덤프 파일을 확인하세요", &[&n, &expected]))),
+        None => {}
+    }
 
     // 4) 사이트에 DB 를 연결하고, 사이트 설정의 DB 계정을 만든다
     if p.db.is_none() {
@@ -245,7 +286,7 @@ mod tests {
         let a = pull_rsync_args(&t, &p.path, &keep, false);
         fs::remove_dir_all(&dir).unwrap();
         assert!(!a.iter().any(|x| x.contains("--delete")), "로컬 파일을 지우면 안 됩니다");
-        assert!(a.contains(&"--exclude=/files/config/".to_string()), "로컬 설정을 덮으면 안 됩니다");
+        assert!(!a.contains(&"--exclude=/files/config/config.php".to_string()), "빈 폴더만 있으면 받아야 합니다");
         assert!(!a.contains(&"--exclude=/.env".to_string()));
         assert_eq!(a[a.len() - 2], "u@example.com:/var/www/site/");
         assert!(a[a.len() - 1].ends_with('/'));

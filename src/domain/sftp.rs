@@ -329,8 +329,8 @@ where
     Ok(())
 }
 
-/// 서버 → 로컬. dry_run 이면 받을 목록만. (받은 파일 목록, 실제 웹 경로)
-pub fn pull(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool, progress: ProgressFn) -> Result<(Vec<String>, String), String> {
+/// 서버 → 로컬. dry_run 이면 받을 목록만. (받은 파일 목록, 실제 웹 경로, 서버 파일 수)
+pub fn pull(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool, progress: ProgressFn) -> Result<(Vec<String>, String, usize), String> {
     let t = t.clone();
     let local = local.to_path_buf();
     run(move || async move {
@@ -338,10 +338,11 @@ pub fn pull(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool
         progress(tr("SFTP 접속됨 — 서버 파일 목록을 읽습니다").to_string(), None);
         let remote = list_remote(&s.sftp, &s.root, &excludes, &progress).await?;
         let here: HashMap<String, Entry> = list_local(&local, &[]).into_iter().map(|e| (e.rel.clone(), e)).collect();
+        let total = remote.len();
         let todo: Vec<Entry> = remote.into_iter().filter(|r| here.get(&r.rel).is_none_or(|l| !same(l, r.size, r.mtime))).collect();
         let names: Vec<String> = todo.iter().map(|e| e.rel.clone()).collect();
         if dry_run {
-            return Ok((names, s.root));
+            return Ok((names, s.root, total));
         }
         // 폴더를 먼저 만들고 8개씩 동시에 받는다
         for e in &todo {
@@ -350,22 +351,23 @@ pub fn pull(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool
             }
         }
         transfer_all(&todo, "받는 중 {0}/{1}개 · {2} / {3}", &progress, |e| download(&s.sftp, &s.root, &local, e)).await?;
-        Ok((names, s.root))
+        Ok((names, s.root, total))
     })
 }
 
-/// 로컬 → 서버. dry_run 이면 올릴 목록만. (올린 파일 목록, 실제 웹 경로)
-pub fn push(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool, progress: ProgressFn) -> Result<(Vec<String>, String), String> {
+/// 로컬 → 서버. dry_run 이면 올릴 목록만. (올린 파일 목록, 실제 웹 경로, 로컬 파일 수)
+pub fn push(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool, progress: ProgressFn) -> Result<(Vec<String>, String, usize), String> {
     let t = t.clone();
     let local = local.to_path_buf();
     run(move || async move {
         let s = connect(&t).await?;
         let mine = list_local(&local, &excludes);
         let there: HashMap<String, Entry> = list_remote(&s.sftp, &s.root, &[], &progress).await?.into_iter().map(|e| (e.rel.clone(), e)).collect();
+        let total = mine.len();
         let todo: Vec<Entry> = mine.into_iter().filter(|l| there.get(&l.rel).is_none_or(|r| !same(r, l.size, l.mtime))).collect();
         let names: Vec<String> = todo.iter().map(|e| e.rel.clone()).collect();
         if dry_run {
-            return Ok((names, s.root));
+            return Ok((names, s.root, total));
         }
         // 폴더를 위에서부터 만든 뒤 8개씩 동시에 올린다
         let mut dirs: Vec<String> = todo
@@ -385,7 +387,7 @@ pub fn push(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool
             }
         }
         transfer_all(&todo, "올리는 중 {0}/{1}개 · {2} / {3}", &progress, |e| upload(&s.sftp, &s.root, &local, e)).await?;
-        Ok((names, s.root))
+        Ok((names, s.root, total))
     })
 }
 
@@ -407,4 +409,5 @@ mod tests {
         assert!(!excluded("index.php", false, &pats));
     }
 }
+
 

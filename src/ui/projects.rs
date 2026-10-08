@@ -10,6 +10,7 @@ use crate::domain::settings::load_settings;
 use crate::domain::DbEngine;
 use crate::domain::deploy::{DeployTarget, default_target, load_target, preview_files, push_database, save_target, test_connection, upload_files};
 use crate::domain::ProgressFn;
+use crate::domain::history::{RunLog, list_run_logs, read_run_log, run_log_time, save_run_log};
 use crate::domain::site_config::{self, SiteKind};
 use crate::domain::pull::{default_local_db_name, preview_pull, pull_database, pull_files};
 use crate::domain::lan::human_bytes;
@@ -157,6 +158,10 @@ pub enum ProjectsMessage {
     DeployDone(Result<Vec<String>, String>),
     /// 진행 상황 (설명, 한 양/전체 양)
     DeployProgress(String, Option<(u64, u64)>),
+    /// 지난 작업 로그를 패널에 띄운다
+    ViewRunLog(std::path::PathBuf),
+    /// 기록 파일을 기본 앱으로 연다
+    OpenRunLog(std::path::PathBuf),
     /// 연결 시험 결과와 서버에서 찾은 웹 경로
     DeployTested(Vec<String>, Option<String>),
     DeployDbViaSsh(bool),
@@ -219,6 +224,10 @@ struct DeployForm {
     log_at: u8,
     /// 넣을 로컬 DB 가 이미 있는지 (가져오기 확인할 때 확인)
     local_db_exists: Option<bool>,
+    /// 지난 작업 기록
+    runs: Vec<RunLog>,
+    /// 지금 보이는 로그의 기록 파일
+    log_file: Option<std::path::PathBuf>,
     log: Vec<String>,
     /// DB 덮어쓰기 확인 중
     confirm_db: bool,
@@ -249,6 +258,8 @@ impl DeployForm {
             progress: None,
             log_at: 0,
             local_db_exists: None,
+            runs: list_run_logs(id),
+            log_file: None,
             log: Vec::new(),
             confirm_db: false,
             confirm_pull: None,
@@ -627,6 +638,19 @@ impl ProjectsState {
                 }
                 Task::none()
             }
+            ProjectsMessage::ViewRunLog(path) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.log = read_run_log(&path);
+                    d.log_file = Some(path);
+                    d.progress = None;
+                    d.log_at = 3;
+                }
+                Task::none()
+            }
+            ProjectsMessage::OpenRunLog(path) => {
+                open_url(&path.to_string_lossy());
+                Task::none()
+            }
             ProjectsMessage::DeployProgress(s, r) => {
                 if let Some(d) = self.deploy.as_mut() {
                     if d.busy.is_some() {
@@ -637,12 +661,17 @@ impl ProjectsState {
             }
             ProjectsMessage::DeployDone(r) => {
                 if let Some(d) = self.deploy.as_mut() {
+                    let title = d.busy.unwrap_or("").trim_end_matches('…').to_string();
                     d.busy = None;
-                    d.progress = None;
                     d.log = match r {
                         Ok(l) => l,
                         Err(e) => vec![format!("✗ {e}")],
                     };
+                    let ok = !d.log.iter().any(|l| l.starts_with('✗'));
+                    // 끝났음을 분명히 — 성공이면 막대를 100% 로 남긴다
+                    d.progress = ok.then(|| (tr("완료").to_string(), Some((1, 1))));
+                    d.log_file = save_run_log(&d.id, &title, &d.log);
+                    d.runs = list_run_logs(&d.id);
                 }
                 // 가져오기로 사이트에 DB 가 연결됐을 수 있다
                 self.projects = list_projects();
@@ -1752,6 +1781,25 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
         Space::with_height(8),
         push,
     ]);
+    // 지난 작업 기록
+    if !d.runs.is_empty() {
+        let mut list = column![theme::section_label(tr("최근 기록"))].spacing(4);
+        for r in d.runs.iter().take(8) {
+            list = list.push(
+                row![
+                    theme::dot(if r.ok { Tone::Success } else { Tone::Danger }),
+                    text(format!("{} · {}", run_log_time(r.at), r.title)).size(12).color(p().fg2).width(Length::Fill),
+                    btn(tr("보기"), None, Kind::Ghost).on_press(ProjectsMessage::ViewRunLog(r.path.clone())),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            );
+        }
+        body = body.push(Space::with_height(12)).push(list);
+        if d.log_at == 3 {
+            body = body.push_maybe(status_view(d));
+        }
+    }
 
     if d.confirm_db {
         body = body.push(Space::with_height(12)).push(theme::inset(
@@ -1779,12 +1827,13 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
 fn status_view(d: &DeployForm) -> Option<Element<'_, ProjectsMessage>> {
     let mut c = column![].spacing(6);
     let mut any = false;
-    if let (Some(busy), progress) = (d.busy, &d.progress) {
+    let current = match (d.busy, &d.progress) {
+        (_, Some((l, r))) => Some((l.clone(), *r)),
+        (Some(busy), None) => Some((busy.to_string(), None)),
+        (None, None) => None,
+    };
+    if let Some((label, ratio)) = current {
         any = true;
-        let (label, ratio) = match progress {
-            Some((l, r)) => (l.clone(), *r),
-            None => (busy.to_string(), None),
-        };
         match ratio {
             Some((done, total)) => {
                 let pct = (done as f64 / total.max(1) as f64 * 100.0).min(100.0);
@@ -1795,7 +1844,16 @@ fn status_view(d: &DeployForm) -> Option<Element<'_, ProjectsMessage>> {
     }
     if !d.log.is_empty() {
         any = true;
-        c = c.push(theme::log_block(d.log.clone(), ProjectsMessage::CopyText));
+        // 줄이 많으면(받은 파일 목록) 앞부분만 보이고, 전체는 기록 파일에
+        const SHOW: usize = 60;
+        let mut shown: Vec<String> = d.log.iter().take(SHOW).cloned().collect();
+        if d.log.len() > SHOW {
+            shown.push(format!("· {}", trf("… {0}줄 더 — 전체는 기록 파일에", &[&(d.log.len() - SHOW)])));
+        }
+        c = c.push(theme::log_block_full(shown, d.log.join("\n"), ProjectsMessage::CopyText));
+        if let Some(f) = &d.log_file {
+            c = c.push(btn(tr("기록 파일 열기"), Some(Icon::FileText), Kind::Ghost).on_press(ProjectsMessage::OpenRunLog(f.clone())));
+        }
     }
     any.then(|| column![Space::with_height(6), c].into())
 }

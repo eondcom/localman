@@ -131,3 +131,61 @@ pub fn summary_line(r: &TransferRecord) -> String {
     };
     format!("{arrow} {body}")
 }
+
+// ── 서버 작업 기록 (가져오기·올리기의 전체 로그) ──────────────────────────
+
+/// 지난 작업 한 건
+#[derive(Debug, Clone)]
+pub struct RunLog {
+    pub path: std::path::PathBuf,
+    pub at: u64,
+    pub title: String,
+    pub ok: bool,
+}
+
+fn run_log_dir(project_id: &str) -> std::path::PathBuf {
+    data_dir().join("run-logs").join(project_id.replace(['/', '\\', '.'], "_"))
+}
+
+/// 작업 로그 전체를 파일로 남긴다. 첫 줄은 제목. 프로젝트마다 최근 50개만 둔다.
+pub fn save_run_log(project_id: &str, title: &str, lines: &[String]) -> Option<std::path::PathBuf> {
+    let dir = run_log_dir(project_id);
+    std::fs::create_dir_all(&dir).ok()?;
+    let ok = !lines.iter().any(|l| l.starts_with('✗'));
+    let at = now();
+    let path = dir.join(format!("{at}-{}.log", if ok { "ok" } else { "fail" }));
+    let body = format!("{title}\n{}\n", lines.join("\n"));
+    std::fs::write(&path, body).ok()?;
+    let mut all = list_run_logs(project_id);
+    for old in all.drain(50.min(all.len())..) {
+        let _ = std::fs::remove_file(old.path);
+    }
+    Some(path)
+}
+
+/// 최근 것부터
+pub fn list_run_logs(project_id: &str) -> Vec<RunLog> {
+    let Ok(rd) = std::fs::read_dir(run_log_dir(project_id)) else { return Vec::new() };
+    let mut v: Vec<RunLog> = rd
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let stem = path.file_stem()?.to_str()?.to_string();
+            let (at, status) = stem.split_once('-')?;
+            let title = std::fs::read_to_string(&path).ok()?.lines().next().unwrap_or("").to_string();
+            Some(RunLog { at: at.parse().ok()?, title, ok: status == "ok", path })
+        })
+        .collect();
+    v.sort_by(|a, b| b.at.cmp(&a.at));
+    v
+}
+
+/// 기록 파일의 로그 줄 (제목 빼고)
+pub fn read_run_log(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path).map(|s| s.lines().skip(1).map(str::to_string).collect()).unwrap_or_default()
+}
+
+/// 목록에 보일 시각 (월/일 시:분)
+pub fn run_log_time(at: u64) -> String {
+    format_time(at)
+}

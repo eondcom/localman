@@ -468,6 +468,11 @@ pub fn result_line<'a, M: 'a>(line: impl AsRef<str>) -> Element<'a, M> {
 /// 결과·오류 줄 묶음 + [로그 복사] — 오류를 그대로 붙여 물어볼 수 있게
 pub fn log_block<'a, M: Clone + 'a>(lines: Vec<String>, copy: impl Fn(String) -> M) -> Element<'a, M> {
     let all = lines.join("\n");
+    log_block_full(lines, all, copy)
+}
+
+/// 화면에는 shown 만, [로그 복사]는 full 을
+pub fn log_block_full<'a, M: Clone + 'a>(lines: Vec<String>, all: String, copy: impl Fn(String) -> M) -> Element<'a, M> {
     let col = lines.into_iter().fold(column![].spacing(4), |c, l| c.push(result_line(l)));
     column![
         col,
