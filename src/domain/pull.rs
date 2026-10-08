@@ -15,7 +15,9 @@ use super::db_users::{ensure_site_user_for, site_db_account};
 use super::deploy::{
     DeployTarget, apply_auth, changed_files, check_db, dest, local_db, probe_shell, record_as, remote_dump_to, rsync_ssh, validate,
 };
+use super::ProgressFn;
 use super::history::{Direction, now};
+use super::lan::human_bytes;
 use super::project::{ProjectDb, VhostProject, set_project_db};
 use super::settings::data_dir;
 use crate::i18n::{tr, trf};
@@ -75,28 +77,30 @@ fn protected_note(keep: &[&str]) -> Option<String> {
 }
 
 /// 셸·rsync 가 되면 rsync, 아니면 SFTP 로 받는다. (파일 목록, 실제 웹 경로, 방식)
-fn receive(p: &VhostProject, t: &DeployTarget, keep: &[&str], dry_run: bool) -> Result<(Vec<String>, String, &'static str), String> {
+fn receive(p: &VhostProject, t: &DeployTarget, keep: &[&str], dry_run: bool, progress: &ProgressFn) -> Result<(Vec<String>, String, &'static str), String> {
+    progress(tr("서버에 접속하는 중…").to_string(), None);
     validate(t)?;
     match probe_shell(t) {
         Ok(Some(info)) if info.rsync => {
             let root = info.root.ok_or_else(|| trf("서버에 웹 경로가 없습니다: {0}", &[&t.remote_path]))?;
             let mut t = t.clone();
             t.remote_path = root;
+            progress(tr("rsync로 받는 중… (바뀐 파일만)").to_string(), None);
             Ok((run_rsync(p, &t, keep, dry_run)?, t.remote_path, "rsync"))
         }
         _ => {
             let mut excludes = t.pull_excludes.clone();
             excludes.extend(keep.iter().map(|k| k.to_string()));
-            let (files, root) = super::sftp::pull(t, Path::new(&p.path), excludes, dry_run)?;
+            let (files, root) = super::sftp::pull(t, Path::new(&p.path), excludes, dry_run, progress.clone())?;
             Ok((files, root, "SFTP"))
         }
     }
 }
 
 /// 받을 파일 목록만 본다
-pub fn preview_pull(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
+pub fn preview_pull(p: &VhostProject, t: &DeployTarget, progress: &ProgressFn) -> Result<Vec<String>, String> {
     let keep = protected(p);
-    let (files, root, how) = receive(p, t, &keep, true)?;
+    let (files, root, how) = receive(p, t, &keep, true, progress)?;
     let mut log = vec![format!("✓ {}", trf("받을 파일 {0}개 (로컬에만 있는 파일은 지우지 않음)", &[&files.len()]))];
     log.push(format!("· {}", trf("서버 경로 {0} · {1}", &[&root, &how])));
     log.extend(protected_note(&keep));
@@ -108,11 +112,11 @@ pub fn preview_pull(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, S
 }
 
 /// 서버의 파일을 프로젝트 폴더로 받는다
-pub fn pull_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
+pub fn pull_files(p: &VhostProject, t: &DeployTarget, progress: &ProgressFn) -> Result<Vec<String>, String> {
     fs::create_dir_all(&p.path).map_err(|e| trf("프로젝트 폴더를 만들 수 없습니다: {0}", &[&e]))?;
     // 받기 전에 정한다 — 처음 받는 설정 파일은 서버 것을 받는다
     let keep = protected(p);
-    let (files, root, how) = receive(p, t, &keep, false)?;
+    let (files, root, how) = receive(p, t, &keep, false, progress)?;
     let count = files.len() as u64;
     let mut log = vec![format!(
         "✓ {}",
@@ -125,6 +129,9 @@ pub fn pull_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, Str
 
 /// 서버 DB 를 가져올 때 넣을 로컬 DB 이름 기본값: 사이트 설정 → 연결된 DB → 서버 DB 이름
 pub fn default_local_db_name(p: &VhostProject, t: &DeployTarget) -> String {
+    if !t.local_db.trim().is_empty() {
+        return t.local_db.trim().to_string();
+    }
     site_db_account(Path::new(&p.path))
         .map(|a| a.database)
         .or_else(|| local_db(p).map(|d| d.name))
@@ -138,7 +145,7 @@ fn backups_dir() -> Result<PathBuf, String> {
 }
 
 /// 서버 DB 를 이 PC 의 `local_name` DB 에 넣는다 (그 DB 는 서버 것과 똑같아진다)
-pub fn pull_database(p: &VhostProject, t: &DeployTarget, local_name: &str) -> Result<Vec<String>, String> {
+pub fn pull_database(p: &VhostProject, t: &DeployTarget, local_name: &str, progress: &ProgressFn) -> Result<Vec<String>, String> {
     check_db(t)?;
     let local_name = local_name.trim();
     if local_name.is_empty() || local_name.contains(['`', '/', '\\', '\'', '"']) {
@@ -155,7 +162,22 @@ pub fn pull_database(p: &VhostProject, t: &DeployTarget, local_name: &str) -> Re
 
     // 1) 서버 DB 받기 (받은 덤프는 보관한다)
     let server_dump = dir.join(format!("{}-server-{}-{stamp}.sql", p.id, t.db_name.trim()));
-    if let Err(e) = remote_dump_to(engine, t, &server_dump) {
+    // 덤프하는 동안 받은 크기를 알린다 (전체 크기는 미리 알 수 없다)
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher = {
+        let (done, path, progress) = (done.clone(), server_dump.clone(), progress.clone());
+        std::thread::spawn(move || {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                progress(trf("서버 DB 받는 중… {0}", &[&human_bytes(size)]), None);
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        })
+    };
+    let dumped = remote_dump_to(engine, t, &server_dump);
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = watcher.join();
+    if let Err(e) = dumped {
         let _ = fs::remove_file(&server_dump);
         return Err(trf("서버 DB를 받지 못했습니다: {0}", &[&e]));
     }
@@ -169,6 +191,7 @@ pub fn pull_database(p: &VhostProject, t: &DeployTarget, local_name: &str) -> Re
     // 2) 같은 이름의 로컬 DB 가 있으면 백업한 뒤 비운다 (서버 것과 똑같이 맞추려고)
     let exists = list_databases(engine, &creds.user, &creds.password).iter().any(|d| d.name == local_name);
     if exists {
+        progress(trf("로컬 DB {0} 백업 중…", &[&local_name]), None);
         let backup = dir.join(format!("{}-local-{local_name}-{stamp}.sql", p.id));
         backup_database(engine, &creds.user, &creds.password, local_name, &backup.to_string_lossy())
             .map_err(|e| trf("로컬 DB를 백업하지 못해 멈췄습니다 (바꾸지 않음): {0}", &[&e.trim()]))?;
@@ -176,7 +199,11 @@ pub fn pull_database(p: &VhostProject, t: &DeployTarget, local_name: &str) -> Re
         drop_database(engine, &creds.user, &creds.password, local_name).map_err(|e| e.trim().to_string())?;
     }
 
-    // 3) 넣기
+    if !exists {
+        log.push(format!("✓ {}", trf("로컬 DB {0} 새로 만듦", &[&local_name])));
+    }
+    // 3) 넣기 (없으면 만든다)
+    progress(trf("로컬 DB {0}에 넣는 중… ({1})", &[&local_name, &human_bytes(size)]), None);
     import_sql(engine, &creds.user, &creds.password, local_name, &server_dump.to_string_lossy(), true)
         .map_err(|e| trf("로컬 DB에 넣지 못했습니다: {0}", &[&e.trim()]))?;
     log.push(format!(

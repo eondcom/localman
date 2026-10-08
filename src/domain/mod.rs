@@ -86,3 +86,11 @@ mod atomic_tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// 오래 걸리는 작업의 진행 상황: (설명, Some((한 양, 전체 양)))
+pub type ProgressFn = std::sync::Arc<dyn Fn(String, Option<(u64, u64)>) + Send + Sync>;
+
+/// 진행 상황을 보여줄 곳이 없을 때 (MCP·API)
+pub fn no_progress() -> ProgressFn {
+    std::sync::Arc::new(|_, _| {})
+}

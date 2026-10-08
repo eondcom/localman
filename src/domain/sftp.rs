@@ -11,10 +11,12 @@ use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, load_secret_key};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileAttributes;
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use super::ProgressFn;
 use super::deploy::DeployTarget;
+use super::lan::human_bytes;
 use super::settings::data_dir;
 use crate::i18n::{tr, trf};
 
@@ -199,9 +201,10 @@ pub struct Entry {
 }
 
 /// 서버 파일 목록. 폴더 목록을 한 단계씩 16개까지 동시에 읽는다 (한 번에 하나씩 읽으면 왕복 시간이 쌓여 느리다).
-async fn list_remote(sftp: &SftpSession, root: &str, excludes: &[String]) -> Result<Vec<Entry>, String> {
+async fn list_remote(sftp: &SftpSession, root: &str, excludes: &[String], progress: &ProgressFn) -> Result<Vec<Entry>, String> {
     let mut out = Vec::new();
     let mut level = vec![String::new()];
+    let mut dirs_read = 0usize;
     while !level.is_empty() {
         let mut next = Vec::new();
         for chunk in level.chunks(16) {
@@ -228,6 +231,8 @@ async fn list_remote(sftp: &SftpSession, root: &str, excludes: &[String]) -> Res
                 }
             }
         }
+        dirs_read += level.len();
+        progress(trf("서버 파일 목록 읽는 중… 폴더 {0}개 · 파일 {1}개", &[&dirs_read, &out.len()]), None);
         level = next;
     }
     Ok(out)
@@ -264,11 +269,12 @@ fn same(a: &Entry, size: u64, mtime: u64) -> bool {
 
 // ── 받기 / 올리기 ───────────────────────────────────────────────────────
 
-async fn download(sftp: &SftpSession, root: &str, local: &Path, e: &Entry) -> Result<(), String> {
+async fn download(sftp: &SftpSession, root: &str, local: &Path, e: &Entry) -> Result<u64, String> {
     let dest = local.join(&e.rel);
-    let tmp = dest.with_extension("localman-part");
+    // 이름 뒤에 붙인다 — 확장자만 바꾸면 a.php·a.txt 를 동시에 받을 때 임시 파일이 겹친다
+    let tmp = PathBuf::from(format!("{}.localman-part", dest.display()));
     let mut f = sftp.open(format!("{root}/{}", e.rel)).await.map_err(|err| trf("{0} 받기 실패: {1}", &[&e.rel, &err]))?;
-    let mut out = tokio::fs::File::create(&tmp).await.map_err(|err| err.to_string())?;
+    let mut out = tokio::fs::File::create(&tmp).await.map_err(|err| trf("{0}: {1}", &[&tmp.display(), &err]))?;
     let mut buf = vec![0u8; 256 * 1024];
     loop {
         let n = f.read(&mut buf).await.map_err(|err| trf("{0} 받기 실패: {1}", &[&e.rel, &err]))?;
@@ -279,13 +285,13 @@ async fn download(sftp: &SftpSession, root: &str, local: &Path, e: &Entry) -> Re
     }
     out.flush().await.map_err(|err| err.to_string())?;
     drop(out);
-    std::fs::rename(&tmp, &dest).map_err(|err| err.to_string())?;
+    std::fs::rename(&tmp, &dest).map_err(|err| trf("{0}: {1}", &[&dest.display(), &err]))?;
     // 다음에 같은 파일로 알아보도록 서버 시각을 그대로 붙인다
     let _ = filetime::set_file_mtime(&dest, filetime::FileTime::from_unix_time(e.mtime as i64, 0));
-    Ok(())
+    Ok(e.size)
 }
 
-async fn upload(sftp: &SftpSession, root: &str, local: &Path, e: &Entry) -> Result<(), String> {
+async fn upload(sftp: &SftpSession, root: &str, local: &Path, e: &Entry) -> Result<u64, String> {
     let remote = format!("{root}/{}", e.rel);
     let mut src = tokio::fs::File::open(local.join(&e.rel)).await.map_err(|err| err.to_string())?;
     let mut f = sftp.create(remote.clone()).await.map_err(|err| trf("{0} 올리기 실패: {1}", &[&e.rel, &err]))?;
@@ -300,16 +306,37 @@ async fn upload(sftp: &SftpSession, root: &str, local: &Path, e: &Entry) -> Resu
     f.shutdown().await.map_err(|err| err.to_string())?;
     let attrs = FileAttributes { mtime: Some(e.mtime as u32), atime: Some(e.mtime as u32), ..FileAttributes::empty() };
     let _ = sftp.set_metadata(remote, attrs).await;
+    Ok(e.size)
+}
+
+/// 8개씩 동시에 돌리며 끝날 때마다 진행 상황을 알린다
+async fn transfer_all<'a, F, Fut>(todo: &'a [Entry], label: &'static str, progress: &ProgressFn, f: F) -> Result<(), String>
+where
+    F: Fn(&'a Entry) -> Fut,
+    Fut: std::future::Future<Output = Result<u64, String>>,
+{
+    let total: u64 = todo.iter().map(|e| e.size).sum();
+    let (mut files, mut bytes) = (0usize, 0u64);
+    let mut st = futures::stream::iter(todo.iter().map(f)).buffer_unordered(8);
+    while let Some(r) = st.next().await {
+        bytes += r?;
+        files += 1;
+        progress(
+            trf(label, &[&files, &todo.len(), &human_bytes(bytes), &human_bytes(total)]),
+            Some((bytes, total.max(1))),
+        );
+    }
     Ok(())
 }
 
 /// 서버 → 로컬. dry_run 이면 받을 목록만. (받은 파일 목록, 실제 웹 경로)
-pub fn pull(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool) -> Result<(Vec<String>, String), String> {
+pub fn pull(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool, progress: ProgressFn) -> Result<(Vec<String>, String), String> {
     let t = t.clone();
     let local = local.to_path_buf();
     run(move || async move {
         let s = connect(&t).await?;
-        let remote = list_remote(&s.sftp, &s.root, &excludes).await?;
+        progress(tr("SFTP 접속됨 — 서버 파일 목록을 읽습니다").to_string(), None);
+        let remote = list_remote(&s.sftp, &s.root, &excludes, &progress).await?;
         let here: HashMap<String, Entry> = list_local(&local, &[]).into_iter().map(|e| (e.rel.clone(), e)).collect();
         let todo: Vec<Entry> = remote.into_iter().filter(|r| here.get(&r.rel).is_none_or(|l| !same(l, r.size, r.mtime))).collect();
         let names: Vec<String> = todo.iter().map(|e| e.rel.clone()).collect();
@@ -322,20 +349,19 @@ pub fn pull(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool
                 std::fs::create_dir_all(dir).map_err(|err| trf("{0}: {1}", &[&dir.display(), &err]))?;
             }
         }
-        let jobs = todo.iter().map(|e| download(&s.sftp, &s.root, &local, e));
-        futures::stream::iter(jobs).buffer_unordered(8).try_collect::<Vec<()>>().await?;
+        transfer_all(&todo, "받는 중 {0}/{1}개 · {2} / {3}", &progress, |e| download(&s.sftp, &s.root, &local, e)).await?;
         Ok((names, s.root))
     })
 }
 
 /// 로컬 → 서버. dry_run 이면 올릴 목록만. (올린 파일 목록, 실제 웹 경로)
-pub fn push(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool) -> Result<(Vec<String>, String), String> {
+pub fn push(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool, progress: ProgressFn) -> Result<(Vec<String>, String), String> {
     let t = t.clone();
     let local = local.to_path_buf();
     run(move || async move {
         let s = connect(&t).await?;
         let mine = list_local(&local, &excludes);
-        let there: HashMap<String, Entry> = list_remote(&s.sftp, &s.root, &[]).await?.into_iter().map(|e| (e.rel.clone(), e)).collect();
+        let there: HashMap<String, Entry> = list_remote(&s.sftp, &s.root, &[], &progress).await?.into_iter().map(|e| (e.rel.clone(), e)).collect();
         let todo: Vec<Entry> = mine.into_iter().filter(|l| there.get(&l.rel).is_none_or(|r| !same(r, l.size, l.mtime))).collect();
         let names: Vec<String> = todo.iter().map(|e| e.rel.clone()).collect();
         if dry_run {
@@ -358,8 +384,7 @@ pub fn push(t: &DeployTarget, local: &Path, excludes: Vec<String>, dry_run: bool
                 s.sftp.create_dir(p.clone()).await.map_err(|err| trf("{0} 폴더 만들기 실패: {1}", &[&p, &err]))?;
             }
         }
-        let jobs = todo.iter().map(|e| upload(&s.sftp, &s.root, &local, e));
-        futures::stream::iter(jobs).buffer_unordered(8).try_collect::<Vec<()>>().await?;
+        transfer_all(&todo, "올리는 중 {0}/{1}개 · {2} / {3}", &progress, |e| upload(&s.sftp, &s.root, &local, e)).await?;
         Ok((names, s.root))
     })
 }

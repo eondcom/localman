@@ -65,6 +65,9 @@ pub struct DeployTarget {
     /// 서버에서 가져올 때 받지 않을 경로
     #[serde(default = "default_pull_excludes")]
     pub pull_excludes: Vec<String>,
+    /// 서버 DB 를 넣을 로컬 DB 이름 (비우면 사이트 설정·서버 DB 이름으로)
+    #[serde(default)]
+    pub local_db: String,
 }
 
 impl DeployTarget {
@@ -249,8 +252,11 @@ fn remote_db_cmd(engine: DbEngine, t: &DeployTarget, program: &str) -> Command {
         DbEngine::MariaDb => {
             // 비밀번호는 명령줄(ps 로 보임) 대신 환경 변수로 넘긴다
             c.env("MYSQL_PWD", &t.db_password)
-                .args(["-h", t.db_host.trim(), "-P", &t.db_port.to_string(), "-u", t.db_user.trim()])
-                .arg("--connect-timeout=10");
+                .args(["-h", t.db_host.trim(), "-P", &t.db_port.to_string(), "-u", t.db_user.trim()]);
+            // mysqldump 에는 이 옵션이 없다 ("unknown variable")
+            if program == "mysql" {
+                c.arg("--connect-timeout=10");
+            }
         }
         DbEngine::PostgreSql => {
             c.env("PGPASSWORD", &t.db_password)
@@ -540,12 +546,13 @@ fn rsync(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<Vec<String
 }
 
 /// 올라갈 파일 목록만 본다 (실제로 보내지 않음)
-pub fn preview_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
-    send(p, t, true).map(|(files, _)| files)
+pub fn preview_files(p: &VhostProject, t: &DeployTarget, progress: &super::ProgressFn) -> Result<Vec<String>, String> {
+    send(p, t, true, progress).map(|(files, _)| files)
 }
 
 /// 셸·rsync 가 되면 rsync, 아니면 SFTP 로 올린다. (파일 목록, 실제 웹 경로)
-fn send(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<(Vec<String>, String), String> {
+fn send(p: &VhostProject, t: &DeployTarget, dry_run: bool, progress: &super::ProgressFn) -> Result<(Vec<String>, String), String> {
+    progress(tr("서버에 접속하는 중…").to_string(), None);
     validate(t)?;
     // 로컬 DB 로 바꾼 설정 파일과 그 서버 원본 백업은 늘 뺀다 (운영 사이트가 로컬 DB 를 보게 되면 안 된다)
     let mut t = t.clone();
@@ -561,20 +568,21 @@ fn send(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<(Vec<String
             if let Some(r) = info.root {
                 t.remote_path = r;
             }
+            progress(tr("rsync로 올리는 중… (바뀐 파일만)").to_string(), None);
             Ok((rsync(p, &t, dry_run)?, t.remote_path))
         }
         _ => {
             if !Path::new(&p.path).is_dir() {
                 return Err(trf("프로젝트 폴더가 없습니다: {0}", &[&p.path]));
             }
-            super::sftp::push(t, Path::new(&p.path), t.excludes.clone(), dry_run)
+            super::sftp::push(t, Path::new(&p.path), t.excludes.clone(), dry_run, progress.clone())
         }
     }
 }
 
 /// 바뀐 파일을 서버에 올린다. 서버에만 있는 파일은 그대로 둔다.
-pub fn upload_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
-    let (files, root) = send(p, t, false)?;
+pub fn upload_files(p: &VhostProject, t: &DeployTarget, progress: &super::ProgressFn) -> Result<Vec<String>, String> {
+    let (files, root) = send(p, t, false, progress)?;
     let mut log = vec![format!("✓ {}", trf("파일 {0}개를 {1}:{2} 에 올림", &[&files.len(), &t.ssh_host, &root]))];
     log.extend(files.iter().take(30).map(|f| format!("· {f}")));
     if files.len() > 30 {
@@ -714,4 +722,5 @@ mod tests {
         assert_eq!(changed_files(open), vec!["x.txt"]);
     }
 }
+
 

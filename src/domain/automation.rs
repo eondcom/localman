@@ -289,11 +289,11 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
             let db = args.get("db").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut log = Vec::new();
             if files {
-                log.extend(pull_files(&p, &t)?);
+                log.extend(pull_files(&p, &t, &super::no_progress())?);
             }
             if db {
                 let local = str_arg(args, "local_db").map(str::to_string).unwrap_or_else(|| default_local_db_name(&p, &t));
-                log.extend(pull_database(&p, &t, &local)?);
+                log.extend(pull_database(&p, &t, &local, &super::no_progress())?);
             }
             Ok(json!({ "log": log }))
         }

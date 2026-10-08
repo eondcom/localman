@@ -9,6 +9,7 @@ use super::theme::{
 use crate::domain::settings::load_settings;
 use crate::domain::DbEngine;
 use crate::domain::deploy::{DeployTarget, default_target, load_target, preview_files, push_database, save_target, test_connection, upload_files};
+use crate::domain::ProgressFn;
 use crate::domain::site_config::{self, SiteKind};
 use crate::domain::pull::{default_local_db_name, preview_pull, pull_database, pull_files};
 use crate::domain::lan::human_bytes;
@@ -154,6 +155,8 @@ pub enum ProjectsMessage {
     DeployDbCancel,
     DeployDbConfirm,
     DeployDone(Result<Vec<String>, String>),
+    /// 진행 상황 (설명, 한 양/전체 양)
+    DeployProgress(String, Option<(u64, u64)>),
     /// 연결 시험 결과와 서버에서 찾은 웹 경로
     DeployTested(Vec<String>, Option<String>),
     DeployDbViaSsh(bool),
@@ -210,6 +213,12 @@ struct DeployForm {
     /// 서버 DB 를 넣을 로컬 DB 이름
     local_db: String,
     busy: Option<&'static str>,
+    /// 진행 중인 작업의 지금 상황
+    progress: Option<(String, Option<(u64, u64)>)>,
+    /// 로그를 보일 구역 (0: 위, 1: 가져오기, 2: 올리기)
+    log_at: u8,
+    /// 넣을 로컬 DB 가 이미 있는지 (가져오기 확인할 때 확인)
+    local_db_exists: Option<bool>,
     log: Vec<String>,
     /// DB 덮어쓰기 확인 중
     confirm_db: bool,
@@ -237,6 +246,9 @@ impl DeployForm {
             pull_excludes: t.pull_excludes.join(", "),
             local_db,
             busy: None,
+            progress: None,
+            log_at: 0,
+            local_db_exists: None,
             log: Vec::new(),
             confirm_db: false,
             confirm_pull: None,
@@ -262,6 +274,7 @@ impl DeployForm {
             ssh_password: self.ssh_password.clone(),
             db_via_ssh: self.db_via_ssh,
             pull_excludes: self.pull_excludes.split(',').map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect(),
+            local_db: self.local_db.trim().to_string(),
         })
     }
 }
@@ -451,6 +464,7 @@ impl ProjectsState {
             }
             ProjectsMessage::DeploySave => {
                 if let Some(d) = self.deploy.as_mut() {
+                    d.log_at = 0;
                     d.log = match d.to_target().and_then(|t| save_target(&d.id, &t)) {
                         Ok(()) => vec![format!("✓ {}", tr("서버 정보를 저장했습니다"))],
                         Err(e) => vec![format!("✗ {e}")],
@@ -467,7 +481,30 @@ impl ProjectsState {
             ProjectsMessage::PullDbAsk(all) => {
                 if let Some(d) = self.deploy.as_mut() {
                     d.confirm_db = false;
-                    d.confirm_pull = Some(all);
+                    // 시작하기 전에 빠진 값을 알린다 (파일을 다 받고 나서야 실패하지 않게)
+                    let missing = if d.db_name.trim().is_empty() || d.db_user.trim().is_empty() {
+                        Some(tr("서버 DB 정보(DB 이름·사용자)를 입력하세요."))
+                    } else if d.local_db.trim().is_empty() {
+                        Some(tr("넣을 로컬 DB 이름을 입력하세요 (없으면 새로 만듭니다)."))
+                    } else {
+                        None
+                    };
+                    d.log_at = 1;
+                    match missing {
+                        Some(m) => {
+                            d.confirm_pull = None;
+                            d.log = vec![format!("✗ {m}")];
+                        }
+                        None => {
+                            d.log.clear();
+                            let name = d.local_db.trim().to_string();
+                            d.local_db_exists = crate::domain::load_db_connections()
+                                .into_iter()
+                                .find(|c| c.engine == crate::domain::DbEngine::MariaDb)
+                                .map(|c| crate::domain::list_databases(c.engine, &c.user, &c.password).iter().any(|x| x.name == name));
+                            d.confirm_pull = Some(all);
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -492,12 +529,18 @@ impl ProjectsState {
                     d.log = vec![format!("✗ {e}")];
                     return Task::none();
                 }
+                d.log_at = match msg {
+                    ProjectsMessage::PullPreview | ProjectsMessage::PullFiles | ProjectsMessage::PullConfirm => 1,
+                    ProjectsMessage::DeployPreview | ProjectsMessage::DeployUpload | ProjectsMessage::DeployDbConfirm => 2,
+                    _ => 0,
+                };
                 let pull_all = d.confirm_pull == Some(true);
                 let local_db = d.local_db.trim().to_string();
                 d.confirm_db = false;
                 d.confirm_pull = None;
                 d.log.clear();
-                let (label, job): (&'static str, Box<dyn FnOnce() -> Result<Vec<String>, String> + Send>) = match msg {
+                type Job = Box<dyn FnOnce(&ProgressFn) -> Result<Vec<String>, String> + Send>;
+                let (label, job): (&'static str, Job) = match msg {
                     ProjectsMessage::DeployTest => {
                         d.busy = Some(tr("연결 시험 중…"));
                         return Task::perform(
@@ -509,8 +552,8 @@ impl ProjectsState {
                             |(log, found)| ProjectsMessage::DeployTested(log, found),
                         );
                     }
-                    ProjectsMessage::DeployPreview => (tr("올라갈 파일을 보는 중…"), Box::new(move || {
-                        preview_files(&p, &t).map(|files| {
+                    ProjectsMessage::DeployPreview => (tr("올라갈 파일을 보는 중…"), Box::new(move |pr| {
+                        preview_files(&p, &t, pr).map(|files| {
                             let mut log = vec![format!("✓ {}", trf("올라갈 파일 {0}개 (서버에만 있는 파일은 지우지 않음)", &[&files.len()]))];
                             log.extend(files.iter().take(40).map(|f| format!("· {f}")));
                             if files.len() > 40 {
@@ -519,33 +562,45 @@ impl ProjectsState {
                             log
                         })
                     })),
-                    ProjectsMessage::DeployUpload => (tr("파일 올리는 중…"), Box::new(move || upload_files(&p, &t))),
-                    ProjectsMessage::PullPreview => (tr("받을 파일을 보는 중…"), Box::new(move || preview_pull(&p, &t))),
-                    ProjectsMessage::PullFiles => (tr("서버에서 파일 받는 중…"), Box::new(move || pull_files(&p, &t))),
+                    ProjectsMessage::DeployUpload => (tr("파일 올리는 중…"), Box::new(move |pr| upload_files(&p, &t, pr))),
+                    ProjectsMessage::PullPreview => (tr("받을 파일을 보는 중…"), Box::new(move |pr| preview_pull(&p, &t, pr))),
+                    ProjectsMessage::PullFiles => (tr("서버에서 파일 받는 중…"), Box::new(move |pr| pull_files(&p, &t, pr))),
                     ProjectsMessage::PullConfirm => (
                         if pull_all { tr("서버에서 파일·DB 받는 중…") } else { tr("서버 DB 받는 중…") },
-                        Box::new(move || {
+                        Box::new(move |pr| {
                             let mut log = Vec::new();
                             if pull_all {
-                                log.extend(pull_files(&p, &t)?);
+                                log.extend(pull_files(&p, &t, pr)?);
                             }
-                            // 파일을 받은 뒤라야 사이트 설정(DB 계정)을 읽을 수 있다
-                            log.extend(pull_database(&p, &t, &local_db)?);
+                            // 파일을 받은 뒤라야 사이트 설정(DB 계정)을 읽을 수 있다.
+                            // DB 가 실패해도 받은 파일 기록은 남긴다
+                            match pull_database(&p, &t, &local_db, pr) {
+                                Ok(l) => log.extend(l),
+                                Err(e) => log.push(format!("✗ {e}")),
+                            }
                             Ok(log)
                         }),
                     ),
-                    _ => (tr("원격 DB 백업 후 넣는 중…"), Box::new(move || push_database(&p, &t))),
+                    _ => (tr("원격 DB 백업 후 넣는 중…"), Box::new(move |_| push_database(&p, &t))),
                 };
                 d.busy = Some(label);
-                Task::perform(
-                    async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) },
-                    ProjectsMessage::DeployDone,
-                )
+                d.progress = None;
+                // 작업 스레드가 진행 상황을 보내고, 끝나면 결과를 보낸다
+                let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+                std::thread::spawn(move || {
+                    let ptx = tx.clone();
+                    let pr: ProgressFn = std::sync::Arc::new(move |s, r| {
+                        let _ = ptx.unbounded_send(ProjectsMessage::DeployProgress(s, r));
+                    });
+                    let _ = tx.unbounded_send(ProjectsMessage::DeployDone(job(&pr)));
+                });
+                Task::run(rx, |m| m)
             }
             ProjectsMessage::DeployDbAsk => {
                 if let Some(d) = self.deploy.as_mut() {
                     d.confirm_db = true;
                     d.confirm_pull = None;
+                    d.log_at = 2;
                 }
                 Task::none()
             }
@@ -572,9 +627,18 @@ impl ProjectsState {
                 }
                 Task::none()
             }
+            ProjectsMessage::DeployProgress(s, r) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    if d.busy.is_some() {
+                        d.progress = Some((s, r));
+                    }
+                }
+                Task::none()
+            }
             ProjectsMessage::DeployDone(r) => {
                 if let Some(d) = self.deploy.as_mut() {
                     d.busy = None;
+                    d.progress = None;
                     d.log = match r {
                         Ok(l) => l,
                         Err(e) => vec![format!("✗ {e}")],
@@ -1602,15 +1666,12 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
         .spacing(10),
     ];
 
-    let mut common = row![
+    let common = row![
         action(tr("저장"), Icon::Check, Kind::Flat, ProjectsMessage::DeploySave),
         action(tr("연결 시험"), Icon::Zap, Kind::Flat, ProjectsMessage::DeployTest),
     ]
     .spacing(6)
     .align_y(iced::Alignment::Center);
-    if let Some(label) = d.busy {
-        common = common.push(Space::with_width(8)).push(status(label, Tone::Primary));
-    }
 
     // 서버에서 가져오기 (↓)
     let pull = theme::inset(
@@ -1638,6 +1699,8 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
             ]
             .spacing(6),
         ]
+        .push_maybe(d.confirm_pull.map(|all| pull_confirm(d, all)))
+        .push_maybe(if d.log_at == 1 { status_view(d) } else { None })
         .spacing(6),
     );
 
@@ -1660,6 +1723,7 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
             ]
             .spacing(6),
         ]
+        .push_maybe(if d.log_at == 2 { status_view(d) } else { None })
         .spacing(6),
     );
 
@@ -1678,30 +1742,17 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
         db,
         Space::with_height(12),
         common,
+    ];
+    if d.log_at == 0 {
+        body = body.push_maybe(status_view(d));
+    }
+    body = body.push(column![
         Space::with_height(12),
         pull,
         Space::with_height(8),
         push,
-    ];
+    ]);
 
-    if let Some(all) = d.confirm_pull {
-        let what = if all { tr("파일과 DB를 서버 것으로 받습니다") } else { tr("DB를 서버 것으로 받습니다") };
-        body = body.push(Space::with_height(12)).push(theme::inset(
-            column![
-                row![icon(Icon::Download, 14.0, p().fg), text(what).size(14).font(theme::SEMIBOLD).color(p().fg)]
-                    .spacing(8)
-                    .align_y(iced::Alignment::Center),
-                muted(trf("이 PC의 DB '{0}'를 서버 '{1}'와 똑같이 바꿉니다. 바꾸기 전에 로컬 DB를 백업해 둡니다.", &[&d.local_db, &d.db_name])),
-                Space::with_height(6),
-                row![
-                    btn(tr("가져오기"), Some(Icon::Download), Kind::Primary).on_press(ProjectsMessage::PullConfirm),
-                    btn(tr("취소"), None, Kind::Ghost).on_press(ProjectsMessage::DeployDbCancel),
-                ]
-                .spacing(6),
-            ]
-            .spacing(4),
-        ));
-    }
     if d.confirm_db {
         body = body.push(Space::with_height(12)).push(theme::inset(
             column![
@@ -1721,10 +1772,59 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
             .spacing(4),
         ));
     }
-    if !d.log.is_empty() {
-        body = body.push(Space::with_height(12)).push(theme::log_block(d.log.clone(), ProjectsMessage::CopyText));
-    }
     card(body)
+}
+
+/// 진행 상황(막대)과 결과 로그 — 마지막으로 누른 버튼이 있는 구역 안에 보여 준다
+fn status_view(d: &DeployForm) -> Option<Element<'_, ProjectsMessage>> {
+    let mut c = column![].spacing(6);
+    let mut any = false;
+    if let (Some(busy), progress) = (d.busy, &d.progress) {
+        any = true;
+        let (label, ratio) = match progress {
+            Some((l, r)) => (l.clone(), *r),
+            None => (busy.to_string(), None),
+        };
+        match ratio {
+            Some((done, total)) => {
+                let pct = (done as f64 / total.max(1) as f64 * 100.0).min(100.0);
+                c = c.push(theme::progress(total as f32, done as f32, Tone::Primary)).push(muted(format!("{pct:.0}% · {label}")));
+            }
+            None => c = c.push(status(label, Tone::Primary)),
+        }
+    }
+    if !d.log.is_empty() {
+        any = true;
+        c = c.push(theme::log_block(d.log.clone(), ProjectsMessage::CopyText));
+    }
+    any.then(|| column![Space::with_height(6), c].into())
+}
+
+/// "서버에서 가져오기" 확인 — 가져오기 버튼 바로 아래에 띄운다
+fn pull_confirm(d: &DeployForm, all: bool) -> Element<'_, ProjectsMessage> {
+    let what = if all { tr("파일과 DB를 서버 것으로 받습니다") } else { tr("DB를 서버 것으로 받습니다") };
+    column![
+        Space::with_height(6),
+        row![icon(Icon::Download, 14.0, p().primary_fg), text(what).size(14).font(theme::SEMIBOLD).color(p().fg)]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        muted(match d.local_db_exists {
+            Some(false) => trf("이 PC에 DB '{0}'가 없습니다 — 새로 만든 뒤 서버 '{1}'를 받아 넣습니다.", &[&d.local_db, &d.db_name]),
+            _ => trf("이 PC의 DB '{0}'를 서버 '{1}'와 똑같이 바꿉니다. 바꾸기 전에 로컬 DB를 백업해 둡니다.", &[&d.local_db, &d.db_name]),
+        }),
+        row![
+            btn(
+                if d.local_db_exists == Some(false) { tr("DB 만들고 가져오기") } else { tr("가져오기") },
+                Some(Icon::Download),
+                Kind::Primary,
+            )
+            .on_press(ProjectsMessage::PullConfirm),
+            btn(tr("취소"), None, Kind::Ghost).on_press(ProjectsMessage::DeployDbCancel),
+        ]
+        .spacing(6),
+    ]
+    .spacing(6)
+    .into()
 }
 
 // 사이트 손보기 패널 — 관리자 비밀번호 / 로컬 DB 로 설정 바꾸기
