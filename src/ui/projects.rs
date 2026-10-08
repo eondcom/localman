@@ -81,6 +81,11 @@ struct SiteTool {
     has_backup: bool,
     running: bool,
     log: Vec<String>,
+    /// 서버(운영) DB 를 손볼지 — 서버 정보가 저장돼 있을 때만
+    server: Option<DeployTarget>,
+    on_server: bool,
+    /// 서버 비밀번호 바꾸기 확인 중
+    confirm_server: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +135,10 @@ pub enum ProjectsMessage {
     SiteField(SiteField, String),
     SiteUrlToggled(bool),
     SiteSetPassword,
+    /// 이 PC(false) / 서버(true)
+    SiteTarget(bool),
+    SiteServerConfirm,
+    SiteServerCancel,
     SiteLocalize,
     SiteRestore,
     SiteToolDone(Result<Vec<String>, String>),
@@ -1055,14 +1064,44 @@ impl ProjectsState {
                     has_backup,
                     running: false,
                     log: Vec::new(),
+                    server: load_target(&p.id).filter(|t| t.has_db()),
+                    on_server: false,
+                    confirm_server: false,
                 });
                 if mode == SiteToolMode::Password {
-                    return Task::perform(
-                        async move { tokio::task::spawn_blocking(move || site_config::list_admins(&p)).await.unwrap_or_else(|e| Err(e.to_string())) },
-                        ProjectsMessage::SiteAdminsLoaded,
-                    );
+                    return Task::done(ProjectsMessage::SiteTarget(false));
                 }
                 Task::none()
+            }
+            ProjectsMessage::SiteServerCancel => {
+                if let Some(m) = self.site_tool.as_mut() {
+                    m.confirm_server = false;
+                }
+                Task::none()
+            }
+            ProjectsMessage::SiteTarget(server) => {
+                let Some(m) = self.site_tool.as_mut() else { return Task::none() };
+                let Some(p) = self.projects.iter().find(|p| p.id == m.project_id).cloned() else { return Task::none() };
+                m.on_server = server && m.server.is_some();
+                m.confirm_server = false;
+                m.admins.clear();
+                m.user_id.clear();
+                m.log.clear();
+                let t = if m.on_server { m.server.clone() } else { None };
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let target = match &t {
+                                Some(t) => site_config::Target::Server(t),
+                                None => site_config::Target::Local,
+                            };
+                            site_config::list_admins(&p, target)
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                    },
+                    ProjectsMessage::SiteAdminsLoaded,
+                )
             }
             ProjectsMessage::SiteAdminsLoaded(r) => {
                 if let Some(m) = self.site_tool.as_mut() {
@@ -1096,16 +1135,37 @@ impl ProjectsState {
                 }
                 Task::none()
             }
-            ProjectsMessage::SiteSetPassword | ProjectsMessage::SiteLocalize | ProjectsMessage::SiteRestore => {
+            ProjectsMessage::SiteSetPassword if self.site_tool.as_ref().is_some_and(|m| m.on_server && !m.confirm_server) => {
+                // 운영 서버 — 한 번 더 확인받는다
+                if let Some(m) = self.site_tool.as_mut() {
+                    m.confirm_server = !m.user_id.trim().is_empty() && !m.new_password.is_empty();
+                    if !m.confirm_server {
+                        m.log = vec![format!("✗ {}", tr("관리자 ID와 새 비밀번호를 입력하세요."))];
+                    }
+                }
+                Task::none()
+            }
+            ProjectsMessage::SiteSetPassword
+            | ProjectsMessage::SiteServerConfirm
+            | ProjectsMessage::SiteLocalize
+            | ProjectsMessage::SiteRestore => {
                 let Some(m) = self.site_tool.as_mut() else { return Task::none() };
+                m.confirm_server = false;
                 let Some(p) = self.projects.iter().find(|p| p.id == m.project_id).cloned() else { return Task::none() };
                 m.running = true;
                 m.log.clear();
                 let job: Box<dyn FnOnce() -> Result<Vec<String>, String> + Send> = match msg {
-                    ProjectsMessage::SiteSetPassword => {
+                    ProjectsMessage::SiteSetPassword | ProjectsMessage::SiteServerConfirm => {
                         let (login, pw) = (m.user_id.clone(), m.new_password.clone());
                         m.new_password.clear();
-                        Box::new(move || site_config::set_admin_password(&p, &login, &pw).map(|l| vec![format!("✓ {l}")]))
+                        let server = if m.on_server { m.server.clone() } else { None };
+                        Box::new(move || {
+                            let target = match &server {
+                                Some(t) => site_config::Target::Server(t),
+                                None => site_config::Target::Local,
+                            };
+                            site_config::set_admin_password(&p, target, &login, &pw).map(|l| vec![format!("✓ {l}")])
+                        })
                     }
                     ProjectsMessage::SiteLocalize => {
                         let s = site_config::LocalDbSettings {
@@ -1908,7 +1968,22 @@ fn site_tool_panel(m: &SiteTool) -> Element<'_, ProjectsMessage> {
     let mut body = column![header, Space::with_height(6)];
     match m.mode {
         SiteToolMode::Password => {
-            body = body.push(muted(tr("사이트 DB의 관리자 계정 비밀번호를 바로 바꿉니다 (라이믹스·XE는 bcrypt, 워드프레스는 다음 로그인 때 자동으로 강한 방식으로 바뀝니다).")));
+            if m.server.is_some() {
+                body = body.push(
+                    row![
+                        text(tr("대상")).size(12).color(p().fg3),
+                        theme::segmented(&[(false, tr("이 PC")), (true, tr("서버 (운영)"))], &m.on_server, ProjectsMessage::SiteTarget),
+                    ]
+                    .spacing(10)
+                    .align_y(iced::Alignment::Center),
+                );
+                body = body.push(Space::with_height(6));
+            }
+            body = body.push(muted(if m.on_server {
+                tr("서버 연결에 저장된 DB 정보로 운영 사이트의 관리자 비밀번호를 바꿉니다. 바꾸기 전에 한 번 더 확인합니다.")
+            } else {
+                tr("사이트 DB의 관리자 계정 비밀번호를 바로 바꿉니다 (라이믹스·XE는 bcrypt, 워드프레스는 다음 로그인 때 자동으로 강한 방식으로 바뀝니다).")
+            }));
             if !m.admins.is_empty() {
                 let list = m.admins.iter().map(|(id, mail)| format!("{id} ({mail})")).collect::<Vec<_>>().join(", ");
                 body = body.push(Space::with_height(4)).push(muted(trf("관리자: {0}", &[&list])));
@@ -1917,10 +1992,30 @@ fn site_tool_panel(m: &SiteTool) -> Element<'_, ProjectsMessage> {
                 row![
                     container(field(tr("관리자 ID"), inp("admin", &m.user_id, SiteField::UserId).into(), None)).width(200),
                     field(tr("새 비밀번호"), inp(tr("새 비밀번호"), &m.new_password, SiteField::NewPassword).secure(true).into(), None),
-                    column![Space::with_height(20), run(tr("변경"), Icon::Check, Kind::Primary, ProjectsMessage::SiteSetPassword)],
+                    column![
+                        Space::with_height(20),
+                        run(tr("변경"), Icon::Check, if m.on_server { Kind::Danger } else { Kind::Primary }, ProjectsMessage::SiteSetPassword)
+                    ],
                 ]
                 .spacing(12),
             );
+            if m.confirm_server {
+                let host = m.server.as_ref().map(|t| t.ssh_host.clone()).unwrap_or_default();
+                body = body.push(Space::with_height(10)).push(theme::inset(
+                    column![
+                        row![icon(Icon::Key, 14.0, p().danger_fg), text(tr("운영 사이트의 관리자 비밀번호를 바꿉니다")).size(14).font(theme::SEMIBOLD).color(p().danger_fg)]
+                            .spacing(8)
+                            .align_y(iced::Alignment::Center),
+                        muted(trf("{0}의 '{1}' 계정 비밀번호가 바로 바뀝니다. 다른 관리자에게 알려 주세요.", &[&host, &m.user_id])),
+                        row![
+                            btn(tr("서버 비밀번호 바꾸기"), Some(Icon::Check), Kind::Danger).on_press(ProjectsMessage::SiteServerConfirm),
+                            btn(tr("취소"), None, Kind::Ghost).on_press(ProjectsMessage::SiteServerCancel),
+                        ]
+                        .spacing(6),
+                    ]
+                    .spacing(6),
+                ));
+            }
         }
         SiteToolMode::LocalDb => {
             body = body.push(muted(trf(

@@ -121,8 +121,23 @@ fn db_and_prefix(p: &VhostProject, kind: SiteKind) -> Result<(String, String), S
 
 // ── 관리자 ──────────────────────────────────────────────────────────────
 
+/// 어느 DB 를 손볼지 — 이 PC 의 사이트 DB 또는 서버(운영) DB
+#[derive(Clone, Copy)]
+pub enum Target<'a> {
+    Local,
+    Server(&'a super::deploy::DeployTarget),
+}
+
+fn exec(target: Target, db: &str, sql: &str) -> Result<String, String> {
+    match target {
+        Target::Local => run_sql(db, sql),
+        // 표 접두어는 같은 사이트이니 로컬 설정에서 읽은 것을 쓴다. DB 이름은 서버 정보의 것
+        Target::Server(t) => super::deploy::remote_sql(t, sql),
+    }
+}
+
 /// 관리자 계정 (아이디, 이메일)
-pub fn list_admins(p: &VhostProject) -> Result<Vec<(String, String)>, String> {
+pub fn list_admins(p: &VhostProject, target: Target) -> Result<Vec<(String, String)>, String> {
     let kind = detect(p).ok_or(tr("라이믹스·XE·워드프레스 사이트가 아닙니다."))?;
     let (db, pre) = db_and_prefix(p, kind)?;
     let sql = match kind {
@@ -132,14 +147,14 @@ pub fn list_admins(p: &VhostProject) -> Result<Vec<(String, String)>, String> {
              AND m.meta_key = '{pre}capabilities' WHERE m.meta_value LIKE '%administrator%' ORDER BY u.ID;"
         ),
     };
-    Ok(run_sql(&db, &sql)?
+    Ok(exec(target, &db, &sql)?
         .lines()
         .filter_map(|l| l.split_once('\t').map(|(a, b)| (a.to_string(), b.to_string())))
         .collect())
 }
 
 /// 관리자 비밀번호를 바꾼다
-pub fn set_admin_password(p: &VhostProject, login: &str, password: &str) -> Result<String, String> {
+pub fn set_admin_password(p: &VhostProject, target: Target, login: &str, password: &str) -> Result<String, String> {
     let login = login.trim();
     if login.is_empty() {
         return Err(tr("관리자 ID를 입력하세요.").into());
@@ -158,18 +173,22 @@ pub fn set_admin_password(p: &VhostProject, login: &str, password: &str) -> Resu
                 sql_str(login)
             )
         }
+        // 해시는 여기서 만든다 — 비밀번호 원문이 SQL·명령줄에 실리지 않게
         SiteKind::WordPress => format!(
-            "UPDATE `{pre}users` SET user_pass = MD5('{}') WHERE user_login = '{}'; SELECT ROW_COUNT();",
-            sql_str(password),
+            "UPDATE `{pre}users` SET user_pass = '{:x}' WHERE user_login = '{}'; SELECT ROW_COUNT();",
+            md5::compute(password.as_bytes()),
             sql_str(login)
         ),
     };
-    let changed = run_sql(&db, &sql)?.trim().parse::<i64>().unwrap_or(0);
+    let changed = exec(target, &db, &sql)?.trim().lines().last().unwrap_or("").trim().parse::<i64>().unwrap_or(0);
     if changed < 1 {
         // 같은 비밀번호여도 해시가 매번 달라 0 이 나오는 일은 없다 — 0 이면 그 아이디가 없다
         return Err(trf("{0} 계정을 찾지 못했습니다.", &[&login]));
     }
-    Ok(trf("{0} {1} 관리자 비밀번호를 바꿨습니다.", &[&kind.label(), &login]))
+    Ok(match target {
+        Target::Local => trf("{0} {1} 관리자 비밀번호를 바꿨습니다.", &[&kind.label(), &login]),
+        Target::Server(t) => trf("서버 {0}의 {1} {2} 관리자 비밀번호를 바꿨습니다.", &[&t.ssh_host, &kind.label(), &login]),
+    })
 }
 
 // ── 설정 파일 고치기 ─────────────────────────────────────────────────────
@@ -450,4 +469,6 @@ mod tests {
         assert_eq!(wp_table_prefix(&t).as_deref(), Some("wpx_"));
     }
 }
+
+
 

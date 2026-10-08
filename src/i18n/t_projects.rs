@@ -238,4 +238,12 @@ pub const T: &[(&str, &str, &str)] = &[
     ("테이블 {0}/{1}개 확인 — 모두 들어왔습니다", "Tables {0}/{1} checked — everything is in", "テーブル {0}/{1} 件を確認 — すべて入りました"),
     ("테이블 {0}/{1}개만 들어왔습니다 — 덤프 파일을 확인하세요", "Only {0}/{1} tables were loaded — check the dump file", "テーブル {0}/{1} 件しか入っていません — ダンプファイルを確認してください"),
     ("완료", "Done", "完了"),
+    ("대상", "Target", "対象"),
+    ("서버 비밀번호 바꾸기", "Change server password", "サーバーのパスワードを変更"),
+    ("운영 사이트의 관리자 비밀번호를 바꿉니다", "Change the live site's admin password", "本番サイトの管理者パスワードを変更します"),
+    ("서버 연결에 저장된 DB 정보로 운영 사이트의 관리자 비밀번호를 바꿉니다. 바꾸기 전에 한 번 더 확인합니다.", "Changes the live site's admin password using the DB info saved in the server connection. You'll be asked to confirm first.", "サーバー接続に保存した DB 情報で本番サイトの管理者パスワードを変更します。変更前にもう一度確認します。"),
+    ("서버 (운영)", "Server (live)", "サーバー(本番)"),
+    ("서버 {0}의 {1} {2} 관리자 비밀번호를 바꿨습니다.", "Changed the {1} admin password for {2} on server {0}.", "サーバー {0} の {1} {2} 管理者パスワードを変更しました。"),
+    ("관리자 ID와 새 비밀번호를 입력하세요.", "Enter the admin ID and new password.", "管理者 ID と新しいパスワードを入力してください。"),
+    ("{0}의 '{1}' 계정 비밀번호가 바로 바뀝니다. 다른 관리자에게 알려 주세요.", "The password of '{1}' on {0} changes immediately. Let other admins know.", "{0} の「{1}」アカウントのパスワードがすぐに変わります。他の管理者に知らせてください。"),
 ];

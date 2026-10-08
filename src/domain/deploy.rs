@@ -338,6 +338,12 @@ fn run_db(
     }
 }
 
+/// 서버 DB 에 SQL 을 돌린다 (직접 또는 SSH 경유). 결과는 -N -B 형식.
+pub(super) fn remote_sql(t: &DeployTarget, sql: &str) -> Result<String, String> {
+    check_db(t)?;
+    run_db(DbEngine::MariaDb, t, "mysql", &["-N", "-B", "--default-character-set=utf8mb4", "-e", sql, t.db_name.trim()], None, None)
+}
+
 /// 원격 DB 를 파일로 덤프한다
 pub(super) fn remote_dump_to(engine: DbEngine, t: &DeployTarget, path: &Path) -> Result<(), String> {
     let db = t.db_name.trim();
