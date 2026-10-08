@@ -13,8 +13,7 @@ use std::process::{Command, Stdio};
 use super::database::{DbEngine, backup_database, drop_database, import_sql, list_databases, load_db_connections};
 use super::db_users::{ensure_site_user_for, site_db_account};
 use super::deploy::{
-    DeployTarget, apply_auth, changed_files, dest, local_db, record_as, remote_dump_to, rsync_ssh, sq, ssh, ssh_command,
-    validate,
+    DeployTarget, apply_auth, changed_files, check_db, dest, local_db, probe_shell, record_as, remote_dump_to, rsync_ssh, validate,
 };
 use super::history::{Direction, now};
 use super::project::{ProjectDb, VhostProject, set_project_db};
@@ -39,7 +38,7 @@ fn protected(p: &VhostProject) -> Vec<&'static str> {
         .collect()
 }
 
-fn pull_rsync_args(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Vec<String> {
+fn pull_rsync_args(t: &DeployTarget, local: &str, keep: &[&str], dry_run: bool) -> Vec<String> {
     let mut a: Vec<String> = vec!["-rlptzv".into()];
     if dry_run {
         a.push("--dry-run".into());
@@ -47,30 +46,21 @@ fn pull_rsync_args(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Vec<Str
     for e in t.pull_excludes.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
         a.push(format!("--exclude={e}"));
     }
-    for pat in protected(p) {
+    for pat in keep {
         a.push(format!("--exclude={pat}"));
     }
     a.push("-e".into());
     a.push(rsync_ssh(t));
     a.push(format!("{}:{}/", dest(t), t.remote_path.trim_end_matches('/')));
-    a.push(format!("{}/", p.path.trim_end_matches('/')));
+    a.push(format!("{}/", local.trim_end_matches('/')));
     a
 }
 
-/// 서버의 웹 경로와 rsync 가 있는지
-fn remote_check(t: &DeployTarget) -> Result<bool, String> {
-    let out = ssh(t, &format!("test -d {} || echo NODIR; command -v rsync >/dev/null 2>&1 || echo NORSYNC", sq(&t.remote_path)))?;
-    if out.contains("NODIR") {
-        return Err(trf("서버에 웹 경로가 없습니다: {0}", &[&t.remote_path]));
-    }
-    Ok(!out.contains("NORSYNC"))
-}
-
-fn run_rsync(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<Vec<String>, String> {
+fn run_rsync(p: &VhostProject, t: &DeployTarget, keep: &[&str], dry_run: bool) -> Result<Vec<String>, String> {
     let mut c = Command::new("rsync");
     apply_auth(&mut c, t)?;
     let out = c
-        .args(pull_rsync_args(p, t, dry_run))
+        .args(pull_rsync_args(t, &p.path, keep, dry_run))
         .stdin(Stdio::null())
         .output()
         .map_err(|e| trf("rsync 실행 실패: {0} (rsync를 설치하세요)", &[&e]))?;
@@ -80,55 +70,36 @@ fn run_rsync(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<Vec<St
     Ok(changed_files(&String::from_utf8_lossy(&out.stdout)))
 }
 
-/// 서버에 rsync 가 없을 때: 서버에서 tar 로 묶어 받아 푼다 (바뀐 것만 고르지 못하고 전부 받는다)
-fn tar_pull(p: &VhostProject, t: &DeployTarget) -> Result<u64, String> {
-    let mut excludes: Vec<String> = t
-        .pull_excludes
-        .iter()
-        .map(|s| s.trim().trim_end_matches('/'))
-        .filter(|s| !s.is_empty())
-        .map(|s| format!("--exclude={}", sq(&format!("./{}", s.trim_start_matches('/')))))
-        .collect();
-    excludes.extend(protected(p).iter().map(|pat| format!("--exclude={}", sq(&format!(".{}", pat.trim_end_matches('/'))))));
-    let remote = format!("cd {} && tar -czf - {} .", sq(&t.remote_path), excludes.join(" "));
-    let mut src = ssh_command(t)?
-        .arg(remote)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| trf("ssh 실행 실패: {0}", &[&e]))?;
-    let pipe = src.stdout.take().ok_or("ssh stdout")?;
-    // GNU tar 는 -v 목록을 stdout, bsdtar 는 stderr 로 낸다 — 둘 다 센다
-    let out = Command::new("tar")
-        .args(["-xzvf", "-", "-C", &p.path])
-        .stdin(Stdio::from(pipe))
-        .output()
-        .map_err(|e| e.to_string())?;
-    let remote_res = src.wait_with_output().map_err(|e| e.to_string())?;
-    if !remote_res.status.success() {
-        return Err(String::from_utf8_lossy(&remote_res.stderr).trim().to_string());
-    }
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    let count = |b: &[u8]| String::from_utf8_lossy(b).lines().filter(|l| !l.trim_end().ends_with('/')).count() as u64;
-    Ok(count(&out.stdout).max(count(&out.stderr)))
-}
-
 fn protected_note(keep: &[&str]) -> Option<String> {
     (!keep.is_empty()).then(|| format!("· {}", trf("로컬 설정 유지 (덮지 않음): {0}", &[&keep.join(", ")])))
 }
 
+/// 셸·rsync 가 되면 rsync, 아니면 SFTP 로 받는다. (파일 목록, 실제 웹 경로, 방식)
+fn receive(p: &VhostProject, t: &DeployTarget, keep: &[&str], dry_run: bool) -> Result<(Vec<String>, String, &'static str), String> {
+    validate(t)?;
+    match probe_shell(t) {
+        Ok(Some(info)) if info.rsync => {
+            let root = info.root.ok_or_else(|| trf("서버에 웹 경로가 없습니다: {0}", &[&t.remote_path]))?;
+            let mut t = t.clone();
+            t.remote_path = root;
+            Ok((run_rsync(p, &t, keep, dry_run)?, t.remote_path, "rsync"))
+        }
+        _ => {
+            let mut excludes = t.pull_excludes.clone();
+            excludes.extend(keep.iter().map(|k| k.to_string()));
+            let (files, root) = super::sftp::pull(t, Path::new(&p.path), excludes, dry_run)?;
+            Ok((files, root, "SFTP"))
+        }
+    }
+}
+
 /// 받을 파일 목록만 본다
 pub fn preview_pull(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
-    validate(t)?;
-    if !remote_check(t)? {
-        return Ok(vec![format!("· {}", tr("서버에 rsync가 없어 미리보기를 못 합니다 — 가져오면 tar로 전부 받습니다"))]);
-    }
-    let files = run_rsync(p, t, true)?;
+    let keep = protected(p);
+    let (files, root, how) = receive(p, t, &keep, true)?;
     let mut log = vec![format!("✓ {}", trf("받을 파일 {0}개 (로컬에만 있는 파일은 지우지 않음)", &[&files.len()]))];
-    log.extend(protected_note(&protected(p)));
+    log.push(format!("· {}", trf("서버 경로 {0} · {1}", &[&root, &how])));
+    log.extend(protected_note(&keep));
     log.extend(files.iter().take(40).map(|f| format!("· {f}")));
     if files.len() > 40 {
         log.push(format!("· {}", trf("… 외 {0}개", &[&(files.len() - 40)])));
@@ -138,19 +109,14 @@ pub fn preview_pull(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, S
 
 /// 서버의 파일을 프로젝트 폴더로 받는다
 pub fn pull_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
-    validate(t)?;
     fs::create_dir_all(&p.path).map_err(|e| trf("프로젝트 폴더를 만들 수 없습니다: {0}", &[&e]))?;
-    let has_rsync = remote_check(t)?;
     // 받기 전에 정한다 — 처음 받는 설정 파일은 서버 것을 받는다
     let keep = protected(p);
-    let (count, how) = if has_rsync {
-        (run_rsync(p, t, false)?.len() as u64, "rsync")
-    } else {
-        (tar_pull(p, t)?, "tar")
-    };
+    let (files, root, how) = receive(p, t, &keep, false)?;
+    let count = files.len() as u64;
     let mut log = vec![format!(
         "✓ {}",
-        trf("파일 {0}개를 {1}:{2} 에서 받음 ({3})", &[&count, &t.ssh_host, &t.remote_path, &how])
+        trf("파일 {0}개를 {1}:{2} 에서 받음 ({3})", &[&count, &t.ssh_host, &root, &how])
     )];
     log.extend(protected_note(&keep));
     record_as(Direction::Pulled, p, t, count, vec![], true, &log);
@@ -173,9 +139,7 @@ fn backups_dir() -> Result<PathBuf, String> {
 
 /// 서버 DB 를 이 PC 의 `local_name` DB 에 넣는다 (그 DB 는 서버 것과 똑같아진다)
 pub fn pull_database(p: &VhostProject, t: &DeployTarget, local_name: &str) -> Result<Vec<String>, String> {
-    if !t.has_db() {
-        return Err(tr("원격 DB 정보(호스트·사용자·DB 이름)를 입력하세요.").into());
-    }
+    check_db(t)?;
     let local_name = local_name.trim();
     if local_name.is_empty() || local_name.contains(['`', '/', '\\', '\'', '"']) {
         return Err(tr("넣을 로컬 DB 이름을 확인하세요.").into());
@@ -250,7 +214,8 @@ mod tests {
             pull_excludes: vec![".git/".into()],
             ..Default::default()
         };
-        let a = pull_rsync_args(&p, &t, false);
+        let keep = protected(&p);
+        let a = pull_rsync_args(&t, &p.path, &keep, false);
         fs::remove_dir_all(&dir).unwrap();
         assert!(!a.iter().any(|x| x.contains("--delete")), "로컬 파일을 지우면 안 됩니다");
         assert!(a.contains(&"--exclude=/files/config/".to_string()), "로컬 설정을 덮으면 안 됩니다");
@@ -259,9 +224,6 @@ mod tests {
         assert!(a[a.len() - 1].ends_with('/'));
     }
 
-    #[test]
-    fn quotes_remote_shell_args() {
-        assert_eq!(sq("a'b"), "'a'\\''b'");
-    }
 }
+
 

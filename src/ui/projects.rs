@@ -126,6 +126,8 @@ pub enum ProjectsMessage {
     DeployDbCancel,
     DeployDbConfirm,
     DeployDone(Result<Vec<String>, String>),
+    /// 연결 시험 결과와 서버에서 찾은 웹 경로
+    DeployTested(Vec<String>, Option<String>),
     DeployDbViaSsh(bool),
     PullPreview,
     PullFiles,
@@ -468,7 +470,17 @@ impl ProjectsState {
                 d.confirm_pull = None;
                 d.log.clear();
                 let (label, job): (&'static str, Box<dyn FnOnce() -> Result<Vec<String>, String> + Send>) = match msg {
-                    ProjectsMessage::DeployTest => (tr("연결 시험 중…"), Box::new(move || Ok(test_connection(&p, &t)))),
+                    ProjectsMessage::DeployTest => {
+                        d.busy = Some(tr("연결 시험 중…"));
+                        return Task::perform(
+                            async move {
+                                tokio::task::spawn_blocking(move || test_connection(&p, &t))
+                                    .await
+                                    .unwrap_or_else(|e| (vec![format!("✗ {e}")], None))
+                            },
+                            |(log, found)| ProjectsMessage::DeployTested(log, found),
+                        );
+                    }
                     ProjectsMessage::DeployPreview => (tr("올라갈 파일을 보는 중…"), Box::new(move || {
                         preview_files(&p, &t).map(|files| {
                             let mut log = vec![format!("✓ {}", trf("올라갈 파일 {0}개 (서버에만 있는 파일은 지우지 않음)", &[&files.len()]))];
@@ -513,6 +525,22 @@ impl ProjectsState {
                 if let Some(d) = self.deploy.as_mut() {
                     d.confirm_db = false;
                     d.confirm_pull = None;
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeployTested(mut log, found) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.busy = None;
+                    // 찾은 웹 경로로 바꿔 저장해 둔다
+                    if let Some(root) = found {
+                        d.path = root;
+                        if let Ok(t) = d.to_target() {
+                            if save_target(&d.id, &t).is_ok() {
+                                log.push(format!("✓ {}", trf("웹 경로를 {0}(으)로 바꿔 저장했습니다", &[&d.path])));
+                            }
+                        }
+                    }
+                    d.log = log;
                 }
                 Task::none()
             }

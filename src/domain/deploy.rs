@@ -366,44 +366,106 @@ pub(super) fn local_db(p: &VhostProject) -> Option<ProjectDb> {
 // ── 동작 ───────────────────────────────────────────────────────────────
 
 /// SSH 접속, 웹 경로, 서버의 rsync, 원격 DB 접속을 차례로 확인한다.
-pub fn test_connection(p: &VhostProject, t: &DeployTarget) -> Vec<String> {
+/// 서버에서 셸 명령을 쓸 수 있는지 알아본 결과
+pub(super) struct ShellInfo {
+    /// 찾은 웹 경로 (적힌 경로 → 홈 기준 → 홈 아래 www·public_html…)
+    pub root: Option<String>,
+    pub rsync: bool,
+}
+
+/// 셸 명령이 되면 Some. 카페24처럼 SFTP 만 열린 계정은 로그인돼도 명령이 막혀 None.
+pub(super) fn probe_shell(t: &DeployTarget) -> Result<Option<ShellInfo>, String> {
+    let p = t.remote_path.trim_end_matches('/');
+    let script = format!(
+        "echo LM_SHELL_OK; command -v rsync >/dev/null 2>&1 && echo LM_RSYNC; p={}; \
+         if [ -d \"$p\" ]; then echo \"LM_ROOT=$p\"; elif [ -d \"$HOME$p\" ]; then echo \"LM_ROOT=$HOME$p\"; \
+         else for d in www public_html html htdocs web; do if [ -d \"$HOME/$d\" ]; then echo \"LM_ROOT=$HOME/$d\"; break; fi; done; fi",
+        sq(p)
+    );
+    let out = ssh(t, &script)?;
+    if !out.contains("LM_SHELL_OK") {
+        return Ok(None);
+    }
+    Ok(Some(ShellInfo {
+        root: out.lines().find_map(|l| l.strip_prefix("LM_ROOT=")).map(str::to_string),
+        rsync: out.contains("LM_RSYNC"),
+    }))
+}
+
+/// DB 설정이 말이 되는지 — localhost 는 SSH 경유일 때만 서버의 DB 다
+pub(super) fn check_db(t: &DeployTarget) -> Result<(), String> {
+    if !t.has_db() {
+        return Err(tr("원격 DB 정보(호스트·사용자·DB 이름)를 입력하세요.").into());
+    }
+    let h = t.db_host.trim();
+    if !t.db_via_ssh && (h.is_empty() || h == "localhost" || h == "127.0.0.1") {
+        return Err(tr("DB 호스트가 localhost면 이 PC의 DB에 붙습니다. 서버 DB 주소(카페24는 보통 사이트 도메인)를 넣거나, 서버에서 명령을 쓸 수 있으면 'SSH로 서버에 들어가서 접속'을 켜세요.").into());
+    }
+    if t.db_via_ssh && probe_shell(t)?.is_none() {
+        return Err(tr("이 서버는 SFTP만 되고 명령 실행이 막혀 있어 SSH 경유 DB를 쓸 수 없습니다. 'SSH로 서버에 들어가서 접속'을 끄고 DB 호스트에 서버 주소를 넣으세요 (외부 접속 허용 IP 등록 필요).").into());
+    }
+    Ok(())
+}
+
+/// SSH(또는 SFTP), 웹 경로, 서버 rsync, 원격 DB 접속을 차례로 확인한다. 찾은 웹 경로도 돌려준다.
+pub fn test_connection(p: &VhostProject, t: &DeployTarget) -> (Vec<String>, Option<String>) {
     let mut log = Vec::new();
     if let Err(e) = validate(t) {
-        return vec![format!("✗ {e}")];
+        return (vec![format!("✗ {e}")], None);
     }
-    match ssh(t, &format!("test -d {} && echo DIR || echo NODIR; command -v rsync >/dev/null && echo RSYNC || echo NORSYNC", t.remote_path)) {
-        Ok(out) => {
+    let mut found = None;
+    match probe_shell(t) {
+        Ok(Some(info)) => {
             log.push(format!("✓ {}", trf("SSH 접속: {0}", &[&dest(t)])));
-            log.push(if out.contains("NODIR") {
-                format!("✗ {}", trf("웹 경로가 없습니다: {0} (처음 올릴 때 만들어집니다)", &[&t.remote_path]))
-            } else {
-                format!("✓ {}", trf("웹 경로: {0}", &[&t.remote_path]))
-            });
-            log.push(if out.contains("NORSYNC") {
-                format!("✗ {}", tr("서버에 rsync가 없습니다 — 서버에서 rsync를 설치하세요"))
-            } else {
+            match &info.root {
+                Some(r) if r.trim_end_matches('/') == t.remote_path.trim_end_matches('/') => log.push(format!("✓ {}", trf("웹 경로: {0}", &[r]))),
+                Some(r) => {
+                    log.push(format!("✓ {}", trf("웹 경로를 찾았습니다: {0} (적은 경로 {1} 대신)", &[r, &t.remote_path])));
+                    found = Some(r.clone());
+                }
+                None => log.push(format!("✗ {}", trf("웹 경로가 없습니다: {0} (처음 올릴 때 만들어집니다)", &[&t.remote_path]))),
+            }
+            log.push(if info.rsync {
                 format!("✓ {}", tr("서버 rsync 있음"))
+            } else {
+                format!("· {}", tr("서버에 rsync가 없어 SFTP로 주고받습니다"))
             });
         }
-        Err(e) => log.push(format!("✗ {}", trf("SSH 접속 실패: {0}", &[&e]))),
+        Ok(None) | Err(_) => match super::sftp::probe(t) {
+            Ok(root) => {
+                log.push(format!("✓ {}", trf("SFTP 접속: {0} (서버 명령은 막힌 계정 — 파일은 SFTP로 주고받습니다)", &[&dest(t)])));
+                if root.trim_end_matches('/') == t.remote_path.trim_end_matches('/') {
+                    log.push(format!("✓ {}", trf("웹 경로: {0}", &[&root])));
+                } else {
+                    log.push(format!("✓ {}", trf("웹 경로를 찾았습니다: {0} (적은 경로 {1} 대신)", &[&root, &t.remote_path])));
+                    found = Some(root);
+                }
+            }
+            Err(e) => log.push(format!("✗ {}", trf("SSH 접속 실패: {0}", &[&e]))),
+        },
     }
     if t.has_db() {
-        let engine = local_db(p).map(|d| d.engine).unwrap_or(DbEngine::MariaDb);
-        let r = match engine {
-            DbEngine::MariaDb => run_db(engine, t, "mysql", &["-e", "SELECT 1", t.db_name.trim()], None, None),
-            DbEngine::PostgreSql => run_db(engine, t, "psql", &["-d", t.db_name.trim(), "-c", "SELECT 1"], None, None),
-        };
-        match r {
-            Ok(_) => log.push(format!(
-                "✓ {}",
-                trf("원격 DB 접속: {0}", &[&format!("{}@{}/{}{}", t.db_user, t.db_host_or_local(), t.db_name, if t.db_via_ssh { " (SSH)" } else { "" })])
-            )),
-            Err(e) => log.push(format!("✗ {}", trf("원격 DB 접속 실패: {0}", &[&e]))),
+        match check_db(t) {
+            Err(e) => log.push(format!("✗ {e}")),
+            Ok(()) => {
+                let engine = local_db(p).map(|d| d.engine).unwrap_or(DbEngine::MariaDb);
+                let r = match engine {
+                    DbEngine::MariaDb => run_db(engine, t, "mysql", &["-e", "SELECT 1", t.db_name.trim()], None, None),
+                    DbEngine::PostgreSql => run_db(engine, t, "psql", &["-d", t.db_name.trim(), "-c", "SELECT 1"], None, None),
+                };
+                match r {
+                    Ok(_) => log.push(format!(
+                        "✓ {}",
+                        trf("원격 DB 접속: {0}", &[&format!("{}@{}/{}{}", t.db_user, t.db_host_or_local(), t.db_name, if t.db_via_ssh { " (SSH)" } else { "" })])
+                    )),
+                    Err(e) => log.push(format!("✗ {}", trf("원격 DB 접속 실패: {0}", &[&e]))),
+                }
+            }
         }
     } else {
         log.push(format!("· {}", tr("원격 DB 정보가 없어 DB 확인은 건너뜀")));
     }
-    log
+    (log, found)
 }
 
 /// rsync -e 에 넘길 ssh 명령
@@ -476,13 +538,33 @@ fn rsync(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<Vec<String
 
 /// 올라갈 파일 목록만 본다 (실제로 보내지 않음)
 pub fn preview_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
-    rsync(p, t, true)
+    send(p, t, true).map(|(files, _)| files)
+}
+
+/// 셸·rsync 가 되면 rsync, 아니면 SFTP 로 올린다. (파일 목록, 실제 웹 경로)
+fn send(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<(Vec<String>, String), String> {
+    validate(t)?;
+    match probe_shell(t) {
+        Ok(Some(info)) if info.rsync => {
+            let mut t = t.clone();
+            if let Some(r) = info.root {
+                t.remote_path = r;
+            }
+            Ok((rsync(p, &t, dry_run)?, t.remote_path))
+        }
+        _ => {
+            if !Path::new(&p.path).is_dir() {
+                return Err(trf("프로젝트 폴더가 없습니다: {0}", &[&p.path]));
+            }
+            super::sftp::push(t, Path::new(&p.path), t.excludes.clone(), dry_run)
+        }
+    }
 }
 
 /// 바뀐 파일을 서버에 올린다. 서버에만 있는 파일은 그대로 둔다.
 pub fn upload_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
-    let files = rsync(p, t, false)?;
-    let mut log = vec![format!("✓ {}", trf("파일 {0}개를 {1}:{2} 에 올림", &[&files.len(), &t.ssh_host, &t.remote_path]))];
+    let (files, root) = send(p, t, false)?;
+    let mut log = vec![format!("✓ {}", trf("파일 {0}개를 {1}:{2} 에 올림", &[&files.len(), &t.ssh_host, &root]))];
     log.extend(files.iter().take(30).map(|f| format!("· {f}")));
     if files.len() > 30 {
         log.push(format!("· {}", trf("… 외 {0}개", &[&(files.len() - 30)])));
@@ -493,9 +575,7 @@ pub fn upload_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, S
 
 /// 로컬 DB 를 원격 DB 에 넣는다. 넣기 전에 원격 DB 를 이 PC 에 백업한다.
 pub fn push_database(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, String> {
-    if !t.has_db() {
-        return Err(tr("원격 DB 정보(호스트·사용자·DB 이름)를 입력하세요.").into());
-    }
+    check_db(t)?;
     let local = local_db(p).ok_or(tr("이 사이트에 연결된 로컬 DB가 없습니다. 수정에서 DB를 지정하세요."))?;
     let creds = load_db_connections()
         .into_iter()

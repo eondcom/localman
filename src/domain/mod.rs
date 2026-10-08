@@ -14,6 +14,7 @@ pub mod project;
 pub mod pull;
 pub mod server;
 pub mod settings;
+pub mod sftp;
 pub mod setup;
 pub mod tls;
 pub mod tools;

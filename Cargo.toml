@@ -23,6 +23,9 @@ chacha20poly1305 = "0.10"
 sha2 = "0.10"
 filetime = "0.2"
 qrcode = { version = "0.14", default-features = false }
+russh = { version = "0.64.1", default-features = false, features = ["ring", "rsa", "flate2"] }
+russh-sftp = "3.0.1"
+futures = "0.3"
 
 [profile.release]
 opt-level = 3
