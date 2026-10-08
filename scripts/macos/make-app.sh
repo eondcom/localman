@@ -7,12 +7,14 @@ cd "$(dirname "$0")/../.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-cargo build --release
+# LOCALMAN_BINARY 를 주면 그 실행 파일을 쓴다 (release.sh 의 universal 빌드)
+BINARY=${LOCALMAN_BINARY:-target/release/localman}
+[ -n "$LOCALMAN_BINARY" ] || cargo build --release
 
 APP=target/LocalMan.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/localman "$APP/Contents/MacOS/LocalMan"
+cp "$BINARY" "$APP/Contents/MacOS/LocalMan"
 
 # 아이콘: assets/localman.png → .icns
 ICONSET=target/localman.iconset
