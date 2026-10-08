@@ -378,6 +378,15 @@ pub fn db_service_label() -> &'static str {
     "MariaDB"
 }
 
+/// OS 화면 언어 (LC_ALL > LC_MESSAGES > LANG)
+pub fn system_language() -> String {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .find(|v| !v.is_empty() && v != "C" && v != "POSIX")
+        .unwrap_or_default()
+}
+
 /// 기본 브라우저로 URL을 연다.
 pub fn open_url(url: &str) {
     let _ = Command::new("xdg-open").arg(url).spawn();

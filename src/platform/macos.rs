@@ -520,6 +520,21 @@ pub fn db_service_label() -> &'static str {
     if brew_installed("mariadb") { "MariaDB" } else { "MySQL" }
 }
 
+/// OS 화면 언어 (예: "ko-KR"). 시스템 설정 > 일반 > 언어 및 지역의 첫 번째 언어.
+pub fn system_language() -> String {
+    Command::new("defaults")
+        .args(["read", "-g", "AppleLanguages"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().trim_matches(|c| c == '"' || c == ',' || c == '(' || c == ')').to_string())
+                .find(|l| !l.is_empty())
+        })
+        .unwrap_or_default()
+}
+
 /// 기본 브라우저로 URL을 연다.
 pub fn open_url(url: &str) {
     let _ = Command::new("open").arg(url).spawn();

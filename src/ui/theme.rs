@@ -10,12 +10,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── 글꼴 ───────────────────────────────────────────────────────────────
 
-pub const FONT_FILES: [&[u8]; 5] = [
+pub const FONT_FILES: [&[u8]; 8] = [
     include_bytes!("../../assets/fonts/Pretendard-Regular.otf"),
     include_bytes!("../../assets/fonts/Pretendard-Medium.otf"),
     include_bytes!("../../assets/fonts/Pretendard-SemiBold.otf"),
     include_bytes!("../../assets/fonts/Pretendard-Bold.otf"),
     include_bytes!("../../assets/fonts/lucide.ttf"),
+    // 일본어 가나·한자 — iced 는 시스템 글꼴을 쓰지 않으므로 없는 글자를 이 글꼴에서 찾게 한다
+    include_bytes!("../../assets/fonts/PretendardJP-Regular.otf"),
+    include_bytes!("../../assets/fonts/PretendardJP-SemiBold.otf"),
+    include_bytes!("../../assets/fonts/PretendardJP-Bold.otf"),
 ];
 
 pub const REGULAR: Font = Font::with_name("Pretendard");

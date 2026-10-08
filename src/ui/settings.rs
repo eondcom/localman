@@ -7,13 +7,15 @@ use iced::{
 
 use super::theme::{self, Icon, Kind, Tone, btn, chip, group, muted, result_line, section_label, segmented, setting_row, switch};
 use crate::domain::apache::{renew_certs, set_https};
-use crate::domain::settings::{ThemeMode, data_dir, load_settings, save_settings};
+use crate::domain::settings::{LangMode, ThemeMode, data_dir, load_settings, save_settings};
+use crate::i18n::{self, Lang};
 use crate::domain::tls::{ca_cert_path, ca_exists};
 use crate::platform::{ca_trusted, open_url, system_prefers_dark};
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
     SetTheme(ThemeMode),
+    SetLang(LangMode),
     /// 시스템 테마를 따를 때 OS 설정이 바뀌었는지 주기적으로 본다
     CheckSystemTheme,
     SetHttps(bool),
@@ -26,10 +28,21 @@ pub enum SettingsMessage {
 
 pub struct SettingsState {
     theme: ThemeMode,
+    lang: LangMode,
     https: bool,
     ca_trusted: bool,
     https_busy: bool,
     https_log: Vec<String>,
+}
+
+/// 저장된 언어 설정을 적용한다 (시스템이면 OS 언어)
+pub fn apply_lang(mode: LangMode) {
+    i18n::set_lang(match mode {
+        LangMode::Ko => Lang::Ko,
+        LangMode::En => Lang::En,
+        LangMode::Ja => Lang::Ja,
+        LangMode::System => i18n::from_locale(&crate::platform::system_language()),
+    });
 }
 
 /// 저장된 테마 설정을 실제 다크/라이트로 바꿔 적용한다.
@@ -45,8 +58,10 @@ impl SettingsState {
     pub fn new() -> Self {
         let s = load_settings();
         apply_theme(s.theme);
+        apply_lang(s.lang);
         Self {
             theme: s.theme,
+            lang: s.lang,
             https: s.https,
             ca_trusted: ca_exists() && ca_trusted(&ca_cert_path()),
             https_busy: false,
@@ -70,6 +85,14 @@ impl SettingsState {
                 apply_theme(mode);
                 let mut s = load_settings();
                 s.theme = mode;
+                let _ = save_settings(&s);
+                Task::none()
+            }
+            SettingsMessage::SetLang(mode) => {
+                self.lang = mode;
+                apply_lang(mode);
+                let mut s = load_settings();
+                s.lang = mode;
                 let _ = save_settings(&s);
                 Task::none()
             }
@@ -118,15 +141,27 @@ impl SettingsState {
     }
 
     pub fn view(&self) -> Element<'_, SettingsMessage> {
-        let screen = group(vec![setting_row(
-            "테마",
-            None,
-            segmented(
-                &[(ThemeMode::Dark, "다크"), (ThemeMode::Light, "라이트"), (ThemeMode::System, "시스템")],
-                &self.theme,
-                SettingsMessage::SetTheme,
+        let screen = group(vec![
+            setting_row(
+                "테마",
+                None,
+                segmented(
+                    &[(ThemeMode::Dark, "다크"), (ThemeMode::Light, "라이트"), (ThemeMode::System, "시스템")],
+                    &self.theme,
+                    SettingsMessage::SetTheme,
+                ),
             ),
-        )]);
+            // 언어 이름은 번역하지 않는다 — 모르는 언어 화면에서도 자기 언어를 찾을 수 있게
+            setting_row(
+                "언어",
+                None,
+                segmented(
+                    &[(LangMode::System, "시스템"), (LangMode::Ko, "한국어"), (LangMode::En, "English"), (LangMode::Ja, "日本語")],
+                    &self.lang,
+                    SettingsMessage::SetLang,
+                ),
+            ),
+        ]);
 
         let (status, tone) = if !self.https {
             ("꺼짐", Tone::Neutral)

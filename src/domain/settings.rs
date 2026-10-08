@@ -13,6 +13,16 @@ pub enum ThemeMode {
     System,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LangMode {
+    /// OS 언어를 따른다 (한국어·일본어가 아니면 영어)
+    #[default]
+    System,
+    Ko,
+    En,
+    Ja,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     /// 모든 프로젝트를 https 로도 서빙할지 (로컬 인증기관 인증서)
@@ -20,6 +30,8 @@ pub struct Settings {
     pub https: bool,
     #[serde(default)]
     pub theme: ThemeMode,
+    #[serde(default)]
+    pub lang: LangMode,
 }
 
 pub(crate) fn data_dir() -> PathBuf {
