@@ -9,6 +9,7 @@ use super::theme::{
 use crate::domain::settings::load_settings;
 use crate::domain::DbEngine;
 use crate::domain::deploy::{DeployTarget, default_target, load_target, preview_files, push_database, save_target, test_connection, upload_files};
+use crate::domain::pull::{default_local_db_name, preview_pull, pull_database, pull_files};
 use crate::domain::lan::human_bytes;
 use crate::domain::project::{ProjectDb, set_project_db};
 use crate::domain::usage::{SiteUsage, detect_db, site_usage};
@@ -125,6 +126,12 @@ pub enum ProjectsMessage {
     DeployDbCancel,
     DeployDbConfirm,
     DeployDone(Result<Vec<String>, String>),
+    DeployDbViaSsh(bool),
+    PullPreview,
+    PullFiles,
+    /// 서버에서 가져오기 확인 (true: 파일까지 모두)
+    PullDbAsk(bool),
+    PullConfirm,
     /// 도메인을 브라우저로 연다
     OpenSite(String),
     /// 프로젝트 폴더를 Finder·파일 관리자로 연다
@@ -148,6 +155,9 @@ pub enum DeployField {
     DbUser,
     DbPassword,
     DbName,
+    SshPassword,
+    PullExcludes,
+    LocalDb,
 }
 
 /// 서버 배포 패널의 입력값과 진행 상태
@@ -164,14 +174,21 @@ struct DeployForm {
     db_user: String,
     db_password: String,
     db_name: String,
+    ssh_password: String,
+    db_via_ssh: bool,
+    pull_excludes: String,
+    /// 서버 DB 를 넣을 로컬 DB 이름
+    local_db: String,
     busy: Option<&'static str>,
     log: Vec<String>,
     /// DB 덮어쓰기 확인 중
     confirm_db: bool,
+    /// 서버에서 가져오기 확인 중 (Some(true): 파일까지 모두)
+    confirm_pull: Option<bool>,
 }
 
 impl DeployForm {
-    fn from_target(id: &str, t: &DeployTarget) -> Self {
+    fn from_target(id: &str, t: &DeployTarget, local_db: String) -> Self {
         Self {
             id: id.to_string(),
             host: t.ssh_host.clone(),
@@ -185,9 +202,14 @@ impl DeployForm {
             db_user: t.db_user.clone(),
             db_password: t.db_password.clone(),
             db_name: t.db_name.clone(),
+            ssh_password: t.ssh_password.clone(),
+            db_via_ssh: t.db_via_ssh,
+            pull_excludes: t.pull_excludes.join(", "),
+            local_db,
             busy: None,
             log: Vec::new(),
             confirm_db: false,
+            confirm_pull: None,
         }
     }
 
@@ -207,6 +229,9 @@ impl DeployForm {
             db_user: self.db_user.trim().to_string(),
             db_password: self.db_password.clone(),
             db_name: self.db_name.trim().to_string(),
+            ssh_password: self.ssh_password.clone(),
+            db_via_ssh: self.db_via_ssh,
+            pull_excludes: self.pull_excludes.split(',').map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect(),
         })
     }
 }
@@ -360,7 +385,8 @@ impl ProjectsState {
             ProjectsMessage::OpenDeploy(id) => {
                 if let Some(p) = self.projects.iter().find(|p| p.id == id) {
                     let t = load_target(&id).unwrap_or_else(|| default_target(p));
-                    self.deploy = Some(DeployForm::from_target(&id, &t));
+                    let local = default_local_db_name(p, &t);
+                    self.deploy = Some(DeployForm::from_target(&id, &t, local));
                 }
                 self.menu_open = None;
                 Task::none()
@@ -383,9 +409,13 @@ impl ProjectsState {
                         DeployField::DbUser => &mut d.db_user,
                         DeployField::DbPassword => &mut d.db_password,
                         DeployField::DbName => &mut d.db_name,
+                        DeployField::SshPassword => &mut d.ssh_password,
+                        DeployField::PullExcludes => &mut d.pull_excludes,
+                        DeployField::LocalDb => &mut d.local_db,
                     };
                     *slot = v;
                     d.confirm_db = false;
+                    d.confirm_pull = None;
                 }
                 Task::none()
             }
@@ -398,10 +428,26 @@ impl ProjectsState {
                 }
                 Task::none()
             }
+            ProjectsMessage::DeployDbViaSsh(on) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.db_via_ssh = on;
+                }
+                Task::none()
+            }
+            ProjectsMessage::PullDbAsk(all) => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.confirm_db = false;
+                    d.confirm_pull = Some(all);
+                }
+                Task::none()
+            }
             ProjectsMessage::DeployTest
             | ProjectsMessage::DeployPreview
             | ProjectsMessage::DeployUpload
-            | ProjectsMessage::DeployDbConfirm => {
+            | ProjectsMessage::DeployDbConfirm
+            | ProjectsMessage::PullPreview
+            | ProjectsMessage::PullFiles
+            | ProjectsMessage::PullConfirm => {
                 let Some(d) = self.deploy.as_mut() else { return Task::none() };
                 let Some(p) = self.projects.iter().find(|p| p.id == d.id).cloned() else { return Task::none() };
                 let t = match d.to_target() {
@@ -416,7 +462,10 @@ impl ProjectsState {
                     d.log = vec![format!("✗ {e}")];
                     return Task::none();
                 }
+                let pull_all = d.confirm_pull == Some(true);
+                let local_db = d.local_db.trim().to_string();
                 d.confirm_db = false;
+                d.confirm_pull = None;
                 d.log.clear();
                 let (label, job): (&'static str, Box<dyn FnOnce() -> Result<Vec<String>, String> + Send>) = match msg {
                     ProjectsMessage::DeployTest => (tr("연결 시험 중…"), Box::new(move || Ok(test_connection(&p, &t)))),
@@ -431,6 +480,20 @@ impl ProjectsState {
                         })
                     })),
                     ProjectsMessage::DeployUpload => (tr("파일 올리는 중…"), Box::new(move || upload_files(&p, &t))),
+                    ProjectsMessage::PullPreview => (tr("받을 파일을 보는 중…"), Box::new(move || preview_pull(&p, &t))),
+                    ProjectsMessage::PullFiles => (tr("서버에서 파일 받는 중…"), Box::new(move || pull_files(&p, &t))),
+                    ProjectsMessage::PullConfirm => (
+                        if pull_all { tr("서버에서 파일·DB 받는 중…") } else { tr("서버 DB 받는 중…") },
+                        Box::new(move || {
+                            let mut log = Vec::new();
+                            if pull_all {
+                                log.extend(pull_files(&p, &t)?);
+                            }
+                            // 파일을 받은 뒤라야 사이트 설정(DB 계정)을 읽을 수 있다
+                            log.extend(pull_database(&p, &t, &local_db)?);
+                            Ok(log)
+                        }),
+                    ),
                     _ => (tr("원격 DB 백업 후 넣는 중…"), Box::new(move || push_database(&p, &t))),
                 };
                 d.busy = Some(label);
@@ -442,12 +505,14 @@ impl ProjectsState {
             ProjectsMessage::DeployDbAsk => {
                 if let Some(d) = self.deploy.as_mut() {
                     d.confirm_db = true;
+                    d.confirm_pull = None;
                 }
                 Task::none()
             }
             ProjectsMessage::DeployDbCancel => {
                 if let Some(d) = self.deploy.as_mut() {
                     d.confirm_db = false;
+                    d.confirm_pull = None;
                 }
                 Task::none()
             }
@@ -459,6 +524,8 @@ impl ProjectsState {
                         Err(e) => vec![format!("✗ {e}")],
                     };
                 }
+                // 가져오기로 사이트에 DB 가 연결됐을 수 있다
+                self.projects = list_projects();
                 self.transfers = load_transfers(&self.projects);
                 Task::none()
             }
@@ -1252,7 +1319,7 @@ fn with_menu<'a>(
         row![
             column![
                 btn(tr("다른 PC로 보내기"), Some(Icon::Send), Kind::Primary).on_press(ProjectsMessage::SendToPc(id.clone())),
-                btn(tr("서버 배포"), Some(Icon::Upload), Kind::Flat).on_press(ProjectsMessage::OpenDeploy(id)),
+                btn(tr("서버 배포·가져오기"), Some(Icon::Upload), Kind::Flat).on_press(ProjectsMessage::OpenDeploy(id)),
                 btn(tr("폴더 열기"), Some(Icon::FolderOpen), Kind::Flat).on_press(ProjectsMessage::OpenFolder(path)),
             ]
             .spacing(6),
@@ -1373,7 +1440,7 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
     };
 
     let server = column![
-        theme::section_label(tr("서버 (SSH 키 로그인)")),
+        theme::section_label(tr("서버 (SSH·SFTP)")),
         row![
             field(tr("주소"), inp("example.com", &d.host, DeployField::Host).into(), None),
             container(field(tr("포트"), inp("22", &d.port, DeployField::Port).into(), None)).width(90),
@@ -1383,21 +1450,30 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
         Space::with_height(8),
         row![
             field(tr("웹 경로"), inp("/var/www/site", &d.path, DeployField::Path).into(), None),
+            field(
+                tr("비밀번호 (선택)"),
+                inp(tr("비우면 SSH 키로 로그인"), &d.ssh_password, DeployField::SshPassword).secure(true).into(),
+                None,
+            ),
             field(tr("SSH 키 (선택)"), inp(tr("비우면 기본 키 (~/.ssh)"), &d.key, DeployField::Key).into(), None),
         ]
         .spacing(10),
-        Space::with_height(8),
-        field(
-            tr("올리지 않을 것 (쉼표로 구분)"),
-            inp(".git/, node_modules/, .env", &d.excludes, DeployField::Excludes).into(),
-            Some(tr("서버에만 있는 파일은 지우지 않습니다. 서버의 .env·설정 파일이 덮이지 않게 여기에 넣으세요")),
-        ),
     ];
 
     let db = column![
-        theme::section_label(tr("원격 DB (직접 접속)")),
         row![
-            field(tr("호스트"), inp("db.example.com", &d.db_host, DeployField::DbHost).into(), None),
+            theme::section_label(tr("서버 DB")),
+            Space::with_width(Length::Fill),
+            theme::check(tr("SSH로 서버에 들어가서 접속 (호스팅 DB가 외부 접속을 막을 때)"), d.db_via_ssh)
+                .on_toggle(ProjectsMessage::DeployDbViaSsh),
+        ]
+        .align_y(iced::Alignment::Center),
+        row![
+            field(
+                tr("호스트"),
+                inp(if d.db_via_ssh { "localhost" } else { "db.example.com" }, &d.db_host, DeployField::DbHost).into(),
+                None,
+            ),
             container(field(tr("포트"), inp("3306", &d.db_port, DeployField::DbPort).into(), None)).width(90),
             field(tr("DB 이름"), inp("site", &d.db_name, DeployField::DbName).into(), None),
         ]
@@ -1410,23 +1486,71 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
         .spacing(10),
     ];
 
-    let mut actions = row![
+    let mut common = row![
         action(tr("저장"), Icon::Check, Kind::Flat, ProjectsMessage::DeploySave),
         action(tr("연결 시험"), Icon::Zap, Kind::Flat, ProjectsMessage::DeployTest),
-        action(tr("미리보기"), Icon::Search, Kind::Flat, ProjectsMessage::DeployPreview),
-        action(tr("파일 올리기"), Icon::Upload, Kind::Primary, ProjectsMessage::DeployUpload),
-        action(tr("DB 올리기"), Icon::Database, Kind::Danger, ProjectsMessage::DeployDbAsk),
     ]
     .spacing(6)
     .align_y(iced::Alignment::Center);
     if let Some(label) = d.busy {
-        actions = actions.push(Space::with_width(8)).push(status(label, Tone::Primary));
+        common = common.push(Space::with_width(8)).push(status(label, Tone::Primary));
     }
+
+    // 서버에서 가져오기 (↓)
+    let pull = theme::inset(
+        column![
+            row![icon(Icon::Download, 14.0, p().fg2), text(tr("서버에서 가져오기")).size(14).font(theme::SEMIBOLD).color(p().fg)]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            muted(tr("서버 웹 경로의 파일을 이 프로젝트 폴더로 받고, 서버 DB를 이 PC의 DB에 넣습니다. 로컬에만 있는 파일은 지우지 않고, 로컬 설정 파일(files/config, .env, wp-config.php)이 있으면 덮지 않습니다.")),
+            Space::with_height(4),
+            row![
+                field(
+                    tr("받지 않을 것 (쉼표로 구분)"),
+                    inp(".git/, files/cache/", &d.pull_excludes, DeployField::PullExcludes).into(),
+                    None,
+                ),
+                container(field(tr("넣을 로컬 DB"), inp("site", &d.local_db, DeployField::LocalDb).into(), None)).width(180),
+            ]
+            .spacing(10),
+            Space::with_height(4),
+            row![
+                action(tr("받을 파일 보기"), Icon::Search, Kind::Flat, ProjectsMessage::PullPreview),
+                action(tr("파일 가져오기"), Icon::Download, Kind::Flat, ProjectsMessage::PullFiles),
+                action(tr("DB 가져오기"), Icon::Database, Kind::Flat, ProjectsMessage::PullDbAsk(false)),
+                action(tr("모두 가져오기"), Icon::Download, Kind::Primary, ProjectsMessage::PullDbAsk(true)),
+            ]
+            .spacing(6),
+        ]
+        .spacing(6),
+    );
+
+    // 서버로 올리기 (↑)
+    let push = theme::inset(
+        column![
+            row![icon(Icon::Upload, 14.0, p().fg2), text(tr("서버로 올리기")).size(14).font(theme::SEMIBOLD).color(p().fg)]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            field(
+                tr("올리지 않을 것 (쉼표로 구분)"),
+                inp(".git/, node_modules/, .env", &d.excludes, DeployField::Excludes).into(),
+                Some(tr("서버에만 있는 파일은 지우지 않습니다. 서버의 .env·설정 파일이 덮이지 않게 여기에 넣으세요")),
+            ),
+            Space::with_height(4),
+            row![
+                action(tr("미리보기"), Icon::Search, Kind::Flat, ProjectsMessage::DeployPreview),
+                action(tr("파일 올리기"), Icon::Upload, Kind::Primary, ProjectsMessage::DeployUpload),
+                action(tr("DB 올리기"), Icon::Database, Kind::Danger, ProjectsMessage::DeployDbAsk),
+            ]
+            .spacing(6),
+        ]
+        .spacing(6),
+    );
 
     let mut body = column![
         row![
-            icon(Icon::Upload, 15.0, p().fg2),
-            text(trf("서버 배포 · {0}", &[&d.id])).size(15).font(theme::SEMIBOLD).color(p().fg),
+            icon(Icon::ArrowLeftRight, 15.0, p().fg2),
+            text(trf("서버 연결 · {0}", &[&d.id])).size(15).font(theme::SEMIBOLD).color(p().fg),
             Space::with_width(Length::Fill),
             btn(tr("닫기"), Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseDeploy),
         ]
@@ -1436,10 +1560,32 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
         server,
         Space::with_height(12),
         db,
-        Space::with_height(16),
-        actions,
+        Space::with_height(12),
+        common,
+        Space::with_height(12),
+        pull,
+        Space::with_height(8),
+        push,
     ];
 
+    if let Some(all) = d.confirm_pull {
+        let what = if all { tr("파일과 DB를 서버 것으로 받습니다") } else { tr("DB를 서버 것으로 받습니다") };
+        body = body.push(Space::with_height(12)).push(theme::inset(
+            column![
+                row![icon(Icon::Download, 14.0, p().fg), text(what).size(14).font(theme::SEMIBOLD).color(p().fg)]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                muted(trf("이 PC의 DB '{0}'를 서버 '{1}'와 똑같이 바꿉니다. 바꾸기 전에 로컬 DB를 백업해 둡니다.", &[&d.local_db, &d.db_name])),
+                Space::with_height(6),
+                row![
+                    btn(tr("가져오기"), Some(Icon::Download), Kind::Primary).on_press(ProjectsMessage::PullConfirm),
+                    btn(tr("취소"), None, Kind::Ghost).on_press(ProjectsMessage::DeployDbCancel),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4),
+        ));
+    }
     if d.confirm_db {
         body = body.push(Space::with_height(12)).push(theme::inset(
             column![

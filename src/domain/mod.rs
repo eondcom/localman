@@ -10,6 +10,7 @@ pub mod integrations;
 pub mod lan;
 pub mod mamp;
 pub mod project;
+pub mod pull;
 pub mod server;
 pub mod settings;
 pub mod setup;

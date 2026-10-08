@@ -1,7 +1,9 @@
 //! 실서버 배포: SSH 서버에 rsync 로 파일을 올리고, 원격 DB 에 직접 접속해 DB 를 넣는다.
 //!
 //! - 서버에만 있는 파일은 지우지 않는다 (rsync 에 --delete 를 쓰지 않는다)
-//! - SSH 는 키 로그인만 쓴다 (BatchMode). 비밀번호를 묻는 창이 GUI 를 붙잡지 않게 한다
+//! - SSH 는 키 로그인이 기본이다 (BatchMode). 비밀번호(SFTP 계정)를 넣으면 SSH_ASKPASS 로 넘겨
+//!   비밀번호를 묻는 창이 GUI 를 붙잡지 않게 한다
+//! - DB 는 원격 DB 에 직접 붙거나, 외부 접속이 막힌 호스팅이면 SSH 로 서버에서 mysqldump/mysql 을 돌린다
 //! - DB 올리기는 운영 DB 를 덮어쓰므로, 넣기 직전에 원격 DB 를 이 PC 에 백업해 둔다
 //! - 서버·DB 접속 정보는 deploy.json(권한 600)에 프로젝트별로 저장한다. 백업 묶음에는 담지 않는다
 
@@ -22,6 +24,14 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+/// 서버에서 가져올 때 받지 않을 것 (캐시·버전 관리·의존성)
+pub fn default_pull_excludes() -> Vec<String> {
+    [".git/", "node_modules/", "venv/", ".venv/", "__pycache__/", ".DS_Store", "files/cache/", "files/supercache/", "*.localman-part"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeployTarget {
     pub ssh_host: String,
@@ -31,6 +41,9 @@ pub struct DeployTarget {
     /// 개인 키 경로. 비우면 ssh 기본 키·에이전트를 쓴다
     #[serde(default)]
     pub ssh_key: String,
+    /// SSH(SFTP) 비밀번호. 비우면 키로만 로그인한다
+    #[serde(default)]
+    pub ssh_password: String,
     /// 서버의 웹 경로 (예: /var/www/site)
     pub remote_path: String,
     /// 올리지 않을 경로 (rsync --exclude 패턴)
@@ -46,11 +59,23 @@ pub struct DeployTarget {
     pub db_password: String,
     #[serde(default)]
     pub db_name: String,
+    /// DB 에 직접 붙지 않고 SSH 로 서버에 들어가 mysqldump/mysql 을 돌린다 (호스팅 DB 는 대개 외부 접속이 막혀 있다)
+    #[serde(default)]
+    pub db_via_ssh: bool,
+    /// 서버에서 가져올 때 받지 않을 경로
+    #[serde(default = "default_pull_excludes")]
+    pub pull_excludes: Vec<String>,
 }
 
 impl DeployTarget {
     pub fn has_db(&self) -> bool {
-        !self.db_host.trim().is_empty() && !self.db_name.trim().is_empty() && !self.db_user.trim().is_empty()
+        (self.db_via_ssh || !self.db_host.trim().is_empty()) && !self.db_name.trim().is_empty() && !self.db_user.trim().is_empty()
+    }
+
+    /// SSH 경유일 때 서버 안에서 붙을 DB 호스트 (비우면 localhost)
+    fn db_host_or_local(&self) -> &str {
+        let h = self.db_host.trim();
+        if h.is_empty() { "localhost" } else { h }
     }
 }
 
@@ -70,6 +95,7 @@ pub fn default_target(p: &VhostProject) -> DeployTarget {
     DeployTarget {
         ssh_port: 22,
         excludes,
+        pull_excludes: default_pull_excludes(),
         db_port: match db.as_ref().map(|d| d.engine) {
             Some(DbEngine::PostgreSql) => 5432,
             _ => 3306,
@@ -105,7 +131,7 @@ pub fn save_target(id: &str, t: &DeployTarget) -> Result<(), String> {
     Ok(())
 }
 
-fn validate(t: &DeployTarget) -> Result<(), String> {
+pub(super) fn validate(t: &DeployTarget) -> Result<(), String> {
     let bad = |s: &str| s.chars().any(|c| c.is_whitespace() || "'\"`$;&|<>\\".contains(c));
     if t.ssh_host.trim().is_empty() || t.ssh_user.trim().is_empty() {
         return Err(tr("서버 주소와 SSH 사용자를 입력하세요.").into());
@@ -128,12 +154,14 @@ fn validate(t: &DeployTarget) -> Result<(), String> {
 
 // ── SSH ────────────────────────────────────────────────────────────────
 
-fn ssh_opts(t: &DeployTarget) -> Vec<String> {
+pub(super) fn ssh_opts(t: &DeployTarget) -> Vec<String> {
+    let password = !t.ssh_password.is_empty();
     let mut v = vec![
         "-p".into(),
         t.ssh_port.to_string(),
         "-o".into(),
-        "BatchMode=yes".into(),
+        // 비밀번호가 있으면 askpass 로 한 번만 넣는다 (틀리면 바로 실패)
+        if password { "NumberOfPasswordPrompts=1".into() } else { "BatchMode=yes".into() },
         "-o".into(),
         "ConnectTimeout=10".into(),
         "-o".into(),
@@ -146,14 +174,46 @@ fn ssh_opts(t: &DeployTarget) -> Vec<String> {
     v
 }
 
-fn dest(t: &DeployTarget) -> String {
+/// 비밀번호를 SSH_ASKPASS 로 넘긴다 (명령줄·화면에 남기지 않는다). ssh·rsync 명령 모두에 붙인다.
+pub(super) fn apply_auth(c: &mut Command, t: &DeployTarget) -> Result<(), String> {
+    if t.ssh_password.is_empty() {
+        return Ok(());
+    }
+    let script = data_dir().join("askpass.sh");
+    if !script.exists() {
+        fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
+        fs::write(&script, "#!/bin/sh\nprintf '%s\\n' \"$LOCALMAN_SSH_PW\"\n").map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        }
+    }
+    c.env("SSH_ASKPASS", &script)
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env("DISPLAY", std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into()))
+        .env("LOCALMAN_SSH_PW", &t.ssh_password);
+    Ok(())
+}
+
+/// 원격 셸에 넘길 인자를 작은따옴표로 감싼다
+pub(super) fn sq(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+pub(super) fn ssh_command(t: &DeployTarget) -> Result<Command, String> {
+    let mut c = Command::new("ssh");
+    c.args(ssh_opts(t)).arg(dest(t));
+    apply_auth(&mut c, t)?;
+    Ok(c)
+}
+
+pub(super) fn dest(t: &DeployTarget) -> String {
     format!("{}@{}", t.ssh_user.trim(), t.ssh_host.trim())
 }
 
-fn ssh(t: &DeployTarget, remote_cmd: &str) -> Result<String, String> {
-    let out = Command::new("ssh")
-        .args(ssh_opts(t))
-        .arg(dest(t))
+pub(super) fn ssh(t: &DeployTarget, remote_cmd: &str) -> Result<String, String> {
+    let out = ssh_command(t)?
         .arg(remote_cmd)
         .stdin(Stdio::null())
         .output()
@@ -162,7 +222,9 @@ fn ssh(t: &DeployTarget, remote_cmd: &str) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        if err.contains("Permission denied") {
+        if err.contains("Permission denied") && !t.ssh_password.is_empty() {
+            Err(format!("{}\n{err}", tr("SSH 로그인 실패 — 사용자·비밀번호를 확인하세요.")))
+        } else if err.contains("Permission denied") {
             Err(format!(
                 "{}\n{err}",
                 trf(
@@ -196,17 +258,108 @@ fn remote_db_cmd(engine: DbEngine, t: &DeployTarget, program: &str) -> Command {
     c
 }
 
-fn run(mut c: Command) -> Result<String, String> {
-    let out = c.stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+/// SSH 경유: 서버 안에서 DB 프로그램을 돌릴 셸 명령. 비밀번호는 표준입력 첫 줄로 받는다.
+fn remote_db_shell(engine: DbEngine, t: &DeployTarget, program: &str, args: &[&str]) -> String {
+    let rest = args.iter().map(|a| sq(a)).collect::<Vec<_>>().join(" ");
+    match engine {
+        DbEngine::MariaDb => format!(
+            "IFS= read -r LM_PW; MYSQL_PWD=\"$LM_PW\" exec {program} -h {} -P {} -u {} {rest}",
+            sq(t.db_host_or_local()),
+            t.db_port,
+            sq(t.db_user.trim()),
+        ),
+        DbEngine::PostgreSql => format!(
+            "IFS= read -r LM_PW; PGPASSWORD=\"$LM_PW\" PGCONNECT_TIMEOUT=10 exec {program} -h {} -p {} -U {} {rest}",
+            sq(t.db_host_or_local()),
+            t.db_port,
+            sq(t.db_user.trim()),
+        ),
     }
 }
 
+/// DB 프로그램을 돌린다 (직접 접속 또는 SSH 경유). stdin 이 있으면 그 파일을 넣는다. 표준출력은 out 파일로.
+fn run_db(
+    engine: DbEngine,
+    t: &DeployTarget,
+    program: &str,
+    args: &[&str],
+    input: Option<&Path>,
+    out: Option<&Path>,
+) -> Result<String, String> {
+    use std::io::Write;
+    let mut c = if t.db_via_ssh {
+        let mut c = ssh_command(t)?;
+        c.arg(remote_db_shell(engine, t, program, args));
+        c
+    } else {
+        let mut c = remote_db_cmd(engine, t, program);
+        c.args(args);
+        c
+    };
+    c.stdin(if t.db_via_ssh || input.is_some() { Stdio::piped() } else { Stdio::null() });
+    c.stdout(match out {
+        Some(p) => Stdio::from(fs::File::create(p).map_err(|e| e.to_string())?),
+        None => Stdio::piped(),
+    });
+    c.stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| trf("{0} 실행 실패: {1}", &[&program, &e]))?;
+    let mut stdin = child.stdin.take();
+    let feeder = {
+        let pw = t.db_password.clone();
+        let via_ssh = t.db_via_ssh;
+        let input = input.map(Path::to_path_buf);
+        std::thread::spawn(move || -> std::io::Result<()> {
+            if let Some(mut w) = stdin.take() {
+                if via_ssh {
+                    writeln!(w, "{pw}")?;
+                }
+                if let Some(p) = input {
+                    std::io::copy(&mut fs::File::open(p)?, &mut w)?;
+                }
+            }
+            Ok(())
+        })
+    };
+    let res = child.wait_with_output().map_err(|e| e.to_string())?;
+    let _ = feeder.join();
+    if res.status.success() {
+        Ok(String::from_utf8_lossy(&res.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&res.stderr).trim().to_string())
+    }
+}
+
+/// 원격 DB 를 파일로 덤프한다
+pub(super) fn remote_dump_to(engine: DbEngine, t: &DeployTarget, path: &Path) -> Result<(), String> {
+    let db = t.db_name.trim();
+    match engine {
+        DbEngine::MariaDb => {
+            // --no-tablespaces: 호스팅 계정엔 PROCESS 권한이 없어 이 옵션이 없으면 MySQL 8 에서 실패한다
+            let args = ["--single-transaction", "--default-character-set=utf8mb4", "--no-tablespaces", db];
+            match run_db(engine, t, "mysqldump", &args, None, Some(path)) {
+                Err(e) if e.contains("no-tablespaces") => {
+                    run_db(engine, t, "mysqldump", &["--single-transaction", "--default-character-set=utf8mb4", db], None, Some(path))
+                }
+                r => r,
+            }
+            .map(|_| ())
+        }
+        DbEngine::PostgreSql => run_db(engine, t, "pg_dump", &["--no-owner", "--no-privileges", "-d", db], None, Some(path)).map(|_| ()),
+    }
+}
+
+/// 파일을 원격 DB 에 넣는다
+fn remote_import_from(engine: DbEngine, t: &DeployTarget, path: &Path) -> Result<(), String> {
+    let db = t.db_name.trim();
+    match engine {
+        DbEngine::MariaDb => run_db(engine, t, "mysql", &["--default-character-set=utf8mb4", db], Some(path), None),
+        DbEngine::PostgreSql => run_db(engine, t, "psql", &["-v", "ON_ERROR_STOP=1", "-d", db], Some(path), None),
+    }
+    .map(|_| ())
+}
+
 /// 이 사이트의 로컬 DB (엔진 판단용). 연결·감지 모두 안 되면 MariaDB 로 본다.
-fn local_db(p: &VhostProject) -> Option<ProjectDb> {
+pub(super) fn local_db(p: &VhostProject) -> Option<ProjectDb> {
     p.db.clone().or_else(|| detect_db(p))
 }
 
@@ -236,16 +389,15 @@ pub fn test_connection(p: &VhostProject, t: &DeployTarget) -> Vec<String> {
     }
     if t.has_db() {
         let engine = local_db(p).map(|d| d.engine).unwrap_or(DbEngine::MariaDb);
-        let mut c = match engine {
-            DbEngine::MariaDb => remote_db_cmd(engine, t, "mysql"),
-            DbEngine::PostgreSql => remote_db_cmd(engine, t, "psql"),
+        let r = match engine {
+            DbEngine::MariaDb => run_db(engine, t, "mysql", &["-e", "SELECT 1", t.db_name.trim()], None, None),
+            DbEngine::PostgreSql => run_db(engine, t, "psql", &["-d", t.db_name.trim(), "-c", "SELECT 1"], None, None),
         };
-        match engine {
-            DbEngine::MariaDb => c.args(["-e", "SELECT 1", t.db_name.trim()]),
-            DbEngine::PostgreSql => c.args(["-d", t.db_name.trim(), "-c", "SELECT 1"]),
-        };
-        match run(c) {
-            Ok(_) => log.push(format!("✓ {}", trf("원격 DB 접속: {0}", &[&format!("{}@{}/{}", t.db_user, t.db_host, t.db_name)]))),
+        match r {
+            Ok(_) => log.push(format!(
+                "✓ {}",
+                trf("원격 DB 접속: {0}", &[&format!("{}@{}/{}{}", t.db_user, t.db_host_or_local(), t.db_name, if t.db_via_ssh { " (SSH)" } else { "" })])
+            )),
             Err(e) => log.push(format!("✗ {}", trf("원격 DB 접속 실패: {0}", &[&e]))),
         }
     } else {
@@ -254,11 +406,16 @@ pub fn test_connection(p: &VhostProject, t: &DeployTarget) -> Vec<String> {
     log
 }
 
-fn rsync_args(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Vec<String> {
-    let ssh_cmd = std::iter::once("ssh".to_string())
+/// rsync -e 에 넘길 ssh 명령
+pub(super) fn rsync_ssh(t: &DeployTarget) -> String {
+    std::iter::once("ssh".to_string())
         .chain(ssh_opts(t).into_iter().map(|a| if a.contains(' ') { format!("'{a}'") } else { a }))
         .collect::<Vec<_>>()
-        .join(" ");
+        .join(" ")
+}
+
+fn rsync_args(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Vec<String> {
+    let ssh_cmd = rsync_ssh(t);
     // -rlptz: 권한·시각을 맞추되 소유자·그룹은 서버 것을 그대로 둔다. --delete 는 쓰지 않는다.
     let mut a: Vec<String> = vec!["-rlptzv".into()];
     if dry_run {
@@ -277,13 +434,14 @@ fn rsync_args(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Vec<String> 
 }
 
 /// rsync -v 출력에서 파일 이름 줄만 고른다 (GNU rsync·openrsync 모두)
-fn changed_files(out: &str) -> Vec<String> {
+pub(super) fn changed_files(out: &str) -> Vec<String> {
     out.lines()
         .map(str::trim)
         .filter(|l| {
             !l.is_empty()
                 && !l.ends_with('/')
                 && !l.starts_with("sending incremental")
+                && !l.starts_with("receiving ")
                 && !l.starts_with("Transfer starting")
                 && !l.starts_with("sent ")
                 && !l.starts_with("total size")
@@ -303,7 +461,9 @@ fn rsync(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<Vec<String
         // 처음 올릴 때 웹 경로가 없으면 만든다
         ssh(t, &format!("mkdir -p {}", t.remote_path))?;
     }
-    let out = Command::new("rsync")
+    let mut c = Command::new("rsync");
+    apply_auth(&mut c, t)?;
+    let out = c
         .args(rsync_args(p, t, dry_run))
         .stdin(Stdio::null())
         .output()
@@ -348,26 +508,10 @@ pub fn push_database(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, 
 
     // 1) 원격 DB 백업 — 되돌릴 수 있게
     let backup = dir.join(format!("{}-{}-{stamp}.sql", p.id, t.db_name.trim()));
-    let mut dump = match local.engine {
-        DbEngine::MariaDb => {
-            let mut c = remote_db_cmd(local.engine, t, "mysqldump");
-            c.args(["--single-transaction", t.db_name.trim()]);
-            c
-        }
-        DbEngine::PostgreSql => {
-            let mut c = remote_db_cmd(local.engine, t, "pg_dump");
-            c.args(["--no-owner", "--no-privileges", "-d", t.db_name.trim()]);
-            c
-        }
-    };
-    let out = dump.stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(trf(
-            "원격 DB를 백업하지 못해 중단했습니다 (덮어쓰지 않음): {0}",
-            &[&String::from_utf8_lossy(&out.stderr).trim()],
-        ));
+    if let Err(e) = remote_dump_to(local.engine, t, &backup) {
+        let _ = fs::remove_file(&backup);
+        return Err(trf("원격 DB를 백업하지 못해 중단했습니다 (덮어쓰지 않음): {0}", &[&e]));
     }
-    fs::write(&backup, &out.stdout).map_err(|e| e.to_string())?;
     log.push(format!("✓ {}", trf("원격 DB 백업: {0}", &[&backup.display()])));
 
     // 2) 로컬 DB 덤프 — 같은 이름의 표를 지우고 다시 만드는 형태로
@@ -389,26 +533,12 @@ pub fn push_database(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, 
     fs::write(&local_dump, &ld.stdout).map_err(|e| e.to_string())?;
 
     // 3) 원격에 넣기
-    let file = fs::File::open(&local_dump).map_err(|e| e.to_string())?;
-    let mut import = match local.engine {
-        DbEngine::MariaDb => {
-            let mut c = remote_db_cmd(local.engine, t, "mysql");
-            c.args(["--default-character-set=utf8mb4", t.db_name.trim()]);
-            c
-        }
-        DbEngine::PostgreSql => {
-            let mut c = remote_db_cmd(local.engine, t, "psql");
-            c.args(["-v", "ON_ERROR_STOP=1", "-d", t.db_name.trim()]);
-            c
-        }
-    };
-    let res = import.stdin(Stdio::from(file)).stdout(Stdio::null()).stderr(Stdio::piped()).output();
+    let res = remote_import_from(local.engine, t, &local_dump);
     let _ = fs::remove_file(&local_dump);
-    let res = res.map_err(|e| e.to_string())?;
-    if !res.status.success() {
+    if let Err(e) = res {
         return Err(format!(
             "{}\n{}",
-            trf("원격 DB에 넣지 못했습니다: {0}", &[&String::from_utf8_lossy(&res.stderr).trim()]),
+            trf("원격 DB에 넣지 못했습니다: {0}", &[&e]),
             trf("넣기 전 백업: {0}", &[&backup.display()])
         ));
     }
@@ -421,9 +551,13 @@ pub fn push_database(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, 
 }
 
 fn record(p: &VhostProject, t: &DeployTarget, files: u64, dbs: Vec<String>, ok: bool, notes: &[String]) {
+    record_as(Direction::Deployed, p, t, files, dbs, ok, notes)
+}
+
+pub(super) fn record_as(direction: Direction, p: &VhostProject, t: &DeployTarget, files: u64, dbs: Vec<String>, ok: bool, notes: &[String]) {
     append_history(TransferRecord {
         at: now(),
-        direction: Direction::Deployed,
+        direction,
         peer: t.ssh_host.clone(),
         peer_os: "server".into(),
         projects: vec![p.id.clone()],

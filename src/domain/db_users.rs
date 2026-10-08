@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use super::project::list_projects;
+use super::project::{VhostProject, list_projects};
 use crate::i18n::{tr, trf};
 
 /// 백업 묶음 안의 사용자 목록 파일
@@ -311,61 +311,74 @@ fn can_login(user: &str, pass: &str) -> bool {
 
 /// 등록된 사이트마다 설정 파일의 DB 계정이 이 PC 에 있는지 보고, 없으면 만든다.
 pub fn ensure_site_users(admin: &str, admin_pw: &str) -> Vec<String> {
-    let mut log = Vec::new();
-    let existing = match existing_accounts(admin, admin_pw) {
+    let mut existing = match existing_accounts(admin, admin_pw) {
         Ok(v) => v,
         Err(e) => return vec![format!("✗ {}", trf("DB 사용자 목록을 읽지 못했습니다: {0}", &[&e]))],
     };
-    let mut done: Vec<(String, String)> = Vec::new();
+    let mut log = Vec::new();
     for p in list_projects() {
-        let Some(a) = site_db_account(Path::new(&p.path)) else { continue };
-        let site = &p.domain;
-        if !is_local_host(&a.host) {
-            log.push(format!("· {}", trf("{0}: 다른 서버의 DB({1})를 써서 건너뜀", &[site, &a.host])));
-            continue;
-        }
-        if is_system_user(&a.user) {
-            log.push(format!("· {}", trf("{0}: {1} 계정을 써서 건너뜀", &[site, &a.user])));
-            continue;
-        }
-        // TCP(127.0.0.1)로 붙는 사이트는 'user'@'127.0.0.1' 로 들어온다
-        let mut hosts = vec!["localhost"];
-        if a.host.starts_with("127.0.0.1") {
-            hosts.push("127.0.0.1");
-        }
-        for host in hosts {
-            let key = (a.user.clone(), host.to_string());
-            let exists = existing.contains(&key) || done.contains(&key);
-            let who = format!("{}@{host}", a.user);
-            if !exists {
-                let create = format!("CREATE USER {} IDENTIFIED BY '{}';", account(&a.user, host), sql_str(&a.pass));
-                if let Err(e) = run_sql(local_mysql(admin, admin_pw), &create) {
-                    log.push(format!("✗ {}", trf("{0}: 사용자 {1} 만들기 실패: {2}", &[site, &who, &e])));
-                    continue;
-                }
-            }
-            let grant = format!("GRANT ALL PRIVILEGES ON `{}`.* TO {};", a.database.replace('`', ""), account(&a.user, host));
-            if let Err(e) = run_sql(local_mysql(admin, admin_pw), &grant) {
-                log.push(format!("✗ {}", trf("{0}: {1} 권한 주기 실패: {2}", &[site, &who, &e])));
-                continue;
-            }
-            done.push(key);
-            if exists {
-                if host == "localhost" && !can_login(&a.user, &a.pass) {
-                    log.push(format!(
-                        "✗ {}",
-                        trf("{0}: 사용자 {1}가 이미 있지만 비밀번호가 사이트 설정과 다릅니다 — 사용자 탭에서 바꾸세요", &[site, &who])
-                    ));
-                } else {
-                    log.push(format!("✓ {}", trf("{0}: 사용자 {1} 있음 · {2} 권한 확인", &[site, &who, &a.database])));
-                }
-            } else {
-                log.push(format!("✓ {}", trf("{0}: 사용자 {1} 만듦 · {2} 권한", &[site, &who, &a.database])));
-            }
-        }
+        log.extend(ensure_one(&p, admin, admin_pw, &mut existing));
     }
     if log.is_empty() {
         log.push(format!("· {}", tr("DB 계정이 적힌 사이트 설정 파일을 찾지 못했습니다")));
+    }
+    log
+}
+
+/// 한 사이트만 (서버에서 가져온 직후 등)
+pub fn ensure_site_user_for(p: &VhostProject, admin: &str, admin_pw: &str) -> Vec<String> {
+    match existing_accounts(admin, admin_pw) {
+        Ok(mut existing) => ensure_one(p, admin, admin_pw, &mut existing),
+        Err(e) => vec![format!("✗ {}", trf("DB 사용자 목록을 읽지 못했습니다: {0}", &[&e]))],
+    }
+}
+
+fn ensure_one(p: &VhostProject, admin: &str, admin_pw: &str, existing: &mut Vec<(String, String)>) -> Vec<String> {
+    let mut log = Vec::new();
+    let Some(a) = site_db_account(Path::new(&p.path)) else { return log };
+    let site = &p.domain;
+    if !is_local_host(&a.host) {
+        log.push(format!("· {}", trf("{0}: 다른 서버의 DB({1})를 써서 건너뜀", &[site, &a.host])));
+        return log;
+    }
+    if is_system_user(&a.user) {
+        log.push(format!("· {}", trf("{0}: {1} 계정을 써서 건너뜀", &[site, &a.user])));
+        return log;
+    }
+    // TCP(127.0.0.1)로 붙는 사이트는 'user'@'127.0.0.1' 로 들어온다
+    let mut hosts = vec!["localhost"];
+    if a.host.starts_with("127.0.0.1") {
+        hosts.push("127.0.0.1");
+    }
+    for host in hosts {
+        let key = (a.user.clone(), host.to_string());
+        let exists = existing.contains(&key);
+        let who = format!("{}@{host}", a.user);
+        if !exists {
+            let create = format!("CREATE USER {} IDENTIFIED BY '{}';", account(&a.user, host), sql_str(&a.pass));
+            if let Err(e) = run_sql(local_mysql(admin, admin_pw), &create) {
+                log.push(format!("✗ {}", trf("{0}: 사용자 {1} 만들기 실패: {2}", &[site, &who, &e])));
+                continue;
+            }
+            existing.push(key);
+        }
+        let grant = format!("GRANT ALL PRIVILEGES ON `{}`.* TO {};", a.database.replace('`', ""), account(&a.user, host));
+        if let Err(e) = run_sql(local_mysql(admin, admin_pw), &grant) {
+            log.push(format!("✗ {}", trf("{0}: {1} 권한 주기 실패: {2}", &[site, &who, &e])));
+            continue;
+        }
+        if exists {
+            if host == "localhost" && !can_login(&a.user, &a.pass) {
+                log.push(format!(
+                    "✗ {}",
+                    trf("{0}: 사용자 {1}가 이미 있지만 비밀번호가 사이트 설정과 다릅니다 — 사용자 탭에서 바꾸세요", &[site, &who])
+                ));
+            } else {
+                log.push(format!("✓ {}", trf("{0}: 사용자 {1} 있음 · {2} 권한 확인", &[site, &who, &a.database])));
+            }
+        } else {
+            log.push(format!("✓ {}", trf("{0}: 사용자 {1} 만듦 · {2} 권한", &[site, &who, &a.database])));
+        }
     }
     log
 }

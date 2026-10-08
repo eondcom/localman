@@ -17,6 +17,8 @@ pub enum Direction {
     Received,
     /// 실서버로 배포 (peer 는 서버 주소)
     Deployed,
+    /// 실서버에서 가져옴 (peer 는 서버 주소)
+    Pulled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +127,7 @@ pub fn summary_line(r: &TransferRecord) -> String {
         Direction::Sent => ("↗", trf("{0} {1}(으)로 보냄{2} · 파일 {3}개", &args)),
         Direction::Received => ("↙", trf("{0} {1}에서 받음{2} · 파일 {3}개", &args)),
         Direction::Deployed => ("↑", trf("{0} {1}에 배포{2} · 파일 {3}개", &args)),
+        Direction::Pulled => ("↓", trf("{0} {1}에서 가져옴{2} · 파일 {3}개", &args)),
     };
     format!("{arrow} {body}")
 }
