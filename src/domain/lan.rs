@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use super::database::DbEngine;
+use crate::i18n::{tr, trf};
 use super::history::{Direction, TransferRecord, append_history, now};
 use super::project::{VhostProject, list_projects};
 use super::transfer::{ExportOptions, ImportOptions, export_bundle, import_bundle, open_bundle, remap_path};
@@ -134,17 +135,17 @@ fn write_plain(s: &mut TcpStream, data: &[u8]) -> Result<(), String> {
 
 fn read_len(s: &mut TcpStream) -> Result<u32, String> {
     let mut len = [0u8; 4];
-    s.read_exact(&mut len).map_err(|e| format!("연결이 끊겼습니다: {e}"))?;
+    s.read_exact(&mut len).map_err(|e| trf("연결이 끊겼습니다: {0}", &[&e]))?;
     Ok(u32::from_be_bytes(len))
 }
 
 fn read_plain(s: &mut TcpStream, max: u32) -> Result<Vec<u8>, String> {
     let len = read_len(s)?;
     if len > max {
-        return Err("잘못된 데이터를 받았습니다.".into());
+        return Err(tr("잘못된 데이터를 받았습니다.").into());
     }
     let mut buf = vec![0u8; len as usize];
-    s.read_exact(&mut buf).map_err(|e| format!("연결이 끊겼습니다: {e}"))?;
+    s.read_exact(&mut buf).map_err(|e| trf("연결이 끊겼습니다: {0}", &[&e]))?;
     Ok(buf)
 }
 
@@ -158,7 +159,7 @@ fn handshake(mut stream: TcpStream, code: &str, is_sender: bool) -> Result<Chann
     );
     write_plain(&mut stream, &outbound)?;
     let inbound = read_plain(&mut stream, 1024)?;
-    let key = state.finish(&inbound).map_err(|_| "연결 협상에 실패했습니다.".to_string())?;
+    let key = state.finish(&inbound).map_err(|_| tr("연결 협상에 실패했습니다.").to_string())?;
     let derive = |label: &[u8]| {
         let mut h = Sha256::new();
         h.update(&key);
@@ -185,7 +186,7 @@ enum RecvError {
 impl From<RecvError> for String {
     fn from(e: RecvError) -> String {
         match e {
-            RecvError::BadCode | RecvError::Decrypt => "코드가 맞지 않습니다.".into(),
+            RecvError::BadCode | RecvError::Decrypt => tr("코드가 맞지 않습니다.").into(),
             RecvError::Other(s) => s,
         }
     }
@@ -196,7 +197,7 @@ impl Channel {
         let ct = self
             .tx
             .encrypt(&nonce(self.tx_n), plain)
-            .map_err(|_| "암호화 실패".to_string())?;
+            .map_err(|_| tr("암호화 실패").to_string())?;
         self.tx_n += 1;
         write_plain(&mut self.stream, &ct)
     }
@@ -220,28 +221,28 @@ impl Channel {
             return Err(RecvError::BadCode);
         }
         if len > MAX_FRAME {
-            return Err(RecvError::Other("잘못된 데이터를 받았습니다.".into()));
+            return Err(RecvError::Other(tr("잘못된 데이터를 받았습니다.").into()));
         }
         let mut ct = vec![0u8; len as usize];
         self.stream
             .read_exact(&mut ct)
-            .map_err(|e| RecvError::Other(format!("연결이 끊겼습니다: {e}")))?;
+            .map_err(|e| RecvError::Other(trf("연결이 끊겼습니다: {0}", &[&e])))?;
         let plain = self.rx.decrypt(&nonce(self.rx_n), ct.as_ref()).map_err(|_| RecvError::Decrypt)?;
         self.rx_n += 1;
         match plain.split_first() {
             Some((0, json)) => serde_json::from_slice(json)
                 .map(Frame::Msg)
-                .map_err(|e| RecvError::Other(format!("메시지 형식 오류: {e}"))),
+                .map_err(|e| RecvError::Other(trf("메시지 형식 오류: {0}", &[&e]))),
             Some((1, data)) => Ok(Frame::Data(data.to_vec())),
-            _ => Err(RecvError::Other("알 수 없는 프레임".into())),
+            _ => Err(RecvError::Other(tr("알 수 없는 프레임").into())),
         }
     }
 
     fn recv_msg(&mut self) -> Result<Msg, String> {
         match self.recv()? {
-            Frame::Msg(Msg::Error { message }) => Err(format!("상대 PC: {message}")),
+            Frame::Msg(Msg::Error { message }) => Err(trf("상대 PC: {0}", &[&message])),
             Frame::Msg(m) => Ok(m),
-            Frame::Data(_) => Err("예상하지 못한 데이터".into()),
+            Frame::Data(_) => Err(tr("예상하지 못한 데이터").into()),
         }
     }
 
@@ -252,14 +253,14 @@ impl Channel {
             match self.recv()? {
                 Frame::Data(d) => {
                     if d.len() as u64 > left {
-                        return Err("파일 크기가 맞지 않습니다.".into());
+                        return Err(tr("파일 크기가 맞지 않습니다.").into());
                     }
                     w.write_all(&d).map_err(|e| e.to_string())?;
                     left -= d.len() as u64;
                     on_chunk(d.len() as u64);
                 }
-                Frame::Msg(Msg::Error { message }) => return Err(format!("상대 PC: {message}")),
-                Frame::Msg(_) => return Err("파일 데이터 대신 메시지를 받았습니다.".into()),
+                Frame::Msg(Msg::Error { message }) => return Err(trf("상대 PC: {0}", &[&message])),
+                Frame::Msg(_) => return Err(tr("파일 데이터 대신 메시지를 받았습니다.").into()),
             }
         }
         Ok(())
@@ -271,7 +272,7 @@ impl Channel {
         let mut left = size;
         while left > 0 {
             let want = (left as usize).min(CHUNK);
-            r.read_exact(&mut buf[..want]).map_err(|e| format!("파일 읽기 실패: {e}"))?;
+            r.read_exact(&mut buf[..want]).map_err(|e| trf("파일 읽기 실패: {0}", &[&e]))?;
             self.send_data(&buf[..want])?;
             left -= want as u64;
             on_chunk(want as u64);
@@ -346,7 +347,7 @@ fn run_responder(stop: Arc<AtomicBool>, port: u16) {
 /// 프로젝트 폴더를 훑어 보낼 파일 목록을 만든다 (EXCLUDED_DIRS 는 어느 깊이에서든 제외).
 pub fn scan(root: &Path) -> Result<Vec<FileEntry>, String> {
     let mut out = Vec::new();
-    walk(root, root, &mut out).map_err(|e| format!("{} 읽기 실패: {e}", root.display()))?;
+    walk(root, root, &mut out).map_err(|e| trf("{0} 읽기 실패: {1}", &[&root.display(), &e]))?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
@@ -407,13 +408,13 @@ fn safe_rel(rel: &str) -> Option<PathBuf> {
 fn needs_file(dest: &Path, e: &FileEntry, overwrite: bool) -> Result<bool, String> {
     match fs::symlink_metadata(dest) {
         Err(_) => Ok(true),
-        Ok(m) if m.is_dir() => Err(format!("{}: 같은 이름의 폴더가 있어 건너뜀", e.path)),
+        Ok(m) if m.is_dir() => Err(trf("{0}: 같은 이름의 폴더가 있어 건너뜀", &[&e.path])),
         Ok(m) => {
             let mine = filetime::FileTime::from_last_modification_time(&m).unix_seconds();
             if m.len() == e.size && mine == e.mtime {
                 Ok(false) // 같은 파일
             } else if mine > e.mtime && !overwrite {
-                Err(format!("{}: 이 PC 파일이 더 최신이라 건너뜀", e.path))
+                Err(trf("{0}: 이 PC 파일이 더 최신이라 건너뜀", &[&e.path]))
             } else {
                 Ok(true)
             }
@@ -450,17 +451,17 @@ pub fn send(addr: SocketAddr, code: &str, plan: SendPlan, ev: impl Fn(LanEvent))
         .collect();
 
     // 1) 연결 전에 준비를 끝낸다 (상대가 기다리다 끊기지 않게)
-    ev(LanEvent::Status("파일 목록을 만드는 중…".into()));
+    ev(LanEvent::Status(tr("파일 목록을 만드는 중…").into()));
     let mut lists: Vec<(VhostProject, Vec<FileEntry>)> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     for p in &projects {
         match scan(Path::new(&p.path)) {
             Ok(entries) => lists.push((p.clone(), entries)),
-            Err(e) => notes.push(format!("✗ {} 파일: {e}", p.id)),
+            Err(e) => notes.push(format!("✗ {}", trf("{0} 파일: {1}", &[&p.id, &e]))),
         }
     }
 
-    ev(LanEvent::Status("설정·DB를 묶는 중…".into()));
+    ev(LanEvent::Status(tr("설정·DB를 묶는 중…").into()));
     let bundle_path = std::env::temp_dir().join(format!("localman-lan-{}-{}.tar.gz", std::process::id(), now()));
     let export_summary = export_bundle(
         &bundle_path,
@@ -509,9 +510,15 @@ fn send_over_network(
     bundle_path: &Path,
     ev: &impl Fn(LanEvent),
 ) -> Result<SendOutcome, String> {
-    ev(LanEvent::Status(format!("{addr} 에 연결하는 중…")));
+    ev(LanEvent::Status(trf("{0} 에 연결하는 중…", &[&addr])));
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-        .map_err(|e| format!("연결 실패 ({addr}): {e}\n받는 PC에서 [받기 대기] 중인지, 방화벽이 막지 않는지 확인하세요."))?;
+        .map_err(|e| {
+            format!(
+                "{}\n{}",
+                trf("연결 실패 ({0}): {1}", &[&addr, &e]),
+                tr("받는 PC에서 [받기 대기] 중인지, 방화벽이 막지 않는지 확인하세요.")
+            )
+        })?;
     stream.write_all(MAGIC).map_err(|e| e.to_string())?;
     let mut ch = handshake(stream, code, true)?;
 
@@ -523,27 +530,27 @@ fn send_over_network(
     })?;
     let (peer, peer_os) = match ch.recv_msg()? {
         Msg::Welcome { name, os, .. } => (name, os),
-        _ => return Err("상대가 이상한 응답을 보냈습니다.".into()),
+        _ => return Err(tr("상대가 이상한 응답을 보냈습니다.").into()),
     };
-    ev(LanEvent::Status(format!("{peer}(으)로 보내는 중…")));
+    ev(LanEvent::Status(trf("{0}(으)로 보내는 중…", &[&peer])));
 
     let (mut files, mut bytes) = (0u64, 0u64);
     for (p, entries) in lists {
         ch.send(&Msg::Files { project: p.id.clone(), root: p.path.clone(), entries: entries.clone() })?;
         let (indices, notes) = match ch.recv_msg()? {
             Msg::Need { indices, notes } => (indices, notes),
-            _ => return Err("상대가 이상한 응답을 보냈습니다.".into()),
+            _ => return Err(tr("상대가 이상한 응답을 보냈습니다.").into()),
         };
         for n in notes {
             ev(LanEvent::Log(format!("· {}: {n}", p.id)));
         }
         let total_bytes: u64 = indices.iter().filter_map(|&i| entries.get(i as usize)).map(|e| e.size).sum();
         let mut done_bytes = 0u64;
-        ev(LanEvent::Status(format!("{} — 바뀐 파일 {}개 보내는 중", p.id, indices.len())));
+        ev(LanEvent::Status(trf("{0} — 바뀐 파일 {1}개 보내는 중", &[&p.id, &indices.len()])));
         for i in indices {
-            let e = entries.get(i as usize).ok_or("잘못된 파일 번호")?;
+            let e = entries.get(i as usize).ok_or(tr("잘못된 파일 번호"))?;
             let path = Path::new(&p.path).join(&e.path);
-            let mut f = fs::File::open(&path).map_err(|err| format!("{} 열기 실패: {err}", e.path))?;
+            let mut f = fs::File::open(&path).map_err(|err| trf("{0} 열기 실패: {1}", &[&e.path, &err]))?;
             // 목록을 만든 뒤 바뀌었을 수 있으니 지금 크기로 보낸다
             let size = f.metadata().map(|m| m.len()).unwrap_or(e.size);
             ch.send(&Msg::FileStart { index: i, size })?;
@@ -557,16 +564,16 @@ fn send_over_network(
     }
     ch.send(&Msg::FilesDone)?;
 
-    ev(LanEvent::Status("설정·DB 보내는 중…".into()));
+    ev(LanEvent::Status(tr("설정·DB 보내는 중…").into()));
     let size = fs::metadata(bundle_path).map_err(|e| e.to_string())?.len();
     ch.send(&Msg::Bundle { size })?;
     let mut f = fs::File::open(bundle_path).map_err(|e| e.to_string())?;
     ch.send_file(&mut f, size, |_| {})?;
 
-    ev(LanEvent::Status("받는 PC에서 적용하는 중…".into()));
+    ev(LanEvent::Status(tr("받는 PC에서 적용하는 중…").into()));
     match ch.recv_msg()? {
         Msg::Result { ok, lines } => Ok((peer, peer_os, files, bytes, (ok, lines))),
-        _ => Err("상대가 이상한 응답을 보냈습니다.".into()),
+        _ => Err(tr("상대가 이상한 응답을 보냈습니다.").into()),
     }
 }
 
@@ -580,7 +587,7 @@ pub struct ReceiveOptions {
 /// 받기 대기. 한 번 받으면 끝난다(코드는 한 번만 쓴다). stop 이 켜지면 대기를 멈춘다.
 pub fn receive(opts: ReceiveOptions, stop: Arc<AtomicBool>, ev: impl Fn(LanEvent)) -> Result<Vec<String>, String> {
     let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, TRANSFER_PORT))
-        .map_err(|e| format!("포트 {TRANSFER_PORT}를 열 수 없습니다: {e} (다른 localman이 받기 대기 중인지 확인)"))?;
+        .map_err(|e| trf("포트 {0}를 열 수 없습니다: {1} (다른 localman이 받기 대기 중인지 확인)", &[&TRANSFER_PORT, &e]))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
 
     let responder_stop = Arc::new(AtomicBool::new(false));
@@ -604,7 +611,7 @@ fn accept_loop(
     ev(LanEvent::Listening(code.clone(), pc_name()));
     loop {
         if stop.load(Ordering::Relaxed) {
-            return Err("받기 대기를 멈췄습니다.".into());
+            return Err(tr("받기 대기를 멈췄습니다.").into());
         }
         let (mut stream, from) = match listener.accept() {
             Ok(x) => x,
@@ -630,9 +637,12 @@ fn accept_loop(
                 // 코드가 틀렸다고 평문으로 알리고 끊는다. 대입 공격을 막으려 3번이면 멈춘다.
                 let _ = ch.stream.write_all(&BAD_CODE.to_be_bytes());
                 failures += 1;
-                ev(LanEvent::Log(format!("✗ {} 에서 틀린 코드로 접속 시도 ({failures}/{MAX_CODE_FAILURES})", from.ip())));
+                ev(LanEvent::Log(format!(
+                    "✗ {}",
+                    trf("{0} 에서 틀린 코드로 접속 시도 ({1}/{2})", &[&from.ip(), &failures, &MAX_CODE_FAILURES])
+                )));
                 if failures >= MAX_CODE_FAILURES {
-                    return Err("코드가 3번 틀려 받기를 멈췄습니다. 다시 [받기 대기]를 누르면 새 코드가 나옵니다.".into());
+                    return Err(tr("코드가 3번 틀려 받기를 멈췄습니다. 다시 [받기 대기]를 누르면 새 코드가 나옵니다.").into());
                 }
                 // 틀린 시도 뒤에는 새 코드로 바꿔 같은 코드를 계속 맞혀 보지 못하게 한다
                 code = new_code();
@@ -650,7 +660,7 @@ fn session(mut ch: Channel, hello: Msg, opts: &ReceiveOptions, ev: &impl Fn(LanE
         unreachable!()
     };
     ch.send(&Msg::Welcome { name: pc_name(), os: std::env::consts::OS.into(), home: home() })?;
-    ev(LanEvent::Status(format!("{peer}에서 받는 중…")));
+    ev(LanEvent::Status(trf("{0}에서 받는 중…", &[&peer])));
 
     let my_home = home();
     let mut lines: Vec<String> = Vec::new();
@@ -662,12 +672,12 @@ fn session(mut ch: Channel, hello: Msg, opts: &ReceiveOptions, ev: &impl Fn(LanE
         match ch.recv_msg()? {
             Msg::Files { project, root, entries } => {
                 let dest = dest_root(&root, &sender_home, &my_home, &project);
-                fs::create_dir_all(&dest).map_err(|e| format!("{} 만들기 실패: {e}", dest.display()))?;
+                fs::create_dir_all(&dest).map_err(|e| trf("{0} 만들기 실패: {1}", &[&dest.display(), &e]))?;
                 let mut need: Vec<u32> = Vec::new();
                 let mut notes: Vec<String> = Vec::new();
                 for (i, e) in entries.iter().enumerate() {
                     let Some(rel) = safe_rel(&e.path) else {
-                        notes.push(format!("{}: 허용되지 않는 경로라 건너뜀", e.path));
+                        notes.push(trf("{0}: 허용되지 않는 경로라 건너뜀", &[&e.path]));
                         continue;
                     };
                     let target = dest.join(&rel);
@@ -678,7 +688,7 @@ fn session(mut ch: Channel, hello: Msg, opts: &ReceiveOptions, ev: &impl Fn(LanE
                             }
                             #[cfg(unix)]
                             if let Err(err) = std::os::unix::fs::symlink(link, &target) {
-                                notes.push(format!("{}: 링크 만들기 실패 ({err})", e.path));
+                                notes.push(trf("{0}: 링크 만들기 실패 ({1})", &[&e.path, &err]));
                             }
                         }
                         continue;
@@ -690,7 +700,7 @@ fn session(mut ch: Channel, hello: Msg, opts: &ReceiveOptions, ev: &impl Fn(LanE
                     }
                 }
                 let total_bytes: u64 = need.iter().map(|&i| entries[i as usize].size).sum();
-                ev(LanEvent::Status(format!("{project} — 바뀐 파일 {}개 받는 중", need.len())));
+                ev(LanEvent::Status(trf("{0} — 바뀐 파일 {1}개 받는 중", &[&project, &need.len()])));
                 for n in &notes {
                     lines.push(format!("· {project}: {n}"));
                 }
@@ -700,10 +710,10 @@ fn session(mut ch: Channel, hello: Msg, opts: &ReceiveOptions, ev: &impl Fn(LanE
                 for _ in 0..need.len() {
                     let (index, size) = match ch.recv_msg()? {
                         Msg::FileStart { index, size } => (index, size),
-                        _ => return Err("파일 시작 신호를 받지 못했습니다.".into()),
+                        _ => return Err(tr("파일 시작 신호를 받지 못했습니다.").into()),
                     };
                     if !need.contains(&index) {
-                        return Err("요청하지 않은 파일을 받았습니다.".into());
+                        return Err(tr("요청하지 않은 파일을 받았습니다.").into());
                     }
                     let e = &entries[index as usize];
                     let target = dest.join(safe_rel(&e.path).unwrap());
@@ -715,7 +725,7 @@ fn session(mut ch: Channel, hello: Msg, opts: &ReceiveOptions, ev: &impl Fn(LanE
                         ".{}.localman-part",
                         target.file_name().unwrap().to_string_lossy()
                     ));
-                    let mut f = fs::File::create(&part).map_err(|err| format!("{} 쓰기 실패: {err}", e.path))?;
+                    let mut f = fs::File::create(&part).map_err(|err| trf("{0} 쓰기 실패: {1}", &[&e.path, &err]))?;
                     let recv = ch.recv_into(size, &mut f, |n| {
                         done_bytes += n;
                         bytes += n;
@@ -740,19 +750,19 @@ fn session(mut ch: Channel, hello: Msg, opts: &ReceiveOptions, ev: &impl Fn(LanE
             Msg::FilesDone => {
                 let size = match ch.recv_msg()? {
                     Msg::Bundle { size } => size,
-                    _ => return Err("설정 묶음을 받지 못했습니다.".into()),
+                    _ => return Err(tr("설정 묶음을 받지 못했습니다.").into()),
                 };
                 let path = std::env::temp_dir().join(format!("localman-recv-{}-{}.tar.gz", std::process::id(), now()));
                 let mut f = fs::File::create(&path).map_err(|e| e.to_string())?;
                 ch.recv_into(size, &mut f, |_| {})?;
                 break path;
             }
-            _ => return Err("예상하지 못한 메시지".into()),
+            _ => return Err(tr("예상하지 못한 메시지").into()),
         }
     };
 
     // 설정·DB 적용 — 백업 묶음 가져오기와 같은 로직. 경로는 실제로 받은 폴더로 맞춘다.
-    ev(LanEvent::Status("설정·DB 적용 중…".into()));
+    ev(LanEvent::Status(tr("설정·DB 적용 중…").into()));
     let applied = (|| -> Result<(Vec<String>, Vec<String>), String> {
         let mut bundle = open_bundle(&bundle_file)?;
         for p in &mut bundle.projects {
@@ -783,12 +793,12 @@ fn session(mut ch: Channel, hello: Msg, opts: &ReceiveOptions, ev: &impl Fn(LanE
             lines.extend(out);
             databases = dbs;
         }
-        Err(e) => lines.push(format!("✗ 설정 적용 실패: {e}")),
+        Err(e) => lines.push(format!("✗ {}", trf("설정 적용 실패: {0}", &[&e]))),
     }
     for (id, dest) in &placed {
-        lines.insert(0, format!("✓ {id} 파일 위치: {}", dest.display()));
+        lines.insert(0, format!("✓ {}", trf("{0} 파일 위치: {1}", &[id, &dest.display()])));
     }
-    lines.insert(0, format!("✓ 파일 {files}개 ({}) 받음", human_bytes(bytes)));
+    lines.insert(0, format!("✓ {}", trf("파일 {0}개 ({1}) 받음", &[&files, &human_bytes(bytes)])));
     let ok = !lines.iter().any(|l| l.starts_with('✗'));
     let _ = ch.send(&Msg::Result { ok, lines: lines.clone() });
 

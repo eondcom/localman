@@ -6,6 +6,7 @@
 
 use super::ServiceStatus;
 use super::macos_mysql;
+use crate::i18n::{tr, trf};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -117,7 +118,7 @@ pub fn get_service_status(name: &str) -> ServiceStatus {
 
 pub fn install_service(service: &str) -> Result<(), String> {
     let formula = formula_for(service)
-        .ok_or_else(|| format!("설치할 수 있는 서비스가 아닙니다: {service}"))?;
+        .ok_or_else(|| trf("설치할 수 있는 서비스가 아닙니다: {0}", &[&service]))?;
     if service == "mariadb" {
         // Intel 맥 등 Homebrew 가 미리 빌드한 MariaDB 를 주지 않는 환경에서도 되도록
         // 공식 MySQL 8.4 LTS 바이너리를 앱 전용 폴더에 설치한다
@@ -126,7 +127,7 @@ pub fn install_service(service: &str) -> Result<(), String> {
     let output = brew()
         .args(["install", &formula])
         .output()
-        .map_err(|e| format!("brew 실행 실패: {e}\nHomebrew가 설치돼 있는지 확인하세요."))?;
+        .map_err(|e| format!("{}\n{}", trf("brew 실행 실패: {0}", &[&e]), tr("Homebrew가 설치돼 있는지 확인하세요.")))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
@@ -190,12 +191,12 @@ pub fn install_tool(key: &str) -> Result<String, String> {
         "python" => "python",
         "php" => "php",
         "rsync" => "rsync",
-        _ => return Err(format!("설치할 수 있는 도구가 아닙니다: {key}")),
+        _ => return Err(trf("설치할 수 있는 도구가 아닙니다: {0}", &[&key])),
     };
     let out = brew()
         .args(["install", formula])
         .output()
-        .map_err(|e| format!("brew 실행 실패: {e}\nHomebrew가 설치돼 있는지 확인하세요."))?;
+        .map_err(|e| format!("{}\n{}", trf("brew 실행 실패: {0}", &[&e]), tr("Homebrew가 설치돼 있는지 확인하세요.")))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
@@ -204,13 +205,13 @@ pub fn install_tool(key: &str) -> Result<String, String> {
         ensure_httpd_base()?;
         reload_httpd();
     }
-    Ok(format!("brew install {formula} 완료"))
+    Ok(trf("{0} 완료", &[&format!("brew install {formula}")]))
 }
 
 pub fn toggle_service(name: &str, start: bool) -> Result<(), String> {
     let action = if start { "start" } else { "stop" };
     eprintln!("[localman] 서비스 {action}: {name}");
-    let formula = formula_for(name).ok_or_else(|| format!("알 수 없는 서비스: {name}"))?;
+    let formula = formula_for(name).ok_or_else(|| trf("알 수 없는 서비스: {0}", &[&name]))?;
 
     if name == "mariadb" && !brew_installed(&formula) {
         return if start { macos_mysql::start() } else { macos_mysql::stop() };
@@ -233,7 +234,7 @@ pub fn toggle_service(name: &str, start: bool) -> Result<(), String> {
         let err = String::from_utf8_lossy(&output.stderr).to_string();
         eprintln!("[localman] 서비스 {action} 실패: {err}");
         if err.contains("password is required") {
-            return Err("권한이 없습니다. scripts/macos/install-sudoers.sh 를 실행하십시오.".into());
+            return Err(tr("권한이 없습니다. scripts/macos/install-sudoers.sh 를 실행하십시오.").into());
         }
         Err(err)
     }
@@ -274,9 +275,9 @@ fn ensure_httpd_base() -> Result<(), String> {
     let original = match fs::read_to_string(&conf_path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err("Apache(httpd)가 설치돼 있지 않습니다. 서비스 탭에서 Apache2를 설치한 뒤 다시 시도하세요.".into());
+            return Err(tr("Apache(httpd)가 설치돼 있지 않습니다. 서비스 탭에서 Apache2를 설치한 뒤 다시 시도하세요.").into());
         }
-        Err(e) => return Err(format!("httpd.conf를 읽을 수 없습니다 ({}): {e}", conf_path.display())),
+        Err(e) => return Err(trf("httpd.conf를 읽을 수 없습니다 ({0}): {1}", &[&conf_path.display(), &e])),
     };
     let user = std::env::var("USER").unwrap_or_else(|_| "nobody".into());
 
@@ -344,10 +345,10 @@ fn ensure_httpd_base() -> Result<(), String> {
 
     let updated = format!("{}\n\n{}\n", lines.join("\n").trim_end(), block.join("\n"));
     if updated != original {
-        fs::write(&conf_path, updated).map_err(|e| format!("httpd.conf 쓰기 실패: {e}"))?;
+        fs::write(&conf_path, updated).map_err(|e| trf("{0} 쓰기 실패: {1}", &[&"httpd.conf", &e]))?;
         eprintln!("[localman] httpd.conf 갱신: {}", conf_path.display());
     }
-    fs::create_dir_all(sites_dir()).map_err(|e| format!("vhost 디렉토리 생성 실패: {e}"))?;
+    fs::create_dir_all(sites_dir()).map_err(|e| trf("vhost 디렉토리 생성 실패: {0}", &[&e]))?;
     fs::create_dir_all(apache_log_dir()).ok();
     Ok(())
 }
@@ -382,7 +383,7 @@ pub fn write_site(id: &str, conf: &str) -> Result<(), String> {
     ensure_httpd_base()?;
     let path = sites_dir().join(format!("{id}.conf"));
     eprintln!("[localman] vhost 파일 작성: {}", path.display());
-    fs::write(&path, conf).map_err(|e| format!("vhost 파일 쓰기 실패: {e}"))?;
+    fs::write(&path, conf).map_err(|e| trf("vhost 파일 쓰기 실패: {0}", &[&e]))?;
     reload_httpd();
     Ok(())
 }
@@ -419,11 +420,11 @@ pub fn trust_ca(ca: &Path) -> Result<String, String> {
         .output()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
-        Ok("✓ 키체인에 인증기관 등록".into())
+        Ok(format!("✓ {}", tr("키체인에 인증기관 등록")))
     } else {
-        Err(format!(
-            "키체인 등록이 취소됐거나 실패했습니다: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+        Err(trf(
+            "키체인 등록이 취소됐거나 실패했습니다: {0}",
+            &[&String::from_utf8_lossy(&out.stderr).trim()],
         ))
     }
 }

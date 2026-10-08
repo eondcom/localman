@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::settings::data_dir;
+use crate::i18n::{tr, trf};
 use crate::platform;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,10 +36,10 @@ impl Tool {
 
     pub fn help(self) -> &'static str {
         match self {
-            Tool::Node => "Next.js·프론트 빌드용. 지금의 LTS를 앱 전용 폴더에 설치 (sudo 불필요)",
-            Tool::Python => "Python 프로젝트·venv",
-            Tool::Php => "PHP 프로젝트 (Apache 연결 포함)",
-            Tool::Rsync => "서버 배포",
+            Tool::Node => tr("Next.js·프론트 빌드용. 지금의 LTS를 앱 전용 폴더에 설치 (sudo 불필요)"),
+            Tool::Python => tr("Python 프로젝트·venv"),
+            Tool::Php => tr("PHP 프로젝트 (Apache 연결 포함)"),
+            Tool::Rsync => tr("서버 배포"),
         }
     }
 
@@ -102,19 +103,19 @@ fn curl(url: &str) -> Result<Vec<u8>, String> {
     let out = Command::new("curl")
         .args(["-fsSL", "--retry", "2", url])
         .output()
-        .map_err(|e| format!("curl 실행 실패: {e}"))?;
+        .map_err(|e| trf("curl 실행 실패: {0}", &[&e]))?;
     if out.status.success() {
         Ok(out.stdout)
     } else {
-        Err(format!("{url} 받기 실패: {}", String::from_utf8_lossy(&out.stderr).trim()))
+        Err(trf("{0} 받기 실패: {1}", &[&url, &String::from_utf8_lossy(&out.stderr).trim()]))
     }
 }
 
 /// nodejs.org 배포 목록에서 가장 최근 LTS (목록은 최신순)
 pub fn latest_lts() -> Result<(String, String), String> {
     let index: serde_json::Value =
-        serde_json::from_slice(&curl("https://nodejs.org/dist/index.json")?).map_err(|e| format!("배포 목록 형식 오류: {e}"))?;
-    pick_lts(&index).ok_or_else(|| "LTS 버전을 찾지 못했습니다.".into())
+        serde_json::from_slice(&curl("https://nodejs.org/dist/index.json")?).map_err(|e| trf("배포 목록 형식 오류: {0}", &[&e]))?;
+    pick_lts(&index).ok_or_else(|| tr("LTS 버전을 찾지 못했습니다.").into())
 }
 
 /// (버전, LTS 이름) — lts 가 false 가 아닌 첫 항목
@@ -143,7 +144,7 @@ pub enum NodeSupport {
 /// Node 공식 릴리스 일정
 pub fn node_schedule() -> Result<serde_json::Value, String> {
     serde_json::from_slice(&curl("https://raw.githubusercontent.com/nodejs/Release/main/schedule.json")?)
-        .map_err(|e| format!("릴리스 일정 형식 오류: {e}"))
+        .map_err(|e| trf("릴리스 일정 형식 오류: {0}", &[&e]))
 }
 
 pub fn today() -> String {
@@ -173,12 +174,12 @@ fn node_platform() -> Result<&'static str, String> {
     let os = match std::env::consts::OS {
         "macos" => "darwin",
         "linux" => "linux",
-        other => return Err(format!("{other}용 Node 자동 설치는 아직 지원하지 않습니다.")),
+        other => return Err(trf("{0}용 Node 자동 설치는 아직 지원하지 않습니다.", &[&other])),
     };
     let arch = match std::env::consts::ARCH {
         "x86_64" => "x64",
         "aarch64" => "arm64",
-        other => return Err(format!("{other} CPU용 Node 자동 설치는 아직 지원하지 않습니다.")),
+        other => return Err(trf("{0} CPU용 Node 자동 설치는 아직 지원하지 않습니다.", &[&other])),
     };
     Ok(match (os, arch) {
         ("darwin", "x64") => "darwin-x64",
@@ -199,11 +200,11 @@ fn install_node_lts() -> Result<String, String> {
     let expected = sums
         .lines()
         .find_map(|l| l.strip_suffix(&format!("  {file}")).map(str::to_string))
-        .ok_or_else(|| format!("{file} 의 체크섬을 찾지 못했습니다."))?;
+        .ok_or_else(|| trf("{0} 의 체크섬을 찾지 못했습니다.", &[&file]))?;
     let data = curl(&format!("{base}/{file}"))?;
     let actual = format!("{:x}", Sha256::digest(&data));
     if actual != expected {
-        return Err(format!("내려받은 파일의 체크섬이 맞지 않아 설치를 멈췄습니다 ({file})."));
+        return Err(trf("내려받은 파일의 체크섬이 맞지 않아 설치를 멈췄습니다 ({0}).", &[&file]));
     }
 
     let dir = tools_dir();
@@ -213,7 +214,7 @@ fn install_node_lts() -> Result<String, String> {
     let out = Command::new("tar").arg("-xzf").arg(&archive).arg("-C").arg(&dir).output().map_err(|e| e.to_string())?;
     let _ = fs::remove_file(&archive);
     if !out.status.success() {
-        return Err(format!("압축 풀기 실패: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(trf("압축 풀기 실패: {0}", &[&String::from_utf8_lossy(&out.stderr).trim()]));
     }
 
     // tools/node → node-vXX-플랫폼 (다음 LTS 로 바꿀 때 링크만 갈아 끼운다)
@@ -223,7 +224,7 @@ fn install_node_lts() -> Result<String, String> {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&unpacked, &link).map_err(|e| e.to_string())?;
     prepend_path(&node_bin_dir());
-    Ok(format!("Node.js {version} ({codename} LTS) 설치: {}", unpacked.display()))
+    Ok(trf("Node.js {0} ({1} LTS) 설치: {2}", &[&version, &codename, &unpacked.display()]))
 }
 
 /// 앱이 설치한 도구를 PATH 앞에 둔다 (시작할 때와 설치 직후)

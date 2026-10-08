@@ -5,6 +5,8 @@ use std::os::unix::process::CommandExt; // process_group
 use std::path::Path;
 use std::process::Command;
 
+use crate::i18n::tr;
+
 /// 명령을 새 프로세스 그룹의 리더로 띄우고 detach 한다. 자식 PID 를 돌려준다.
 pub fn spawn_in_new_group(program: &str, args: &[&str], dir: &str) -> Result<u32, String> {
     let child = Command::new(program)
@@ -16,7 +18,7 @@ pub fn spawn_in_new_group(program: &str, args: &[&str], dir: &str) -> Result<u32
         // 그러지 않으면 래퍼만 죽고 dev server 가 포트를 계속 물고 있어 재시작이 실패한다.
         .process_group(0)
         .spawn()
-        .map_err(|e| format!("실행 실패: {e}"))?;
+        .map_err(|e| crate::i18n::trf("실행 실패: {0}", &[&e]))?;
     let pid = child.id();
     // 서버가 끝나면 이 스레드가 회수(wait)해 좀비로 남지 않게 한다.
     // (SIGCHLD 를 SIG_IGN 으로 두는 방법은 Command::output() 까지 ECHILD 로
@@ -85,8 +87,9 @@ pub fn update_hosts(domain: &str, add: bool) -> Result<(), String> {
 pub fn read_log(path: &str, max_lines: usize) -> Result<String, String> {
     if !Path::new(path).exists() {
         return Err(format!(
-            "로그 파일이 아직 없습니다:\n{path}\n\n\
-             (프로젝트를 한 번 '수정 → 저장'하면 vhost에 전용 ErrorLog가 추가됩니다.)"
+            "{}\n{path}\n\n{}",
+            tr("로그 파일이 아직 없습니다:"),
+            tr("(프로젝트를 한 번 '수정 → 저장'하면 vhost에 전용 ErrorLog가 추가됩니다.)")
         ));
     }
 
@@ -103,7 +106,8 @@ pub fn read_log(path: &str, max_lines: usize) -> Result<String, String> {
                 Ok(String::from_utf8_lossy(&out.stdout).to_string())
             } else {
                 Err(format!(
-                    "로그를 읽을 수 없습니다 (권한). sudoers 설정이 필요할 수 있습니다.\n{}",
+                    "{}\n{}",
+                    tr("로그를 읽을 수 없습니다 (권한). sudoers 설정이 필요할 수 있습니다."),
                     String::from_utf8_lossy(&out.stderr).trim()
                 ))
             }
@@ -114,7 +118,7 @@ pub fn read_log(path: &str, max_lines: usize) -> Result<String, String> {
 /// 로그 파일을 비운다(truncate). 파일 소유자가 root이므로 sudo가 필요하다.
 pub fn clear_log(path: &str) -> Result<(), String> {
     if !Path::new(path).exists() {
-        return Err("비울 로그 파일이 없습니다.".to_string());
+        return Err(tr("비울 로그 파일이 없습니다.").to_string());
     }
     // 맥에는 truncate 명령이 없어 /dev/null 을 덮어써서 비운다.
     #[cfg(target_os = "linux")]
@@ -130,7 +134,8 @@ pub fn clear_log(path: &str) -> Result<(), String> {
     } else {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         Err(format!(
-            "로그를 비우지 못했습니다. install-sudoers.sh를 다시 실행해 truncate 규칙을 추가하세요.\n{err}"
+            "{}\n{err}",
+            tr("로그를 비우지 못했습니다. install-sudoers.sh를 다시 실행해 truncate 규칙을 추가하세요.")
         ))
     }
 }

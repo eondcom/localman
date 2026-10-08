@@ -1,6 +1,7 @@
 //! 데비안/우분투 계열 리눅스: systemd, apt, a2enmod, /etc/apache2, /proc.
 
 use super::ServiceStatus;
+use crate::i18n::{tr, trf};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -51,7 +52,7 @@ pub fn install_package_for(service: &str) -> Option<&'static str> {
 
 pub fn install_service(service: &str) -> Result<(), String> {
     let package = install_package_for(service)
-        .ok_or_else(|| format!("설치할 수 있는 서비스가 아닙니다: {service}"))?;
+        .ok_or_else(|| trf("설치할 수 있는 서비스가 아닙니다: {0}", &[&service]))?;
 
     let output = Command::new("sudo")
         .args(["-n", "/usr/bin/apt-get", "install", "-y", package])
@@ -67,7 +68,7 @@ pub fn install_service(service: &str) -> Result<(), String> {
     let error = String::from_utf8_lossy(&output.stderr);
     // `sudo -n`의 권한 오류를 그대로 노출하면 사용자가 sudoers 재설치 방법을 알기 어렵다.
     if error.contains("password is required") || error.contains("a password is required") {
-        return Err("설치 권한이 없습니다. install-sudoers.sh 를 다시 실행하십시오.".into());
+        return Err(tr("설치 권한이 없습니다. install-sudoers.sh 를 다시 실행하십시오.").into());
     }
 
     Err(error.to_string())
@@ -96,7 +97,7 @@ pub fn php_module_ready() -> bool {
 }
 
 pub fn install_tool(key: &str) -> Result<String, String> {
-    let pkgs = tool_packages(key).ok_or_else(|| format!("설치할 수 있는 도구가 아닙니다: {key}"))?;
+    let pkgs = tool_packages(key).ok_or_else(|| trf("설치할 수 있는 도구가 아닙니다: {0}", &[&key]))?;
     let mut args = vec!["-n", "/usr/bin/apt-get", "install", "-y"];
     args.extend(pkgs.iter());
     let out = Command::new("sudo")
@@ -107,7 +108,7 @@ pub fn install_tool(key: &str) -> Result<String, String> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("password is required") {
-            return Err("설치 권한이 없습니다. scripts/linux/install-sudoers.sh 를 다시 실행하십시오.".into());
+            return Err(tr("설치 권한이 없습니다. scripts/linux/install-sudoers.sh 를 다시 실행하십시오.").into());
         }
         return Err(err.trim().to_string());
     }
@@ -115,7 +116,7 @@ pub fn install_tool(key: &str) -> Result<String, String> {
         // mod_php 가 새로 켜졌으니 Apache 에 반영한다
         reload_web_server();
     }
-    Ok(format!("{} 설치 완료", pkgs.join(" ")))
+    Ok(trf("{0} 설치 완료", &[&pkgs.join(" ")]))
 }
 
 pub fn toggle_service(name: &str, start: bool) -> Result<(), String> {
@@ -193,9 +194,9 @@ fn ensure_modules(wanted: &[(&str, &[&str])], what: &str) -> Result<(), String> 
         let err = String::from_utf8_lossy(&r.stderr).to_string();
         eprintln!("[localman] a2enmod 실패: {err}");
         return Err(format!(
-            "Apache {what} 모듈 활성화 실패.\n\
-             터미널에서 한 번 실행 후 재시도하세요:\n\
-             sudo a2enmod {} && sudo systemctl reload apache2",
+            "{}\n{}\nsudo a2enmod {} && sudo systemctl reload apache2",
+            trf("Apache {0} 모듈 활성화 실패.", &[&what]),
+            tr("터미널에서 한 번 실행 후 재시도하세요:"),
             needed.join(" ")
         ));
     }
@@ -205,7 +206,7 @@ fn ensure_modules(wanted: &[(&str, &[&str])], what: &str) -> Result<(), String> 
         .output()
         .map_err(|e| e.to_string())?;
     if !reload.status.success() {
-        return Err(format!("Apache reload 실패: {}", String::from_utf8_lossy(&reload.stderr)));
+        return Err(trf("Apache reload 실패: {0}", &[&String::from_utf8_lossy(&reload.stderr)]));
     }
     Ok(())
 }
@@ -235,7 +236,8 @@ pub fn trust_ca(ca: &Path) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     if !cp.status.success() {
         return Err(format!(
-            "인증기관 등록 권한이 없습니다. scripts/linux/install-sudoers.sh 를 다시 실행하십시오.\n{}",
+            "{}\n{}",
+            tr("인증기관 등록 권한이 없습니다. scripts/linux/install-sudoers.sh 를 다시 실행하십시오."),
             String::from_utf8_lossy(&cp.stderr).trim()
         ));
     }
@@ -248,7 +250,10 @@ pub fn trust_ca(ca: &Path) -> Result<String, String> {
     }
     let has_certutil = Command::new("certutil").arg("-H").output().is_ok();
     if !has_certutil {
-        return Ok("✓ 시스템에 인증기관 등록 (크롬·파이어폭스에도 등록하려면 `sudo apt install libnss3-tools` 후 다시 켜세요)".into());
+        return Ok(format!(
+            "✓ {}",
+            tr("시스템에 인증기관 등록 (크롬·파이어폭스에도 등록하려면 `sudo apt install libnss3-tools` 후 다시 켜세요)")
+        ));
     }
     let mut browsers = 0;
     for db in dbs {
@@ -262,7 +267,7 @@ pub fn trust_ca(ca: &Path) -> Result<String, String> {
             browsers += 1;
         }
     }
-    Ok(format!("✓ 시스템과 브라우저 저장소 {browsers}곳에 인증기관 등록"))
+    Ok(format!("✓ {}", trf("시스템과 브라우저 저장소 {0}곳에 인증기관 등록", &[&browsers])))
 }
 
 /// vhost 설정을 sites-available에 쓰고 활성화한 뒤 Apache를 reload한다.
@@ -272,7 +277,7 @@ pub fn write_site(id: &str, conf: &str) -> Result<(), String> {
     eprintln!("[localman] vhost 파일 작성: {conf_path}");
 
     let tmp_path = format!("/tmp/localman_vhost_{id}.conf");
-    fs::write(&tmp_path, conf).map_err(|e| format!("임시 파일 쓰기 실패: {e}"))?;
+    fs::write(&tmp_path, conf).map_err(|e| trf("임시 파일 쓰기 실패: {0}", &[&e]))?;
     let cp_out = Command::new("sudo")
         .args(["cp", &tmp_path, &conf_path])
         .output()
@@ -280,7 +285,7 @@ pub fn write_site(id: &str, conf: &str) -> Result<(), String> {
     if !cp_out.status.success() {
         let err = String::from_utf8_lossy(&cp_out.stderr).to_string();
         eprintln!("[localman] vhost cp 실패: {err}");
-        return Err(format!("vhost 파일 쓰기 실패: {err}"));
+        return Err(trf("vhost 파일 쓰기 실패: {0}", &[&err]));
     }
     let ln_out = Command::new("sudo")
         .args(["ln", "-sf", &conf_path, &enable_path])
@@ -288,7 +293,7 @@ pub fn write_site(id: &str, conf: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     if !ln_out.status.success() {
         let err = String::from_utf8_lossy(&ln_out.stderr).trim().to_string();
-        return Err(format!("vhost 활성화(ln) 실패: {err}"));
+        return Err(trf("vhost 활성화(ln) 실패: {0}", &[&err]));
     }
     // reload 가 실패하면 설정 파일은 바뀌었어도 Apache 에 반영되지 않는다.
     // 예전엔 종료 코드를 무시해서 "저장됐는데 반영이 안 되는" 상태가 조용히 생겼다.
@@ -303,7 +308,7 @@ pub fn write_site(id: &str, conf: &str) -> Result<(), String> {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
             .unwrap_or_default();
-        return Err(format!("Apache 재적용(reload) 실패 — 저장됐지만 반영 안 됨: {err} {configtest}"));
+        return Err(trf("Apache 재적용(reload) 실패 — 저장됐지만 반영 안 됨: {0}", &[&format!("{err} {configtest}")]));
     }
     Ok(())
 }
