@@ -187,4 +187,16 @@ pub const T: &[(&str, &str, &str)] = &[
     ("리눅스", "Linux", "Linux"),
     ("맥", "Mac", "Mac"),
     ("윈도우", "Windows", "Windows"),
+    // 후원 (mac-fan-control 과 같은 번역)
+    ("후원", "Support", "サポート"),
+    ("후원하기", "Support", "支援する"),
+    ("앱이 도움이 됐다면", "If this app helped you", "このアプリが役に立ったら"),
+    ("광고 없이 무료로 유지하는 데 쓰입니다", "Keeps it free and ad-free", "広告なしの無料提供に使われます"),
+    ("카카오페이", "KakaoPay", "KakaoPay"),
+    ("PayPal로 후원", "Donate with PayPal", "PayPalで支援"),
+    ("카카오페이로 후원", "Donate with KakaoPay", "KakaoPayで支援"),
+    ("휴대폰 카메라나 카카오톡으로 찍어 주세요", "Scan with your phone camera or KakaoTalk", "スマートフォンのカメラまたはKakaoTalkで読み取ってください"),
+    ("링크 열기", "Open Link", "リンクを開く"),
+    ("링크 복사", "Copy Link", "リンクをコピー"),
+    ("복사했습니다 — 카카오톡으로 보내세요", "Copied — send it via KakaoTalk", "コピーしました — KakaoTalkで送ってください"),
 ];

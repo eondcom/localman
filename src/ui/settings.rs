@@ -1,7 +1,7 @@
 //! 설정 탭: 화면(테마), HTTPS(로컬 인증기관), 정보.
 
 use iced::{
-    widget::{column, Space},
+    widget::{column, row, Space},
     Element, Task,
 };
 
@@ -24,9 +24,21 @@ pub enum SettingsMessage {
     CertsRenewed(Vec<String>),
     OpenDataDir,
     OpenSite,
+    // 후원
+    ToggleKakaoQr,
+    OpenKakaoPay,
+    CopyKakaoPay,
+    OpenPayPal,
 }
 
+/// 후원 링크 — mac-fan-control 과 같다
+pub const KAKAOPAY_URL: &str = "https://qr.kakaopay.com/Ej7jeAAOU";
+pub const PAYPAL_URL: &str = "https://paypal.me/eond";
+
 pub struct SettingsState {
+    /// 카카오페이 QR 을 펼쳤는지
+    show_kakao_qr: bool,
+    kakao_copied: bool,
     theme: ThemeMode,
     lang: LangMode,
     https: bool,
@@ -60,6 +72,8 @@ impl SettingsState {
         apply_theme(s.theme);
         apply_lang(s.lang);
         Self {
+            show_kakao_qr: false,
+            kakao_copied: false,
             theme: s.theme,
             lang: s.lang,
             https: s.https,
@@ -67,6 +81,11 @@ impl SettingsState {
             https_busy: false,
             https_log: Vec::new(),
         }
+    }
+
+    /// 사이드바 [후원하기] — 설정 탭의 카카오페이 QR 을 펼친 채로 보여준다
+    pub fn open_donate(&mut self) {
+        self.show_kakao_qr = true;
     }
 
     pub fn https_on(&self) -> bool {
@@ -131,6 +150,23 @@ impl SettingsState {
             }
             SettingsMessage::OpenDataDir => {
                 open_url(&data_dir().to_string_lossy());
+                Task::none()
+            }
+            SettingsMessage::ToggleKakaoQr => {
+                self.show_kakao_qr = !self.show_kakao_qr;
+                self.kakao_copied = false;
+                Task::none()
+            }
+            SettingsMessage::OpenKakaoPay => {
+                open_url(KAKAOPAY_URL);
+                Task::none()
+            }
+            SettingsMessage::CopyKakaoPay => {
+                self.kakao_copied = true;
+                iced::clipboard::write(KAKAOPAY_URL.to_string())
+            }
+            SettingsMessage::OpenPayPal => {
+                open_url(PAYPAL_URL);
                 Task::none()
             }
             SettingsMessage::OpenSite => {
@@ -209,6 +245,40 @@ impl SettingsState {
             ),
         ]);
 
+        // 후원 — 카카오페이는 영어 화면을 쓰는 한국 사용자도 있어 언어와 상관없이 항상 보인다
+        let mut donate_rows = vec![setting_row(
+            tr("앱이 도움이 됐다면"),
+            Some(tr("광고 없이 무료로 유지하는 데 쓰입니다")),
+            row![
+                btn(tr("카카오페이"), Some(Icon::QrCode), Kind::Flat).on_press(SettingsMessage::ToggleKakaoQr),
+                btn(tr("PayPal로 후원"), Some(Icon::Heart), Kind::Primary).on_press(SettingsMessage::OpenPayPal),
+            ]
+            .spacing(6)
+            .into(),
+        )];
+        if self.show_kakao_qr {
+            let mut side = column![
+                theme::title(tr("카카오페이로 후원")),
+                theme::muted(tr("휴대폰 카메라나 카카오톡으로 찍어 주세요")),
+                Space::with_height(8),
+                row![
+                    btn(tr("링크 열기"), Some(Icon::ExternalLink), Kind::Flat).on_press(SettingsMessage::OpenKakaoPay),
+                    btn(tr("링크 복사"), Some(Icon::Copy), Kind::Flat).on_press(SettingsMessage::CopyKakaoPay),
+                ]
+                .spacing(6),
+            ]
+            .spacing(4);
+            if self.kakao_copied {
+                side = side.push(theme::status(tr("복사했습니다 — 카카오톡으로 보내세요"), Tone::Success));
+            }
+            donate_rows.push(
+                iced::widget::row![theme::qr_code(KAKAOPAY_URL, 4.0), side]
+                    .spacing(20)
+                    .align_y(iced::Alignment::Center)
+                    .into(),
+            );
+        }
+
         column![
             theme::page_header(tr("설정"), tr("화면, HTTPS, 앱 정보"), None),
             Space::with_height(16),
@@ -220,6 +290,9 @@ impl SettingsState {
             Space::with_height(14),
             section_label(tr("정보")),
             info,
+            Space::with_height(14),
+            section_label(tr("후원")),
+            group(donate_rows),
         ]
         .into()
     }

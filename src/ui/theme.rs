@@ -180,6 +180,8 @@ pub enum Icon {
     Server,
     /// 앱 로고 (집 + 플러그)
     HousePlug,
+    Heart,
+    QrCode,
     Folder,
     FolderOpen,
     Database,
@@ -223,6 +225,8 @@ impl Icon {
         let cp = match self {
             Icon::Server => 0xe156,
             Icon::HousePlug => 0xe5f4,
+            Icon::Heart => 0xe0f5,
+            Icon::QrCode => 0xe1de,
             Icon::Folder => 0xe0dc,
             Icon::FolderOpen => 0xe246,
             Icon::Database => 0xe0b1,
@@ -693,4 +697,31 @@ pub fn nav_item<'a, M: Clone + 'a>(i: Icon, label: &'a str, active: bool, msg: M
         shadow: Shadow::default(),
     })
     .into()
+}
+
+/// QR 코드 (흰 바탕 검은 칸). 휴대폰으로 찍을 수 있게 다크 테마에서도 흰 바탕을 쓴다.
+pub fn qr_code<'a, M: 'a>(data: &str, module: f32) -> Element<'a, M> {
+    let Ok(code) = qrcode::QrCode::new(data.as_bytes()) else {
+        return Space::with_width(0).into();
+    };
+    let w = code.width();
+    let colors = code.to_colors();
+    let cell = |dark: bool| {
+        container(Space::new(module, module)).width(module).height(module).style(move |_| container::Style {
+            background: Some(Background::Color(if dark { hex(0x000000) } else { hex(0xFFFFFF) })),
+            ..Default::default()
+        })
+    };
+    let mut col = column![];
+    for y in 0..w {
+        let mut r = row![];
+        for x in 0..w {
+            r = r.push(cell(colors[y * w + x] == qrcode::Color::Dark));
+        }
+        col = col.push(r);
+    }
+    container(col)
+        .padding(module * 3.0)
+        .style(|_| container::Style { background: Some(Background::Color(hex(0xFFFFFF))), border: radius(R_ROW), ..Default::default() })
+        .into()
 }

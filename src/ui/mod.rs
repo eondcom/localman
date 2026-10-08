@@ -45,6 +45,8 @@ pub enum Message {
     Settings(SettingsMessage),
     FocusNext,
     FocusPrevious,
+    /// 사이드바 [후원하기]
+    Donate,
     DismissToast(u64),
     CopyToast(String),
 }
@@ -160,6 +162,11 @@ impl App {
                 task
             }
             Message::Settings(msg) => self.settings.update(msg).map(Message::Settings),
+            Message::Donate => {
+                self.settings.open_donate();
+                self.active_tab = Tab::Settings;
+                Task::none()
+            }
             Message::FocusNext => iced::widget::focus_next(),
             Message::FocusPrevious => iced::widget::focus_previous(),
         }
@@ -269,6 +276,20 @@ impl App {
             nav(Icon::ArrowLeftRight, tr("백업·이전"), Tab::Transfer),
             nav(Icon::Settings, tr("설정"), Tab::Settings),
             Space::with_height(Length::Fill),
+            // 사이드바 아래 작은 후원 줄 (mac-fan-control 과 같은 자리)
+            iced::widget::button(
+                row![theme::icon(Icon::Heart, 13.0, p().fg3), text(tr("후원하기")).size(12).color(p().fg3)]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+            )
+            .on_press(Message::Donate)
+            .padding([6, 4])
+            .style(|_, s| iced::widget::button::Style {
+                background: (s == iced::widget::button::Status::Hovered).then(|| Background::Color(p().hover)),
+                border: iced::Border { radius: theme::R_ROW.into(), ..Default::default() },
+                ..Default::default()
+            }),
+            Space::with_height(8),
             summary,
         ]
         .spacing(4)
