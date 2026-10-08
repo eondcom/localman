@@ -35,6 +35,7 @@ fn main() -> iced::Result {
     application("LocalMan", App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
+        .scale_factor(App::scale_factor)
         .window(window::Settings {
             size: Size::new(1100.0, 700.0),
             icon: window::icon::from_file_data(APP_ICON, None).ok(),

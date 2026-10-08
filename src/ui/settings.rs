@@ -16,6 +16,7 @@ use crate::platform::{ca_trusted, open_url, system_prefers_dark};
 pub enum SettingsMessage {
     SetTheme(ThemeMode),
     SetLang(LangMode),
+    SetScale(u8),
     /// 시스템 테마를 따를 때 OS 설정이 바뀌었는지 주기적으로 본다
     CheckSystemTheme,
     SetHttps(bool),
@@ -48,6 +49,7 @@ pub struct SettingsState {
     kakao_copied: bool,
     theme: ThemeMode,
     lang: LangMode,
+    scale: u8,
     https: bool,
     autostart: bool,
     launch_at_login: bool,
@@ -87,6 +89,7 @@ impl SettingsState {
         let s = load_settings();
         apply_theme(s.theme);
         apply_lang(s.lang);
+        theme::set_scale(s.scale_percent());
         let mut api_error = None;
         if s.api_enabled && !s.api_token.is_empty() {
             if let Err(e) = crate::api::start(crate::api::DEFAULT_PORT, s.api_token.clone()) {
@@ -102,6 +105,7 @@ impl SettingsState {
             kakao_copied: false,
             theme: s.theme,
             lang: s.lang,
+            scale: s.scale_percent(),
             https: s.https,
             autostart: s.autostart_services,
             launch_at_login: crate::platform::launch_at_login(),
@@ -141,6 +145,14 @@ impl SettingsState {
                 apply_lang(mode);
                 let mut s = load_settings();
                 s.lang = mode;
+                let _ = save_settings(&s);
+                Task::none()
+            }
+            SettingsMessage::SetScale(pct) => {
+                self.scale = pct;
+                theme::set_scale(pct);
+                let mut s = load_settings();
+                s.ui_scale = pct;
                 let _ = save_settings(&s);
                 Task::none()
             }
@@ -277,6 +289,11 @@ impl SettingsState {
                     &self.lang,
                     SettingsMessage::SetLang,
                 ),
+            ),
+            setting_row(
+                tr("화면 크기"),
+                Some(tr("글자·여백을 모두 이 비율로 그립니다")),
+                segmented(&[(80, "80%"), (90, "90%"), (100, "100%"), (110, "110%")], &self.scale, SettingsMessage::SetScale),
             ),
         ]);
 

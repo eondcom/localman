@@ -222,4 +222,6 @@ pub const T: &[(&str, &str, &str)] = &[
     ("curl 예시 복사", "Copy curl example", "curl 例をコピー"),
     ("새 토큰", "New token", "新しいトークン"),
     ("자동화 (MCP·API)", "Automation (MCP · API)", "自動化(MCP・API)"),
+    ("화면 크기", "Display size", "表示サイズ"),
+    ("글자·여백을 모두 이 비율로 그립니다", "Draws text and spacing at this ratio", "文字と余白をすべてこの比率で表示します"),
 ];

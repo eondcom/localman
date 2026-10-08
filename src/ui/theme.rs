@@ -140,6 +140,17 @@ pub fn is_dark() -> bool {
     IS_DARK.load(Ordering::Relaxed)
 }
 
+/// 화면 크기 (%) — 앱 전체를 이 비율로 그린다
+static SCALE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(90);
+
+pub fn set_scale(percent: u8) {
+    SCALE.store(percent.clamp(70, 130), Ordering::Relaxed);
+}
+
+pub fn scale() -> f64 {
+    SCALE.load(Ordering::Relaxed) as f64 / 100.0
+}
+
 /// 지금 테마의 색
 pub fn p() -> &'static Pal {
     if is_dark() { &DARK } else { &LIGHT }
@@ -277,7 +288,7 @@ pub fn icon<'a, M: 'a>(i: Icon, size: f32, color: Color) -> Element<'a, M> {
 /// 페이지 제목 + 설명 + 오른쪽 동작
 pub fn page_header<'a, M: 'a>(title: &'a str, subtitle: &'a str, actions: Option<Element<'a, M>>) -> Element<'a, M> {
     let left = column![
-        text(title).size(26).font(BOLD).color(p().fg),
+        text(title).size(22).font(BOLD).color(p().fg),
         text(subtitle).size(13).color(p().fg3),
     ]
     .spacing(4)

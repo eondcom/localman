@@ -100,6 +100,10 @@ impl App {
         theme::iced_theme()
     }
 
+    pub fn scale_factor(&self) -> f64 {
+        theme::scale()
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.update_inner(message);
         // 각 탭이 쌓아둔 알림을 꺼내 토스트로 띄우고, 일정 시간 뒤 자동으로 닫는다.

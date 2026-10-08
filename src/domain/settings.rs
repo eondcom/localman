@@ -50,6 +50,20 @@ pub struct Settings {
     pub api_enabled: bool,
     #[serde(default)]
     pub api_token: String,
+    /// 화면 크기 (%) — macOS 기본 앱과 비슷한 밀도가 되도록 기본 90
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: u8,
+}
+
+fn default_ui_scale() -> u8 {
+    90
+}
+
+impl Settings {
+    /// 저장된 화면 크기 (설정 파일이 없어 Default 로 만든 0 은 기본값으로)
+    pub fn scale_percent(&self) -> u8 {
+        if self.ui_scale == 0 { default_ui_scale() } else { self.ui_scale }
+    }
 }
 
 pub(crate) fn data_dir() -> PathBuf {
