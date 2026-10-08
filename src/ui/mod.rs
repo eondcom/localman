@@ -1,4 +1,5 @@
 mod services;
+pub(crate) mod capture;
 mod projects;
 mod database;
 mod settings;
@@ -49,6 +50,9 @@ pub enum Message {
     Donate,
     DismissToast(u64),
     CopyToast(String),
+    /// 소개 영상 캡처 모드: 다음 단계 / 찍은 화면
+    CaptureStep(usize),
+    CaptureShot(usize, iced::window::Screenshot),
 }
 
 pub struct App {
@@ -60,6 +64,7 @@ pub struct App {
     settings: settings::SettingsState,
     toasts: Vec<Toast>,
     next_toast_id: u64,
+    capture: Option<capture::Plan>,
 }
 
 impl App {
@@ -77,8 +82,16 @@ impl App {
             settings,
             toasts: Vec::new(),
             next_toast_id: 0,
+            capture: capture::plan(),
         };
         let mut services_task = app.services.init_task().map(Message::Services);
+        if app.capture.is_some() {
+            // 첫 화면이 다 그려질 시간을 준다
+            services_task = Task::batch([
+                services_task,
+                Task::perform(async { tokio::time::sleep(std::time::Duration::from_millis(2500)).await }, |_| Message::CaptureStep(0)),
+            ]);
+        }
         if crate::domain::settings::load_settings().autostart_services {
             services_task = Task::batch([services_task, services::ServicesState::autostart_task().map(Message::Services)]);
         }
@@ -98,6 +111,78 @@ impl App {
 
     pub fn theme(&self) -> Theme {
         theme::iced_theme()
+    }
+
+    /// 캡처 모드 한 단계: 동작 → 기다림 → (찍기) → 다음 단계
+    fn capture_step(&mut self, i: usize) -> Task<Message> {
+        use crate::domain::settings::{LangMode, PmaTool, ThemeMode};
+        let Some(plan) = &self.capture else { return Task::none() };
+        let Some(step) = plan.steps.get(i).cloned() else {
+            eprintln!("[capture] 끝 — {}장", plan.steps.iter().filter(|s| s.get("shot").is_some()).count());
+            return iced::exit();
+        };
+        let s = |k: &str| step.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let mut action: Task<Message> = Task::none();
+        if let Some(tab) = s("tab") {
+            let t = match tab.as_str() {
+                "projects" => Tab::Projects,
+                "database" => Tab::Database,
+                "transfer" => Tab::Transfer,
+                "settings" => Tab::Settings,
+                _ => Tab::Services,
+            };
+            action = self.update(Message::TabSelected(t));
+        }
+        if let Some(q) = s("search") {
+            action = self.update(Message::Projects(ProjectsMessage::SearchChanged(q)));
+        }
+        if let Some(id) = s("menu") {
+            action = self.update(Message::Projects(ProjectsMessage::ToggleMenu(id)));
+        }
+        if let Some(id) = s("deploy") {
+            action = self.update(Message::Projects(ProjectsMessage::OpenDeploy(id)));
+        }
+        if step.get("close_deploy").is_some() {
+            action = self.update(Message::Projects(ProjectsMessage::CloseDeploy));
+        }
+        if let Some(arr) = step.get("site_tool").and_then(|v| v.as_array()) {
+            if let (Some(id), Some(mode)) = (arr.first().and_then(|v| v.as_str()), arr.get(1).and_then(|v| v.as_str())) {
+                let m = if mode == "password" { projects::SiteToolMode::Password } else { projects::SiteToolMode::LocalDb };
+                action = self.update(Message::Projects(ProjectsMessage::OpenSiteTool(id.to_string(), m)));
+            }
+        }
+        if step.get("close_site_tool").is_some() {
+            action = self.update(Message::Projects(ProjectsMessage::CloseSiteTool));
+        }
+        if let Some(l) = s("lang") {
+            let m = match l.as_str() { "en" => LangMode::En, "ja" => LangMode::Ja, _ => LangMode::Ko };
+            action = self.update(Message::Settings(SettingsMessage::SetLang(m)));
+        }
+        if let Some(t) = s("theme") {
+            let m = if t == "dark" { ThemeMode::Dark } else { ThemeMode::Light };
+            action = self.update(Message::Settings(SettingsMessage::SetTheme(m)));
+        }
+        if let Some(t) = s("db_tool") {
+            let m = if t == "phpmyadmin" { PmaTool::PhpMyAdmin } else { PmaTool::Adminer };
+            action = self.update(Message::Database(database::DatabaseMessage::SetPmaTool(m)));
+        }
+        if let Some(y) = step.get("scroll").and_then(|v| v.as_f64()) {
+            action = iced::widget::scrollable::scroll_to(
+                iced::widget::scrollable::Id::new("content"),
+                iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: y as f32 },
+            );
+        }
+        let wait = step.get("wait").and_then(|v| v.as_u64()).unwrap_or(500);
+        let sleep = Task::perform(async move { tokio::time::sleep(std::time::Duration::from_millis(wait)).await }, |_| ());
+        let next: Task<Message> = if step.get("shot").is_some() {
+            iced::window::get_oldest()
+                .and_then(iced::window::screenshot)
+                .map(move |shot| Message::CaptureShot(i, shot))
+        } else {
+            Task::done(Message::CaptureStep(i + 1))
+        };
+        // 동작이 만든 작업(서비스 확인 등)은 따로 돌리고, 시간만 기다린 뒤 찍는다
+        Task::batch([action, sleep.discard().chain(next)])
     }
 
     pub fn scale_factor(&self) -> f64 {
@@ -134,6 +219,19 @@ impl App {
                 Task::none()
             }
             Message::CopyToast(s) => iced::clipboard::write(s),
+            Message::CaptureStep(i) => self.capture_step(i),
+            Message::CaptureShot(i, shot) => {
+                if let Some(plan) = &self.capture {
+                    if let Some(name) = plan.steps.get(i).and_then(|s| s.get("shot")).and_then(|v| v.as_str()) {
+                        let path = plan.out.join(format!("{name}.png"));
+                        match capture::save_png(&path, shot.size.width, shot.size.height, &shot.bytes) {
+                            Ok(()) => eprintln!("[capture] {name}.png {}x{}", shot.size.width, shot.size.height),
+                            Err(e) => eprintln!("[capture] {name}: {e} (bytes {}, size {:?})", shot.bytes.len(), shot.size),
+                        }
+                    }
+                }
+                Task::done(Message::CaptureStep(i + 1))
+            }
             Message::TabSelected(tab) => {
                 // 서비스·프로젝트 화면은 Apache 등 상태를 보여주므로 들어갈 때 백그라운드로 다시 확인한다
                 let services = matches!(tab, Tab::Services | Tab::Projects);
@@ -220,7 +318,7 @@ impl App {
             bottom: 28.0,
             left: 28.0,
             right: 28.0,
-        })))
+        })).id(iced::widget::scrollable::Id::new("content")))
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style { background: Some(Background::Color(p().app_bg)), ..Default::default() });

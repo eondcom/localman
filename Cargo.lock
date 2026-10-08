@@ -2782,6 +2782,7 @@ dependencies = [
  "futures",
  "iced",
  "md5 0.7.0",
+ "png",
  "qrcode",
  "rcgen",
  "rfd",

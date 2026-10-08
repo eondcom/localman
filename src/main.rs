@@ -37,7 +37,9 @@ fn main() -> iced::Result {
         .theme(App::theme)
         .scale_factor(App::scale_factor)
         .window(window::Settings {
-            size: Size::new(1100.0, 700.0),
+            size: window_size(),
+            // 소개 영상 캡처: 가려지면 macOS 가 다시 그리지 않아 스크린샷이 오지 않는다 → 맨 위에
+            level: if std::env::var("LOCALMAN_CAPTURE").is_ok() { window::Level::AlwaysOnTop } else { window::Level::Normal },
             icon: window::icon::from_file_data(APP_ICON, None).ok(),
             #[cfg(target_os = "linux")]
             platform_specific: window::settings::PlatformSpecific {
@@ -64,4 +66,15 @@ fn apply_saved_lang() {
         LangMode::Ja => i18n::Lang::Ja,
         LangMode::System => i18n::from_locale(&platform::system_language()),
     });
+}
+
+/// 창 크기 — 기본 1100×700, 캡처 모드는 LOCALMAN_WINDOW=가로x세로
+fn window_size() -> Size {
+    std::env::var("LOCALMAN_WINDOW")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some(Size::new(w.trim().parse().ok()?, h.trim().parse().ok()?))
+        })
+        .unwrap_or(Size::new(1100.0, 700.0))
 }

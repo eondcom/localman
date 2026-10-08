@@ -28,6 +28,7 @@ russh-sftp = "3.0.1"
 futures = "0.3"
 bcrypt = "0.17"
 md5 = "0.7"
+png = "0.17"
 
 [profile.release]
 opt-level = 3

@@ -251,7 +251,12 @@ impl TransferState {
             Task::batch([
                 Task::done(TransferMessage::LoadDatabases),
                 // DB 폴더 크기를 재므로 작업 스레드에서
-                Task::perform(blocking(detect_mamp), TransferMessage::MampDetected),
+                // 소개 영상 캡처(데모)에서는 실제 MAMP(남의 DB 이름)를 띄우지 않는다
+                if super::capture::demo() {
+                    Task::none()
+                } else {
+                    Task::perform(blocking(detect_mamp), TransferMessage::MampDetected)
+                },
             ]),
         )
     }

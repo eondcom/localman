@@ -1513,7 +1513,7 @@ fn project_row_view_with_state<'a>(
         .style(|_, _| iced::widget::button::Style::default()),
         // 경로 — 누르면 Finder·파일 관리자로 연다
         iced::widget::button(
-            row![icon(Icon::FolderOpen, 12.0, c.fg3), text(&p_.path).size(12).color(c.fg3)]
+            row![icon(Icon::FolderOpen, 12.0, c.fg3), text(tilde_path(&p_.path)).size(12).color(c.fg3)]
                 .spacing(5)
                 .align_y(iced::Alignment::Center),
         )
@@ -2160,5 +2160,13 @@ async fn pick_folder() -> Option<String> {
             Some(path)
         }
         None => None,
+    }
+}
+
+/// 홈 폴더 아래 경로는 ~ 로 줄여 보인다 (/Users/me/Sites/shop → ~/Sites/shop)
+fn tilde_path(path: &str) -> String {
+    match dirs::home_dir().map(|h| h.to_string_lossy().trim_end_matches('/').to_string()) {
+        Some(home) if !home.is_empty() && (path == home || path.starts_with(&format!("{home}/"))) => format!("~{}", &path[home.len()..]),
+        _ => path.to_string(),
     }
 }
