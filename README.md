@@ -156,6 +156,12 @@ curl -H "Authorization: Bearer <토큰>" -X POST http://127.0.0.1:47810/api/tool
      -d '{"id":"eond","files":true,"db":true}'
 ```
 
+### eondctl 연동 (2026-10-09)
+`eondctl` 도구로 eond.com 배포 도구를 부른다 — `eondctl(action="status"|"dry-run"|"quick"|"full"|…)`, `eondctl_status` 로 어느 길로 부를지 확인.
+eondctl 로컬 API(127.0.0.1:47811, 토큰은 `~/.config/eondctl/config.json`)가 떠 있으면 API 로, 아니면 설치된 `~/.local/bin/eondctl` CLI 로 실행한다.
+거꾸로 eondctl 은 이 앱의 HTTP API(`start_project`·`stop_project`)로 로컬 서버를 켜고 끈다 — 그래서 HTTP API 를 켜 두면 eondctl 로컬 탭의 켜기·끄기가 LocalMan 을 거친다.
+구현: `src/domain/eondctl.rs`.
+
 ## HTTPS (로컬 인증기관)
 
 서비스 탭의 [HTTPS 켜기]로 모든 프로젝트를 `https://<도메인>`으로도 연다 (http도 그대로 열려 있다).

@@ -92,6 +92,23 @@ pub const TOOLS: &[Tool] = &[
         schema: no_args,
     },
     Tool {
+        name: "eondctl",
+        description: "eond.com(eondcms) 배포 도구 eondctl 을 부른다. action: full(빌드→rsync→poetry·alembic→restart→헬스체크), backend(빌드 없이), frontend(빌드→rsync), quick(rsync→restart), dry-run(전송 목록만), status(무엇을 배포해야 하나), check, server, logs/nginx(lines 줄), history, local-status/local-start/local-stop(LocalMan 에 되묻는 로컬 서버). eondctl API 가 떠 있으면 API 로, 아니면 eondctl CLI 로 실행.",
+        schema: || json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": super::eondctl::ACTIONS },
+                "lines": { "type": "integer", "description": "logs/nginx 줄 수 (기본 60)" }
+            },
+            "required": ["action"]
+        }),
+    },
+    Tool {
+        name: "eondctl_status",
+        description: "eondctl 이 설치되어 있는지, 로컬 API 가 떠 있는지(어느 길로 부를지).",
+        schema: no_args,
+    },
+    Tool {
         name: "pull_from_server",
         description: "Pull a site from its saved live server (set in LocalMan > Projects > Server). files: rsync the web folder into the project folder (never deletes local files, keeps local config). db: dump the server DB and load it into a local DB (the local DB is backed up first).",
         schema: || json!({
@@ -297,6 +314,8 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
             }
             Ok(json!({ "log": log }))
         }
+        "eondctl" => super::eondctl::run(required(args, "action")?, args.get("lines").and_then(Value::as_u64)),
+        "eondctl_status" => Ok(super::eondctl::describe()),
         _ => Err(format!("unknown tool: {name}")),
     }
 }
