@@ -315,7 +315,7 @@ impl SettingsState {
 
         // 자동화 — MCP(Claude 등 AI)와 로컬 HTTP API
         let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "LocalMan".into());
-        let claude_cmd = format!("claude mcp add localman -- \"{exe}\" --mcp");
+        let claude_cmd = format!("claude mcp add -s user localman -- \"{exe}\" --mcp");
         let desktop_json = format!(
             "{{\n  \"mcpServers\": {{\n    \"localman\": {{ \"command\": {}, \"args\": [\"--mcp\"] }}\n  }}\n}}",
             serde_json::to_string(&exe).unwrap_or_default()

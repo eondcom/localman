@@ -1,6 +1,6 @@
 //! MCP 서버 (stdio). `LocalMan --mcp` 로 실행한다.
 //!
-//! Claude Code: `claude mcp add localman -- /Applications/LocalMan.app/Contents/MacOS/LocalMan --mcp`
+//! Claude Code: `claude mcp add -s user localman -- /Applications/LocalMan.app/Contents/MacOS/LocalMan --mcp`
 //! 표준입출력으로 한 줄에 JSON-RPC 메시지 하나씩 주고받는다. 도구는 domain::automation 과 같다.
 
 use serde_json::{Value, json};

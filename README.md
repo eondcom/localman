@@ -147,8 +147,9 @@ SSH 비밀번호는 `SSH_ASKPASS`로 넘겨 명령줄에 남기지 않는다. �
 서버에서 가져오기를 할 수 있다. **DB·프로젝트 삭제와 서버로 올리기는 열지 않는다.**
 
 ```bash
-# Claude Code 에 MCP 서버로 등록 (설정 화면의 [Claude Code 명령 복사]와 같다)
-claude mcp add localman -- /Applications/LocalMan.app/Contents/MacOS/LocalMan --mcp
+# Claude Code 에 MCP 서버로 등록 (설정 화면의 [Claude Code 명령 복사]와 같다) — `-s user` 가 없으면 등록한 폴더에서만 보인다
+# 다른 프로젝트에서 쓰는 법: docs/mcp-guide.md
+claude mcp add -s user localman -- /Applications/LocalMan.app/Contents/MacOS/LocalMan --mcp
 
 # HTTP API — 설정에서 켜면 앱이 떠 있는 동안 127.0.0.1:47810 에서만 듣는다 (토큰 필요)
 curl -H "Authorization: Bearer <토큰>" http://127.0.0.1:47810/api/tools
