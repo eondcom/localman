@@ -9,6 +9,7 @@ use super::theme::{
 use crate::domain::settings::load_settings;
 use crate::domain::DbEngine;
 use crate::domain::deploy::{DeployTarget, default_target, load_target, preview_files, push_database, save_target, test_connection, upload_files};
+use crate::domain::site_config::{self, SiteKind};
 use crate::domain::pull::{default_local_db_name, preview_pull, pull_database, pull_files};
 use crate::domain::lan::human_bytes;
 use crate::domain::project::{ProjectDb, set_project_db};
@@ -21,7 +22,6 @@ use crate::domain::{
     start_server, stop_server, server_status, auto_assign_port,
     setup_project, deps_ready, auto_detect_start_command, auto_detect_next_command,
     detect_next_app_dir, join_dir,
-    is_rhymix_project, rx_reset_admin_password,
 };
 use crate::platform::{error_log_path, read_log, clear_log};
 use crate::domain::history::{last_for_project, load_history, summary_line};
@@ -46,14 +46,39 @@ struct LogView {
     error: Option<String>,
 }
 
-/// 라이믹스 관리자 비번 변경 모달 상태
-struct RxPasswordModal {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SiteToolMode {
+    /// 관리자 비밀번호 바꾸기
+    Password,
+    /// 설정 파일의 DB 정보를 로컬로
+    LocalDb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SiteField {
+    UserId,
+    NewPassword,
+    DbName,
+    DbUser,
+    DbPassword,
+}
+
+/// 라이믹스·XE·워드프레스 손보기 패널
+struct SiteTool {
     project_id: String,
     project_name: String,
+    kind: SiteKind,
+    mode: SiteToolMode,
+    admins: Vec<(String, String)>,
     user_id: String,
     new_password: String,
+    db_name: String,
+    db_user: String,
+    db_password: String,
+    url: bool,
+    has_backup: bool,
     running: bool,
-    message: Option<Result<String, String>>,
+    log: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,13 +122,16 @@ pub enum ProjectsMessage {
     CloseLog,
     #[allow(dead_code)]
     Refresh,
-    // 라이믹스 관리자 비번 변경
-    OpenRxPasswordModal(String),
-    RxUserIdChanged(String),
-    RxNewPasswordChanged(String),
-    RxResetPassword,
-    RxResetPasswordDone(Result<String, String>),
-    CloseRxPasswordModal,
+    // 사이트(라이믹스·XE·워드프레스) 손보기
+    OpenSiteTool(String, SiteToolMode),
+    SiteAdminsLoaded(Result<Vec<(String, String)>, String>),
+    SiteField(SiteField, String),
+    SiteUrlToggled(bool),
+    SiteSetPassword,
+    SiteLocalize,
+    SiteRestore,
+    SiteToolDone(Result<Vec<String>, String>),
+    CloseSiteTool,
     // 새 프로젝트 폼 열기/닫기
     ToggleAddForm,
     // 도메인·이름 검색
@@ -259,7 +287,7 @@ pub struct ProjectsState {
     // 에러 로그 뷰 (열려 있으면 Some)
     log_view: Option<LogView>,
     // 라이믹스 관리자 비번 변경 모달 (열려 있으면 Some)
-    rx_password_modal: Option<RxPasswordModal>,
+    site_tool: Option<SiteTool>,
     // 메시지
     error: Option<String>,
     server_message: Option<Result<String, String>>,
@@ -326,7 +354,7 @@ impl ProjectsState {
             edit_type: ProjectType::Php,
             setting_up: std::collections::HashSet::new(),
             log_view: None,
-            rx_password_modal: None,
+            site_tool: None,
             error: None,
             server_message: None,
         }
@@ -911,58 +939,114 @@ impl ProjectsState {
                 self.log_view = None;
                 Task::none()
             }
-            ProjectsMessage::OpenRxPasswordModal(id) => {
-                let name = self.projects.iter().find(|p| p.id == id)
-                    .map(|p| p.name.clone()).unwrap_or_else(|| id.clone());
-                self.rx_password_modal = Some(RxPasswordModal {
+            ProjectsMessage::OpenSiteTool(id, mode) => {
+                self.menu_open = None;
+                let Some(p) = self.projects.iter().find(|p| p.id == id).cloned() else { return Task::none() };
+                let Some(kind) = site_config::detect(&p) else { return Task::none() };
+                let acc = site_config::current_account(&p);
+                let has_backup = std::path::Path::new(&p.path)
+                    .join(format!("{}.{}", kind.config_file(), site_config::SERVER_BACKUP_EXT))
+                    .exists();
+                self.site_tool = Some(SiteTool {
                     project_id: id,
-                    project_name: name,
-                    user_id: "admin".to_string(),
+                    project_name: p.name.clone(),
+                    kind,
+                    mode,
+                    admins: Vec::new(),
+                    user_id: String::new(),
                     new_password: String::new(),
+                    db_name: p.db.as_ref().map(|d| d.name.clone()).or_else(|| acc.as_ref().map(|a| a.database.clone())).unwrap_or_default(),
+                    db_user: acc.as_ref().map(|a| a.user.clone()).unwrap_or_default(),
+                    db_password: acc.map(|a| a.pass).unwrap_or_default(),
+                    url: true,
+                    has_backup,
                     running: false,
-                    message: None,
+                    log: Vec::new(),
                 });
-                Task::none()
-            }
-            ProjectsMessage::RxUserIdChanged(v) => {
-                if let Some(m) = self.rx_password_modal.as_mut() { m.user_id = v; }
-                Task::none()
-            }
-            ProjectsMessage::RxNewPasswordChanged(v) => {
-                if let Some(m) = self.rx_password_modal.as_mut() { m.new_password = v; }
-                Task::none()
-            }
-            ProjectsMessage::RxResetPassword => {
-                let Some(m) = self.rx_password_modal.as_mut() else { return Task::none(); };
-                let user_id = m.user_id.trim().to_string();
-                let new_password = m.new_password.clone();
-                if user_id.is_empty() {
-                    m.message = Some(Err(tr("관리자 ID를 입력하세요.").to_string()));
-                    return Task::none();
+                if mode == SiteToolMode::Password {
+                    return Task::perform(
+                        async move { tokio::task::spawn_blocking(move || site_config::list_admins(&p)).await.unwrap_or_else(|e| Err(e.to_string())) },
+                        ProjectsMessage::SiteAdminsLoaded,
+                    );
                 }
-                if new_password.is_empty() {
-                    m.message = Some(Err(tr("새 비밀번호를 입력하세요.").to_string()));
-                    return Task::none();
+                Task::none()
+            }
+            ProjectsMessage::SiteAdminsLoaded(r) => {
+                if let Some(m) = self.site_tool.as_mut() {
+                    match r {
+                        Ok(list) => {
+                            if m.user_id.is_empty() {
+                                m.user_id = list.first().map(|(id, _)| id.clone()).unwrap_or_default();
+                            }
+                            m.admins = list;
+                        }
+                        Err(e) => m.log = vec![format!("✗ {e}")],
+                    }
                 }
-                let Some(project) = self.projects.iter().find(|p| p.id == m.project_id).cloned() else {
-                    return Task::none();
-                };
+                Task::none()
+            }
+            ProjectsMessage::SiteField(f, v) => {
+                if let Some(m) = self.site_tool.as_mut() {
+                    *match f {
+                        SiteField::UserId => &mut m.user_id,
+                        SiteField::NewPassword => &mut m.new_password,
+                        SiteField::DbName => &mut m.db_name,
+                        SiteField::DbUser => &mut m.db_user,
+                        SiteField::DbPassword => &mut m.db_password,
+                    } = v;
+                }
+                Task::none()
+            }
+            ProjectsMessage::SiteUrlToggled(on) => {
+                if let Some(m) = self.site_tool.as_mut() {
+                    m.url = on;
+                }
+                Task::none()
+            }
+            ProjectsMessage::SiteSetPassword | ProjectsMessage::SiteLocalize | ProjectsMessage::SiteRestore => {
+                let Some(m) = self.site_tool.as_mut() else { return Task::none() };
+                let Some(p) = self.projects.iter().find(|p| p.id == m.project_id).cloned() else { return Task::none() };
                 m.running = true;
-                m.message = None;
+                m.log.clear();
+                let job: Box<dyn FnOnce() -> Result<Vec<String>, String> + Send> = match msg {
+                    ProjectsMessage::SiteSetPassword => {
+                        let (login, pw) = (m.user_id.clone(), m.new_password.clone());
+                        m.new_password.clear();
+                        Box::new(move || site_config::set_admin_password(&p, &login, &pw).map(|l| vec![format!("✓ {l}")]))
+                    }
+                    ProjectsMessage::SiteLocalize => {
+                        let s = site_config::LocalDbSettings {
+                            database: m.db_name.clone(),
+                            user: m.db_user.clone(),
+                            password: m.db_password.clone(),
+                            url: m.url,
+                        };
+                        Box::new(move || site_config::localize(&p, &s))
+                    }
+                    _ => Box::new(move || site_config::restore_server_config(&p).map(|l| vec![format!("✓ {l}")])),
+                };
                 Task::perform(
-                    async move { rx_reset_admin_password(&project, &user_id, &new_password) },
-                    ProjectsMessage::RxResetPasswordDone,
+                    async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) },
+                    ProjectsMessage::SiteToolDone,
                 )
             }
-            ProjectsMessage::RxResetPasswordDone(result) => {
-                if let Some(m) = self.rx_password_modal.as_mut() {
+            ProjectsMessage::SiteToolDone(r) => {
+                if let Some(m) = self.site_tool.as_mut() {
                     m.running = false;
-                    m.message = Some(result);
+                    m.log = match r {
+                        Ok(l) => l,
+                        Err(e) => vec![format!("✗ {e}")],
+                    };
+                    if let Some(p) = self.projects.iter().find(|p| p.id == m.project_id) {
+                        m.has_backup = std::path::Path::new(&p.path)
+                            .join(format!("{}.{}", m.kind.config_file(), site_config::SERVER_BACKUP_EXT))
+                            .exists();
+                    }
                 }
                 Task::none()
             }
-            ProjectsMessage::CloseRxPasswordModal => {
-                self.rx_password_modal = None;
+            ProjectsMessage::CloseSiteTool => {
+                self.site_tool = None;
                 Task::none()
             }
         }
@@ -983,8 +1067,8 @@ impl ProjectsState {
         if self.adding {
             col = col.push(self.add_form()).push(Space::with_height(16));
         }
-        if let Some(m) = &self.rx_password_modal {
-            col = col.push(rx_password_panel(m)).push(Space::with_height(16));
+        if let Some(m) = &self.site_tool {
+            col = col.push(site_tool_panel(m)).push(Space::with_height(16));
         }
         if let Some(lv) = &self.log_view {
             col = col.push(log_panel(lv)).push(Space::with_height(16));
@@ -1302,9 +1386,6 @@ fn project_row_view_with_state<'a>(
             if apache_running { Tone::Success } else { Tone::Neutral },
         ));
     }
-    if is_rhymix_project(p_) {
-        actions = actions.push(btn(tr("관리자 비번"), Some(Icon::Key), Kind::Flat).on_press(ProjectsMessage::OpenRxPasswordModal(id.clone())));
-    }
     actions = actions
         .push(btn(tr("로그"), Some(Icon::FileText), Kind::Flat).on_press(ProjectsMessage::ViewLog(id.clone())))
         .push({
@@ -1315,7 +1396,7 @@ fn project_row_view_with_state<'a>(
         .push(icon_btn(Icon::Ellipsis, menu.is_some()).on_press(ProjectsMessage::ToggleMenu(id.clone())));
 
     let main = row![info, actions].spacing(16).align_y(iced::Alignment::Center);
-    card(with_menu(main.into(), menu, id, p_.path.clone()))
+    card(with_menu(main.into(), menu, id, p_.path.clone(), site_config::detect(p_)))
 }
 
 /// 더보기 메뉴가 열려 있으면 카드 아래에 동작과 최근 이전 기록을 붙인다.
@@ -1324,6 +1405,7 @@ fn with_menu<'a>(
     menu: Option<&'a [(bool, String)]>,
     id: String,
     path: String,
+    site: Option<SiteKind>,
 ) -> Element<'a, ProjectsMessage> {
     let Some(recent) = menu else {
         return main;
@@ -1347,9 +1429,15 @@ fn with_menu<'a>(
         row![
             column![
                 btn(tr("다른 PC로 보내기"), Some(Icon::Send), Kind::Primary).on_press(ProjectsMessage::SendToPc(id.clone())),
-                btn(tr("서버 배포·가져오기"), Some(Icon::Upload), Kind::Flat).on_press(ProjectsMessage::OpenDeploy(id)),
+                btn(tr("서버 배포·가져오기"), Some(Icon::Upload), Kind::Flat).on_press(ProjectsMessage::OpenDeploy(id.clone())),
                 btn(tr("폴더 열기"), Some(Icon::FolderOpen), Kind::Flat).on_press(ProjectsMessage::OpenFolder(path)),
             ]
+            .push_maybe(site.map(|_| {
+                btn(tr("관리자 비밀번호"), Some(Icon::Key), Kind::Flat).on_press(ProjectsMessage::OpenSiteTool(id.clone(), SiteToolMode::Password))
+            }))
+            .push_maybe(site.map(|_| {
+                btn(tr("로컬 DB로 설정 바꾸기"), Some(Icon::Database), Kind::Flat).on_press(ProjectsMessage::OpenSiteTool(id.clone(), SiteToolMode::LocalDb))
+            }))
             .spacing(6),
             Space::with_width(24),
             history.width(Length::Fill),
@@ -1639,42 +1727,68 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
     card(body)
 }
 
-// 라이믹스 관리자 비번 변경 패널
-fn rx_password_panel(m: &RxPasswordModal) -> Element<'_, ProjectsMessage> {
+// 사이트 손보기 패널 — 관리자 비밀번호 / 로컬 DB 로 설정 바꾸기
+fn site_tool_panel(m: &SiteTool) -> Element<'_, ProjectsMessage> {
+    let inp = |ph: &str, value: &str, f: SiteField| input(ph, value).on_input(move |v| ProjectsMessage::SiteField(f, v));
+    let title = match m.mode {
+        SiteToolMode::Password => trf("{0} 관리자 비밀번호 · {1}", &[&m.kind.label(), &m.project_name]),
+        SiteToolMode::LocalDb => trf("로컬 DB로 설정 바꾸기 · {0}", &[&m.project_name]),
+    };
     let header = row![
-        icon(Icon::Key, 15.0, p().fg2),
-        text(trf("라이믹스 관리자 비번 변경 · {0}", &[&m.project_name])).size(15).font(theme::SEMIBOLD).color(p().fg),
+        icon(if m.mode == SiteToolMode::Password { Icon::Key } else { Icon::Database }, 15.0, p().fg2),
+        text(title).size(15).font(theme::SEMIBOLD).color(p().fg),
         Space::with_width(Length::Fill),
-        btn(tr("닫기"), Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseRxPasswordModal),
+        btn(tr("닫기"), Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseSiteTool),
     ]
     .spacing(8)
     .align_y(iced::Alignment::Center);
+    let run = |label: &'static str, ic: Icon, kind: Kind, msg: ProjectsMessage| {
+        let b = btn(if m.running { tr("처리 중…") } else { label }, Some(ic), kind);
+        if m.running { b } else { b.on_press(msg) }
+    };
 
-    let change = btn(if m.running { tr("변경 중…") } else { tr("변경") }, Some(Icon::Check), Kind::Primary);
-    let form = row![
-        container(field(tr("관리자 ID"), input("admin", &m.user_id).on_input(ProjectsMessage::RxUserIdChanged).into(), None)).width(180),
-        field(
-            tr("새 비밀번호"),
-            input(tr("새 비밀번호"), &m.new_password).on_input(ProjectsMessage::RxNewPasswordChanged).secure(true).into(),
-            None,
-        ),
-        column![Space::with_height(20), if m.running { change } else { change.on_press(ProjectsMessage::RxResetPassword) }],
-    ]
-    .spacing(12);
-
-    let mut body = column![
-        header,
-        Space::with_height(6),
-        muted(tr("rx-cli(rx member reset-password)로 라이믹스 코어의 비밀번호 변경 로직을 그대로 부릅니다. 사이트 구분 없는 전역 회원 계정이니 ID를 정확히 입력하세요.")),
-        Space::with_height(14),
-        form,
-    ];
-    if let Some(msg) = &m.message {
-        let line = match msg {
-            Ok(m) => format!("✓ {m}"),
-            Err(e) => format!("✗ {e}"),
-        };
-        body = body.push(Space::with_height(12)).push(result_line(line));
+    let mut body = column![header, Space::with_height(6)];
+    match m.mode {
+        SiteToolMode::Password => {
+            body = body.push(muted(tr("사이트 DB의 관리자 계정 비밀번호를 바로 바꿉니다 (라이믹스·XE는 bcrypt, 워드프레스는 다음 로그인 때 자동으로 강한 방식으로 바뀝니다).")));
+            if !m.admins.is_empty() {
+                let list = m.admins.iter().map(|(id, mail)| format!("{id} ({mail})")).collect::<Vec<_>>().join(", ");
+                body = body.push(Space::with_height(4)).push(muted(trf("관리자: {0}", &[&list])));
+            }
+            body = body.push(Space::with_height(12)).push(
+                row![
+                    container(field(tr("관리자 ID"), inp("admin", &m.user_id, SiteField::UserId).into(), None)).width(200),
+                    field(tr("새 비밀번호"), inp(tr("새 비밀번호"), &m.new_password, SiteField::NewPassword).secure(true).into(), None),
+                    column![Space::with_height(20), run(tr("변경"), Icon::Check, Kind::Primary, ProjectsMessage::SiteSetPassword)],
+                ]
+                .spacing(12),
+            );
+        }
+        SiteToolMode::LocalDb => {
+            body = body.push(muted(trf(
+                "{0}의 DB 접속을 이 PC(localhost) 것으로 바꾸고, 그 계정을 이 PC의 DB에 만듭니다. 처음 바꿀 때 서버 원본을 .localman-server로 보관하고, 서버로 올릴 때는 이 설정 파일을 뺍니다.",
+                &[&m.kind.config_file()],
+            )));
+            body = body.push(Space::with_height(12)).push(
+                row![
+                    field(tr("DB 이름"), inp("site", &m.db_name, SiteField::DbName).into(), None),
+                    field(tr("사용자"), inp("site_user", &m.db_user, SiteField::DbUser).into(), None),
+                    field(tr("비밀번호"), inp("", &m.db_password, SiteField::DbPassword).secure(true).into(), None),
+                ]
+                .spacing(10),
+            );
+            body = body.push(Space::with_height(8)).push(
+                theme::check(tr("사이트 주소도 로컬 도메인으로 (설정 파일·DB)"), m.url).on_toggle(ProjectsMessage::SiteUrlToggled),
+            );
+            let mut actions = row![run(tr("로컬로 바꾸기"), Icon::Check, Kind::Primary, ProjectsMessage::SiteLocalize)].spacing(6);
+            if m.has_backup {
+                actions = actions.push(run(tr("서버 원본으로 되돌리기"), Icon::Refresh, Kind::Flat, ProjectsMessage::SiteRestore));
+            }
+            body = body.push(Space::with_height(10)).push(actions);
+        }
+    }
+    if !m.log.is_empty() {
+        body = body.push(Space::with_height(12)).push(theme::log_block(m.log.clone(), ProjectsMessage::CopyText));
     }
     card(body)
 }

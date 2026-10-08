@@ -88,6 +88,9 @@ pub fn default_target(p: &VhostProject) -> DeployTarget {
     .map(|s| s.to_string())
     .collect();
     // 라이믹스: 서버 쪽 설정·캐시를 로컬 것으로 덮어쓰면 사이트가 깨진다
+    if Path::new(&p.path).join("wp-config.php").exists() {
+        excludes.push("/wp-config.php".into());
+    }
     if Path::new(&super::project::join_dir(&p.work_dir(), "common/autoload.php")).exists() {
         excludes.extend(["files/config/", "files/cache/", "files/env/", "files/supercache/"].iter().map(|s| s.to_string()));
     }
@@ -544,6 +547,14 @@ pub fn preview_files(p: &VhostProject, t: &DeployTarget) -> Result<Vec<String>, 
 /// 셸·rsync 가 되면 rsync, 아니면 SFTP 로 올린다. (파일 목록, 실제 웹 경로)
 fn send(p: &VhostProject, t: &DeployTarget, dry_run: bool) -> Result<(Vec<String>, String), String> {
     validate(t)?;
+    // 로컬 DB 로 바꾼 설정 파일과 그 서버 원본 백업은 늘 뺀다 (운영 사이트가 로컬 DB 를 보게 되면 안 된다)
+    let mut t = t.clone();
+    for e in super::site_config::localized_excludes(p) {
+        if !t.excludes.contains(&e) {
+            t.excludes.push(e);
+        }
+    }
+    let t = &t;
     match probe_shell(t) {
         Ok(Some(info)) if info.rsync => {
             let mut t = t.clone();
