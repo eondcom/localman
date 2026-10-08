@@ -223,7 +223,7 @@ impl App {
         let nav = |i, label, tab: Tab| theme::nav_item(i, label, self.active_tab == tab, Message::TabSelected(tab));
 
         let logo = row![
-            container(theme::icon(Icon::Server, 18.0, p().on_primary))
+            container(theme::icon(Icon::HousePlug, 18.0, p().on_primary))
                 .padding(8)
                 .style(|_| container::Style {
                     background: Some(Background::Color(p().primary)),

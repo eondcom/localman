@@ -319,7 +319,6 @@ fn ensure_httpd_base() -> Result<(), String> {
         lines.push(replaced);
     }
 
-    let prefix = brew_prefix();
     let mut block = vec![
         BLOCK_BEGIN.to_string(),
         format!("Define APACHE_LOG_DIR {}", apache_log_dir()),

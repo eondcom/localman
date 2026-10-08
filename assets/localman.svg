@@ -1,50 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#1a3a6a"/>
-      <stop offset="100%" stop-color="#0d1f40"/>
-    </linearGradient>
-    <linearGradient id="roof" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#4a8adf"/>
-      <stop offset="100%" stop-color="#2a5aaf"/>
-    </linearGradient>
-    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1e3060"/>
-      <stop offset="100%" stop-color="#14234a"/>
-    </linearGradient>
-    <linearGradient id="server" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1a2a4a"/>
-      <stop offset="100%" stop-color="#111e38"/>
-    </linearGradient>
-  </defs>
-
-  <!-- 배경 -->
-  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-
-  <!-- 집 지붕 -->
-  <polygon points="32,8 54,28 10,28" fill="url(#roof)"/>
-  <!-- 지붕 하이라이트 -->
-  <polygon points="32,10 52,28 12,28" fill="none" stroke="#6aaeff" stroke-width="0.8" opacity="0.4"/>
-  <!-- 굴뚝 -->
-  <rect x="40" y="14" width="5" height="10" rx="1" fill="#2a5aaf"/>
-
-  <!-- 집 벽 -->
-  <rect x="12" y="27" width="40" height="26" rx="2" fill="url(#wall)" stroke="#2a4a80" stroke-width="1"/>
-
-  <!-- 서버 랙 (집 안) -->
-  <rect x="18" y="31" width="28" height="18" rx="3" fill="url(#server)" stroke="#1e3a6a" stroke-width="1"/>
-
-  <!-- 서버 슬롯 1 -->
-  <rect x="21" y="34" width="18" height="4" rx="1.5" fill="#1a3a5a" stroke="#2a5a8a" stroke-width="0.8"/>
-  <rect x="23" y="35.5" width="10" height="1" rx="0.5" fill="#3a6aaa" opacity="0.7"/>
-  <circle cx="36" cy="36" r="1.3" fill="#30d060"/>
-
-  <!-- 서버 슬롯 2 -->
-  <rect x="21" y="40" width="18" height="4" rx="1.5" fill="#1a3a5a" stroke="#2a5a8a" stroke-width="0.8"/>
-  <rect x="23" y="41.5" width="8" height="1" rx="0.5" fill="#3a6aaa" opacity="0.7"/>
-  <circle cx="36" cy="42" r="1.3" fill="#30d060"/>
-
-  <!-- 문 -->
-  <rect x="27" y="41" width="10" height="12" rx="2" fill="#0d1830" stroke="#2a4a80" stroke-width="0.8"/>
-  <circle cx="35" cy="47" r="0.9" fill="#4a8adf"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- LocalMan: 집(내 PC) + 플러그(로컬 서버). Lucide "house-plug"(ISC)을 굵은 선(2.5)으로 -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#006FEE"/>
+  <g transform="translate(232 232) scale(23.333)" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 12V8.964" />
+  <path d="M14 12V8.964" />
+  <path d="M15 12a1 1 0 0 1 1 1v2a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2a1 1 0 0 1 1-1z" />
+  <path d="M8.5 21H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2h-5a2 2 0 0 1-2-2v-2" />
+  </g>
 </svg>

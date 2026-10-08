@@ -675,7 +675,8 @@ impl TransferState {
             for (i, (engine, name, on)) in self.dbs.iter().enumerate() {
                 list = list.push(check(format!("{name} · {}", engine.label()), *on).on_toggle(move |v| TransferMessage::ToggleDb(i, v)));
             }
-            c = c.push(list);
+            // DB 가 많으면(예: MAMP 에서 19개) 한 줄로 늘어서 화면 밖으로 넘친다 → 줄바꿈
+            c = c.push(list.wrap());
         }
 
         c = c.push(Space::with_height(12)).push(theme::divider()).push(Space::with_height(12)).push(
@@ -751,7 +752,7 @@ impl TransferState {
             if let Some(old) = pl.port_changed_from {
                 line.push_str(&format!("  (포트 {old}에서 {}(으)로)", pl.project.port));
             }
-            c = c.push(row![chip(mark, tone), text(line).size(12).color(p().fg2)].spacing(8).align_y(iced::Alignment::Center));
+            c = c.push(row![chip(mark, tone), text(line).size(12).color(p().fg2).width(Length::Fill)].spacing(8).align_y(iced::Alignment::Center));
         }
 
         c = c.push(Space::with_height(8)).push(check("이미 있는 프로젝트·DB 덮어쓰기", self.overwrite).on_toggle(TransferMessage::ToggleOverwrite));
@@ -804,7 +805,9 @@ impl TransferState {
         // 받는 PC
         let find = btn(if self.searching { "찾는 중…" } else { "찾기" }, Some(Icon::Search), Kind::Flat);
         let find = if !self.searching && !busy { find.on_press(TransferMessage::FindPeers) } else { find };
-        let mut peers = row![label("받는 PC"), Space::with_width(Length::Fill), find].spacing(6).align_y(iced::Alignment::Center);
+        let header = row![label("받는 PC"), Space::with_width(Length::Fill), find].spacing(6).align_y(iced::Alignment::Center);
+        // 찾은 PC 는 버튼 옆에 붙이지 않고 아래 줄에 모아, 여러 대여도 줄바꿈되게 한다
+        let mut peers = row![].spacing(6);
         for (i, pe) in self.peers.iter().enumerate() {
             let selected = self.peer_addr == pe.addr.ip().to_string();
             peers = peers.push(
@@ -812,7 +815,11 @@ impl TransferState {
                     .on_press(TransferMessage::PickPeer(i)),
             );
         }
-        c = c.push(peers).push(
+        c = c.push(header);
+        if !self.peers.is_empty() {
+            c = c.push(peers.wrap());
+        }
+        c = c.push(
             row![
                 input("IP (예: 192.168.0.12)", &self.peer_addr).on_input(TransferMessage::PeerAddrChanged),
                 container(input("코드 6자리", &self.code).on_input(TransferMessage::CodeChanged)).width(120),
@@ -878,7 +885,7 @@ impl TransferState {
             .iter()
             .fold(column![].spacing(6), |c, l| {
                 let tone = if l.contains("일부 실패") { Tone::Warning } else { Tone::Success };
-                c.push(row![theme::dot(tone), text(l).size(12).color(p().fg2)].spacing(8).align_y(iced::Alignment::Center))
+                c.push(row![column![Space::with_height(6), theme::dot(tone)], text(l).size(12).color(p().fg2).width(Length::Fill)].spacing(8))
             })
             .into()
     }
@@ -906,7 +913,7 @@ impl TransferState {
                 row![
                     check(format!("{} → {}", v.server_name, proj.domain), on).on_toggle(move |x| TransferMessage::MampToggleVhost(i, x)),
                     if v.exists { chip("폴더 있음", Tone::Success) } else { chip("폴더 없음", Tone::Warning) },
-                    text(v.doc_root.clone()).size(11).color(p().fg4),
+                    text(v.doc_root.clone()).size(11).color(p().fg4).width(Length::Fill),
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
@@ -999,7 +1006,7 @@ fn parse_addr(s: &str) -> Option<SocketAddr> {
 fn job_view(job: &LanJob) -> Element<'_, TransferMessage> {
     let mut c = column![].spacing(6);
     if !job.status.is_empty() {
-        c = c.push(Space::with_height(6)).push(theme::status(job.status.clone(), Tone::Primary));
+        c = c.push(Space::with_height(6)).push(theme::status_line(job.status.clone(), Tone::Primary));
     }
     if let Some((files, done, total)) = job.progress {
         if total > 0 {

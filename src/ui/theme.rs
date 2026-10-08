@@ -175,6 +175,8 @@ fn radius(r: f32) -> Border {
 #[derive(Debug, Clone, Copy)]
 pub enum Icon {
     Server,
+    /// 앱 로고 (집 + 플러그)
+    HousePlug,
     Folder,
     FolderOpen,
     Database,
@@ -217,6 +219,7 @@ impl Icon {
     fn ch(self) -> char {
         let cp = match self {
             Icon::Server => 0xe156,
+            Icon::HousePlug => 0xe5f4,
             Icon::Folder => 0xe0dc,
             Icon::FolderOpen => 0xe246,
             Icon::Database => 0xe0b1,
@@ -420,6 +423,15 @@ pub fn dot<'a, M: 'a>(t: Tone) -> Element<'a, M> {
         .into()
 }
 
+/// 점 + 긴 글 (진행 상태처럼 길어질 수 있는 문장). 남은 너비 안에서 줄바꿈한다.
+pub fn status_line<'a, M: 'a>(label: impl text::IntoFragment<'a>, t: Tone) -> Element<'a, M> {
+    let (_, fg) = tone_colors(t);
+    let fg = if t == Tone::Neutral { p().fg3 } else { fg };
+    row![column![Space::with_height(6), dot(t)], text(label).size(12).font(MEDIUM).color(fg).width(Length::Fill)]
+        .spacing(8)
+        .into()
+}
+
 /// 점 + 글자 상태 표시 ("실행 중")
 pub fn status<'a, M: 'a>(label: impl text::IntoFragment<'a>, t: Tone) -> Element<'a, M> {
     let (_, fg) = tone_colors(t);
@@ -440,7 +452,8 @@ pub fn result_line<'a, M: 'a>(line: impl AsRef<str>) -> Element<'a, M> {
         (Tone::Neutral, line)
     };
     let fg = if t == Tone::Neutral { p().fg3 } else { p().fg2 };
-    row![column![Space::with_height(6), dot(t)], text(rest.trim_start().to_string()).size(12).color(fg)]
+    // 글자에 남은 너비를 줘야 긴 경로·오류가 카드 밖으로 넘치지 않고 줄바꿈된다
+    row![column![Space::with_height(6), dot(t)], text(rest.trim_start().to_string()).size(12).color(fg).width(Length::Fill)]
         .spacing(8)
         .into()
 }
