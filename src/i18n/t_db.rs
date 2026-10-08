@@ -6,7 +6,6 @@ pub const T: &[(&str, &str, &str)] = &[
     ("데이터베이스", "Databases", "データベース"),
     ("MariaDB 데이터베이스와 사용자를 관리하고 백업·복원합니다", "Manage MariaDB databases and users, back up and restore", "MariaDB のデータベースとユーザーを管理し、バックアップ・復元します"),
     ("PostgreSQL 데이터베이스와 사용자를 관리하고 백업·복원합니다", "Manage PostgreSQL databases and users, back up and restore", "PostgreSQL のデータベースとユーザーを管理し、バックアップ・復元します"),
-    ("Adminer 열기", "Open Adminer", "Adminer を開く"),
     ("엔진", "Engine", "エンジン"),
     ("사용자", "User", "ユーザー"),
     ("비밀번호", "Password", "パスワード"),
@@ -58,8 +57,6 @@ pub const T: &[(&str, &str, &str)] = &[
     ("백업 완료: {0}", "Backed up: {0}", "バックアップ完了: {0}"),
     ("복원 완료: {0}", "Restored: {0}", "復元完了: {0}"),
     ("가져오기 완료: {0} ← {1}", "Imported: {0} ← {1}", "インポート完了: {0} ← {1}"),
-    ("Adminer 준비 중...", "Preparing Adminer...", "Adminer を準備中..."),
-    ("Adminer 열림: {0}", "Adminer opened: {0}", "Adminer を開きました: {0}"),
     ("사용자명과 비밀번호를 입력하세요.", "Enter a username and password.", "ユーザー名とパスワードを入力してください。"),
     ("'{0}'@'{1}' 생성 완료", "Created '{0}'@'{1}'", "'{0}'@'{1}' を作成しました"),
     ("'{0}'@'{1}' 삭제 완료", "Deleted '{0}'@'{1}'", "'{0}'@'{1}' を削除しました"),
@@ -133,4 +130,11 @@ pub const T: &[(&str, &str, &str)] = &[
     ("{0} {1}에 배포{2} · 파일 {3}개", "{0} deployed to {1}{2} · {3} files", "{0} {1} へデプロイ{2} · ファイル {3} 件"),
     // ── main.rs ──
     ("LocalMan이 이미 실행 중입니다.", "LocalMan is already running.", "LocalMan はすでに実行中です。"),
+    ("pma.localhost 열기", "Open pma.localhost", "pma.localhost を開く"),
+    ("{0} 준비 중... (처음엔 내려받느라 시간이 걸립니다)", "Preparing {0}... (the first time takes a while to download)", "{0} を準備中...(初回はダウンロードに時間がかかります)"),
+    ("{0} 열림: {1}", "{0} opened: {1}", "{0} を開きました: {1}"),
+    ("curl 실행 실패: {0}", "Failed to run curl: {0}", "curl の実行に失敗しました: {0}"),
+    ("{0} 받기 실패: {1}", "Failed to download {0}: {1}", "{0} のダウンロードに失敗しました: {1}"),
+    ("phpMyAdmin 버전을 알 수 없습니다.", "Could not determine the phpMyAdmin version.", "phpMyAdmin のバージョンを取得できません。"),
+    ("phpMyAdmin 체크섬이 맞지 않아 설치를 멈췄습니다.", "phpMyAdmin checksum mismatch — installation stopped.", "phpMyAdmin のチェックサムが一致しないため、インストールを中止しました。"),
 ];

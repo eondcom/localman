@@ -8,8 +8,9 @@ use super::theme::{
 use crate::domain::{
     list_databases, create_database, drop_database, backup_database, restore_database, import_sql,
     rename_database, list_users, create_user, drop_user, rename_user, change_user_password, grant_privileges, DbUser,
-    DbCredentials, DbEngine, load_db_connections, save_db_connection, ensure_adminer_site,
+    DbCredentials, DbEngine, load_db_connections, save_db_connection, ensure_pma_site,
 };
+use crate::domain::settings::{PmaTool, load_settings, save_settings};
 use crate::i18n::{tr, trf};
 use crate::platform::open_url;
 use rfd;
@@ -44,6 +45,7 @@ pub enum DatabaseMessage {
     ImportSql,
     ImportPathSelected(Option<String>),
     CopyText(String),
+    SetPmaTool(PmaTool),
     OpenAdminer,
     AdminerReady(Result<String, String>),
     Done(Result<String, String>),
@@ -86,6 +88,8 @@ pub struct DatabaseState {
     user_status: Option<Result<String, String>>,
     // App 이 꺼내 토스트로 띄울 알림
     toasts: Vec<Result<String, String>>,
+    /// pma.localhost 로 열 도구
+    pma_tool: PmaTool,
 }
 
 impl DatabaseState {
@@ -123,6 +127,7 @@ impl DatabaseState {
             edit_user_password: String::new(),
             user_status: None,
             toasts: Vec::new(),
+            pma_tool: load_settings().pma_tool,
         };
         // 저장된 자격증명이 있으면 시작 시 자동으로 연결한다.
         let task = if autoconnect {
@@ -350,10 +355,22 @@ impl DatabaseState {
             DatabaseMessage::CopyText(s) => {
                 return iced::clipboard::write(s);
             }
+            DatabaseMessage::SetPmaTool(tool) => {
+                self.pma_tool = tool;
+                let mut s = load_settings();
+                s.pma_tool = tool;
+                let _ = save_settings(&s);
+                Task::none()
+            }
             DatabaseMessage::OpenAdminer => {
-                self.status = Some(Ok(tr("Adminer 준비 중...").to_string()));
+                let tool = self.pma_tool;
+                self.status = Some(Ok(trf("{0} 준비 중... (처음엔 내려받느라 시간이 걸립니다)", &[&pma_name(tool)])));
                 Task::perform(
-                    async move { ensure_adminer_site() },
+                    async move {
+                        tokio::task::spawn_blocking(move || ensure_pma_site(tool))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                    },
                     DatabaseMessage::AdminerReady,
                 )
             }
@@ -361,7 +378,7 @@ impl DatabaseState {
                 match result {
                     Ok(url) => {
                         open_url(&url);
-                        self.status = Some(Ok(trf("Adminer 열림: {0}", &[&url])));
+                        self.status = Some(Ok(trf("{0} 열림: {1}", &[&pma_name(self.pma_tool), &url])));
                     }
                     Err(e) => {
                         self.toasts.push(Err(e.clone()));
@@ -494,7 +511,17 @@ impl DatabaseState {
     }
 
     pub fn view(&self) -> Element<'_, DatabaseMessage> {
-        let adminer = btn(tr("Adminer 열기"), Some(Icon::ExternalLink), Kind::Surface).on_press(DatabaseMessage::OpenAdminer);
+        // pma.localhost — Adminer(앱에 들어 있음) 또는 phpMyAdmin(처음 열 때 내려받음)
+        let adminer = row![
+            segmented(
+                &[(PmaTool::Adminer, "Adminer"), (PmaTool::PhpMyAdmin, "phpMyAdmin")],
+                &self.pma_tool,
+                DatabaseMessage::SetPmaTool,
+            ),
+            btn(tr("pma.localhost 열기"), Some(Icon::ExternalLink), Kind::Surface).on_press(DatabaseMessage::OpenAdminer),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
 
         let conn = card(
             column![
@@ -843,5 +870,12 @@ async fn pick_open_file() -> Option<String> {
             eprintln!("[localman] 복원 파일 선택 취소");
             None
         }
+    }
+}
+
+fn pma_name(tool: PmaTool) -> &'static str {
+    match tool {
+        PmaTool::Adminer => "Adminer",
+        PmaTool::PhpMyAdmin => "phpMyAdmin",
     }
 }

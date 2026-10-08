@@ -23,6 +23,14 @@ pub enum LangMode {
     Ja,
 }
 
+/// pma.localhost 로 열 DB 관리 도구
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PmaTool {
+    #[default]
+    Adminer,
+    PhpMyAdmin,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     /// 모든 프로젝트를 https 로도 서빙할지 (로컬 인증기관 인증서)
@@ -32,6 +40,8 @@ pub struct Settings {
     pub theme: ThemeMode,
     #[serde(default)]
     pub lang: LangMode,
+    #[serde(default)]
+    pub pma_tool: PmaTool,
 }
 
 pub(crate) fn data_dir() -> PathBuf {
