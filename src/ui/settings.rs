@@ -30,6 +30,8 @@ pub enum SettingsMessage {
     CopyKakaoPay,
     OpenPayPal,
     CopyLog(String),
+    SetAutostart(bool),
+    SetLaunchAtLogin(bool),
 }
 
 /// 후원 링크 — mac-fan-control 과 같다
@@ -43,6 +45,10 @@ pub struct SettingsState {
     theme: ThemeMode,
     lang: LangMode,
     https: bool,
+    autostart: bool,
+    launch_at_login: bool,
+    /// 로그인 항목 등록 실패 메시지
+    startup_error: Option<String>,
     ca_trusted: bool,
     https_busy: bool,
     https_log: Vec<String>,
@@ -78,6 +84,9 @@ impl SettingsState {
             theme: s.theme,
             lang: s.lang,
             https: s.https,
+            autostart: s.autostart_services,
+            launch_at_login: crate::platform::launch_at_login(),
+            startup_error: None,
             ca_trusted: ca_exists() && ca_trusted(&ca_cert_path()),
             https_busy: false,
             https_log: Vec::new(),
@@ -167,6 +176,21 @@ impl SettingsState {
                 iced::clipboard::write(KAKAOPAY_URL.to_string())
             }
             SettingsMessage::CopyLog(s) => iced::clipboard::write(s),
+            SettingsMessage::SetAutostart(on) => {
+                self.autostart = on;
+                let mut s = load_settings();
+                s.autostart_services = on;
+                let _ = save_settings(&s);
+                Task::none()
+            }
+            SettingsMessage::SetLaunchAtLogin(on) => {
+                match crate::platform::set_launch_at_login(on) {
+                    Ok(()) => self.startup_error = None,
+                    Err(e) => self.startup_error = Some(e),
+                }
+                self.launch_at_login = crate::platform::launch_at_login();
+                Task::none()
+            }
             SettingsMessage::OpenPayPal => {
                 open_url(PAYPAL_URL);
                 Task::none()
@@ -200,6 +224,22 @@ impl SettingsState {
                 ),
             ),
         ]);
+
+        let mut startup_rows = vec![
+            setting_row(
+                tr("앱을 켤 때 서버 자동 시작"),
+                Some(tr("꺼져 있는 Apache·DB 서버를 켭니다 (재부팅 뒤 사이트가 바로 열리게)")),
+                switch(self.autostart).on_toggle(SettingsMessage::SetAutostart).into(),
+            ),
+            setting_row(
+                tr("로그인할 때 LocalMan 실행"),
+                Some(tr("위 옵션과 함께 켜 두면 컴퓨터를 켜자마자 서버가 준비됩니다")),
+                switch(self.launch_at_login).on_toggle(SettingsMessage::SetLaunchAtLogin).into(),
+            ),
+        ];
+        if let Some(e) = &self.startup_error {
+            startup_rows.push(theme::log_block(vec![format!("✗ {e}")], SettingsMessage::CopyLog));
+        }
 
         let (status, tone) = if !self.https {
             (tr("꺼짐"), Tone::Neutral)
@@ -281,10 +321,13 @@ impl SettingsState {
         }
 
         column![
-            theme::page_header(tr("설정"), tr("화면, HTTPS, 앱 정보"), None),
+            theme::page_header(tr("설정"), tr("화면, 시작, HTTPS, 앱 정보"), None),
             Space::with_height(16),
             section_label(tr("화면")),
             screen,
+            Space::with_height(14),
+            section_label(tr("시작")),
+            group(startup_rows),
             Space::with_height(14),
             section_label("HTTPS"),
             group(https_rows),

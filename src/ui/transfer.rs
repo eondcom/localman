@@ -70,6 +70,7 @@ pub enum TransferMessage {
     MampToggleVhost(usize, bool),
     MampUserChanged(String),
     MampPasswordChanged(String),
+    MampToggleUsers(bool),
     MampExport,
     MampEvent(LanEvent),
     /// 방금 만든 MAMP 백업 파일을 이 PC 가져오기로 연다
@@ -181,6 +182,7 @@ pub struct TransferState {
     mamp_vhosts: Vec<bool>,
     mamp_user: String,
     mamp_password: String,
+    mamp_users: bool,
     mamp_job: LanJob,
     mamp_output: Option<PathBuf>,
 }
@@ -237,6 +239,7 @@ impl TransferState {
             mamp_vhosts: Vec::new(),
             mamp_user: "root".into(),
             mamp_password: "root".into(),
+            mamp_users: true,
             mamp_job: LanJob::default(),
             mamp_output: None,
         };
@@ -543,6 +546,10 @@ impl TransferState {
                 self.mamp_user = v;
                 Task::none()
             }
+            TransferMessage::MampToggleUsers(on) => {
+                self.mamp_users = on;
+                Task::none()
+            }
             TransferMessage::MampPasswordChanged(v) => {
                 self.mamp_password = v;
                 Task::none()
@@ -560,6 +567,7 @@ impl TransferState {
                         .collect(),
                     user: self.mamp_user.clone(),
                     password: self.mamp_password.clone(),
+                    users: self.mamp_users,
                 };
                 self.mamp_job.start();
                 self.mamp_output = None;
@@ -957,6 +965,9 @@ impl TransferState {
             grid = grid.push(r);
         }
         c = c.push(grid);
+        c = c.push(Space::with_height(4)).push(
+            check(tr("DB 사용자·권한도 옮기기 (사이트가 쓰는 DB 계정 — 비밀번호 해시째)"), self.mamp_users).on_toggle(TransferMessage::MampToggleUsers),
+        );
 
         c = c.push(Space::with_height(8)).push(
             row![

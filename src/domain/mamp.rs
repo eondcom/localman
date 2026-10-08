@@ -223,6 +223,8 @@ pub struct MampExport {
     pub projects: Vec<VhostProject>,
     pub user: String,
     pub password: String,
+    /// DB 사용자·권한도 함께 (비밀번호 해시째)
+    pub users: bool,
 }
 
 /// MAMP 자료로 로컬맨 백업 묶음을 만든다. 결과 줄을 돌려준다.
@@ -232,7 +234,7 @@ pub fn export_bundle(dest: &Path, opts: &MampExport, progress: impl Fn(String)) 
     let result = (|| -> Result<Vec<String>, String> {
         let mut log = Vec::new();
         let mut dumps = Vec::new();
-        if !opts.databases.is_empty() {
+        if !opts.databases.is_empty() || opts.users {
             progress(tr("MAMP MySQL 준비 중…").into());
             let started = start_socket_only(&info.data_dir)?;
             let dump_all = (|| -> Result<(), String> {
@@ -254,6 +256,12 @@ pub fn export_bundle(dest: &Path, opts: &MampExport, progress: impl Fn(String)) 
                         }
                         log.push(format!("✗ DB {db}: {err}"));
                     }
+                }
+                if opts.users {
+                    progress(tr("DB 사용자·권한 읽는 중…").into());
+                    let users = crate::domain::db_users::dump_users(|| mamp_mysql("mysql", &opts.user, &opts.password))?;
+                    fs::write(work.join(crate::domain::db_users::USERS_FILE), json(&users)?).map_err(|e| e.to_string())?;
+                    log.push(format!("✓ {}", trf("DB 사용자 {0}명 (비밀번호 해시·권한)", &[&users.len()])));
                 }
                 Ok(())
             })();

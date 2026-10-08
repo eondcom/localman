@@ -78,7 +78,10 @@ impl App {
             toasts: Vec::new(),
             next_toast_id: 0,
         };
-        let services_task = app.services.init_task().map(Message::Services);
+        let mut services_task = app.services.init_task().map(Message::Services);
+        if crate::domain::settings::load_settings().autostart_services {
+            services_task = Task::batch([services_task, services::ServicesState::autostart_task().map(Message::Services)]);
+        }
         (
             app,
             Task::batch([

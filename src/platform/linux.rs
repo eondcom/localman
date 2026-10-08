@@ -379,6 +379,39 @@ pub fn system_prefers_dark() -> bool {
     get("color-scheme").contains("dark") || get("gtk-theme").contains("dark")
 }
 
+/// MariaDB 는 mysql_native_password 를 처음부터 지원한다
+pub fn enable_native_password() -> Result<(), String> {
+    Ok(())
+}
+
+fn autostart_file() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("autostart/localman.desktop"))
+}
+
+/// 로그인할 때 LocalMan 을 띄운다 — ~/.config/autostart (XDG)
+pub fn set_launch_at_login(on: bool) -> Result<(), String> {
+    let path = autostart_file().ok_or_else(|| tr("설정 폴더를 찾을 수 없습니다").to_string())?;
+    if !on {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let desktop = format!(
+        "[Desktop Entry]\nType=Application\nName=LocalMan\nExec=\"{}\"\nX-GNOME-Autostart-enabled=true\n",
+        exe.display()
+    );
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    crate::domain::write_atomic(&path, desktop.as_bytes())
+}
+
+pub fn launch_at_login() -> bool {
+    autostart_file().is_some_and(|p| p.exists())
+}
+
 pub fn db_service_label() -> &'static str {
     "MariaDB"
 }

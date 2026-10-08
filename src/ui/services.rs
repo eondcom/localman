@@ -98,6 +98,28 @@ impl ServicesState {
         }
     }
 
+    /// 앱 시작 때 (설정에서 켰으면): 설치돼 있지만 꺼진 Apache·DB 서버를 켠다. 끝나면 상태를 다시 본다.
+    pub fn autostart_task() -> Task<ServicesMessage> {
+        Task::perform(
+            async {
+                tokio::task::spawn_blocking(|| {
+                    let mut errors = Vec::new();
+                    for id in ["apache2", "mariadb"] {
+                        if get_service_status(id) == ServiceStatus::Stopped {
+                            if let Err(e) = toggle_service(id, true) {
+                                errors.push(trf("{0} 자동 시작 실패: {1}", &[&id, &e]));
+                            }
+                        }
+                    }
+                    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            ServicesMessage::Toggled,
+        )
+    }
+
     /// 앱 시작 때: 도구 버전과 Node LTS 를 백그라운드로 확인한다
     pub fn init_task(&self) -> Task<ServicesMessage> {
         Task::batch([

@@ -52,6 +52,8 @@ fn mysqld_args() -> Vec<String> {
         // X 프로토콜(33060)은 기본으로 모든 네트워크에 열린다. 로컬맨은 쓰지 않으니 끈다
         // (같은 와이파이의 다른 기기가 접속을 시도하지 못하게).
         "--mysqlx=OFF".into(),
+        // MAMP(MySQL 5.7) 등에서 옮긴 사용자는 이 방식의 비밀번호 해시를 쓴다. 8.4 는 기본으로 꺼 둔다.
+        "--mysql-native-password=ON".into(),
     ]
 }
 

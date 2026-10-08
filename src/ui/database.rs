@@ -46,6 +46,8 @@ pub enum DatabaseMessage {
     ImportPathSelected(Option<String>),
     CopyText(String),
     SetPmaTool(PmaTool),
+    SiteUsers,
+    SiteUsersDone(Vec<String>),
     OpenAdminer,
     AdminerReady(Result<String, String>),
     Done(Result<String, String>),
@@ -90,6 +92,9 @@ pub struct DatabaseState {
     toasts: Vec<Result<String, String>>,
     /// pma.localhost 로 열 도구
     pma_tool: PmaTool,
+    /// 사이트 설정에서 사용자 만들기 결과
+    site_users_log: Vec<String>,
+    site_users_busy: bool,
 }
 
 impl DatabaseState {
@@ -128,6 +133,8 @@ impl DatabaseState {
             user_status: None,
             toasts: Vec::new(),
             pma_tool: load_settings().pma_tool,
+            site_users_log: Vec::new(),
+            site_users_busy: false,
         };
         // 저장된 자격증명이 있으면 시작 시 자동으로 연결한다.
         let task = if autoconnect {
@@ -354,6 +361,31 @@ impl DatabaseState {
             }
             DatabaseMessage::CopyText(s) => {
                 return iced::clipboard::write(s);
+            }
+            DatabaseMessage::SiteUsers => {
+                if self.engine != DbEngine::MariaDb {
+                    return Task::none();
+                }
+                self.site_users_busy = true;
+                self.site_users_log.clear();
+                let admin = self.user.clone();
+                let admin_pw = self.password.clone();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || crate::domain::db_users::ensure_site_users(&admin, &admin_pw))
+                            .await
+                            .unwrap_or_else(|e| vec![format!("✗ {e}")])
+                    },
+                    DatabaseMessage::SiteUsersDone,
+                )
+            }
+            DatabaseMessage::SiteUsersDone(log) => {
+                self.site_users_busy = false;
+                self.site_users_log = log;
+                let u = self.user.clone();
+                let p = self.password.clone();
+                self.db_users = list_users(self.engine, &u, &p);
+                Task::none()
             }
             DatabaseMessage::SetPmaTool(tool) => {
                 self.pma_tool = tool;
@@ -679,6 +711,31 @@ impl DatabaseState {
         };
 
         let mut col = column![create, Space::with_height(14)];
+        if self.engine == DbEngine::MariaDb {
+            let b = btn(
+                if self.site_users_busy { tr("확인하는 중…") } else { tr("사이트 설정에서 사용자 만들기") },
+                Some(Icon::Key),
+                Kind::Flat,
+            );
+            let mut site = column![
+                row![
+                    column![
+                        theme::title(tr("사이트 DB 계정")),
+                        muted(tr("등록된 사이트의 설정 파일(라이믹스·XE·워드프레스·.env)에 적힌 DB 계정이 없으면 만들고 권한을 줍니다. 이미 있는 계정의 비밀번호는 바꾸지 않습니다.")),
+                    ]
+                    .spacing(4)
+                    .width(Length::Fill),
+                    if self.site_users_busy || !self.connected { b } else { b.on_press(DatabaseMessage::SiteUsers) },
+                ]
+                .spacing(12)
+                .align_y(iced::Alignment::Center),
+            ]
+            .spacing(10);
+            if !self.site_users_log.is_empty() {
+                site = site.push(theme::log_block(self.site_users_log.clone(), DatabaseMessage::CopyText));
+            }
+            col = col.push(card(site)).push(Space::with_height(14));
+        }
         if let Some(status) = &self.user_status {
             col = col.push(status_card(status)).push(Space::with_height(12));
         }

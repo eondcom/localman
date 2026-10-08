@@ -42,6 +42,9 @@ pub struct Settings {
     pub lang: LangMode,
     #[serde(default)]
     pub pma_tool: PmaTool,
+    /// 앱을 켤 때 꺼져 있는 Apache·DB 서버를 켠다
+    #[serde(default)]
+    pub autostart_services: bool,
 }
 
 pub(crate) fn data_dir() -> PathBuf {

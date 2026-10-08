@@ -524,6 +524,59 @@ pub fn system_prefers_dark() -> bool {
 }
 
 /// 서비스 탭에 보일 DB 서버 이름 (Homebrew MariaDB 가 없으면 앱이 설치한 MySQL)
+/// 옮겨 온 사용자의 mysql_native_password 해시를 쓸 수 있게 한다.
+/// 앱이 설치한 MySQL 은 그 옵션을 켠 채로 다시 띄운다 (Homebrew MariaDB 는 처음부터 지원).
+pub fn enable_native_password() -> Result<(), String> {
+    if brew_installed("mariadb") || !macos_mysql::installed() {
+        return Ok(());
+    }
+    if macos_mysql::running() {
+        macos_mysql::stop()?;
+    }
+    macos_mysql::start()
+}
+
+/// 로그인할 때 LocalMan 을 띄운다 — ~/Library/LaunchAgents 의 plist
+pub fn set_launch_at_login(on: bool) -> Result<(), String> {
+    let path = dirs::home_dir()
+        .ok_or_else(|| tr("홈 디렉토리를 찾을 수 없습니다").to_string())?
+        .join("Library/LaunchAgents/com.eond.localman.plist");
+    if !on {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    // .app 안에서 실행 중이면 앱 묶음을 연다 (Dock·메뉴 막대가 정상으로 잡힌다)
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let app = exe.ancestors().find(|p| p.extension().is_some_and(|x| x == "app")).map(Path::to_path_buf);
+    let args = match &app {
+        Some(a) => format!("<string>/usr/bin/open</string><string>-a</string><string>{}</string>", xml_escape(&a.to_string_lossy())),
+        None => format!("<string>{}</string>", xml_escape(&exe.to_string_lossy())),
+    };
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\"><dict>\n\
+         <key>Label</key><string>com.eond.localman</string>\n\
+         <key>ProgramArguments</key><array>{args}</array>\n\
+         <key>RunAtLoad</key><true/>\n\
+         </dict></plist>\n"
+    );
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    crate::domain::write_atomic(&path, plist.as_bytes())
+}
+
+pub fn launch_at_login() -> bool {
+    dirs::home_dir().is_some_and(|h| h.join("Library/LaunchAgents/com.eond.localman.plist").exists())
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 pub fn db_service_label() -> &'static str {
     if brew_installed("mariadb") { "MariaDB" } else { "MySQL" }
 }

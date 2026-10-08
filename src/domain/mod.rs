@@ -2,6 +2,7 @@
 
 pub mod apache;
 pub mod database;
+pub mod db_users;
 pub mod deploy;
 pub mod detect;
 pub mod history;

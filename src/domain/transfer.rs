@@ -204,6 +204,8 @@ pub struct Bundle {
     pub manifest: Manifest,
     pub projects: Vec<VhostProject>,
     pub credentials: Vec<DbCredentials>,
+    /// 옮길 DB 사용자 (MAMP 백업에만 있다)
+    pub users: Vec<super::db_users::MigratedUser>,
 }
 
 impl Bundle {
@@ -239,7 +241,11 @@ pub fn open_bundle(path: &Path) -> Result<Bundle, String> {
             Ok(s) => serde_json::from_str(&s).map_err(|e| trf("{0} 형식 오류: {1}", &[&"db_credentials.json", &e]))?,
             Err(_) => Vec::new(),
         };
-        Ok(Bundle { dir: dir.clone(), manifest, projects, credentials })
+        let users = match read(super::db_users::USERS_FILE) {
+            Ok(s) => serde_json::from_str(&s).map_err(|e| trf("{0} 형식 오류: {1}", &[&super::db_users::USERS_FILE, &e]))?,
+            Err(_) => Vec::new(),
+        };
+        Ok(Bundle { dir: dir.clone(), manifest, projects, credentials, users })
     })();
     if parsed.is_err() {
         let _ = fs::remove_dir_all(&dir);
@@ -390,6 +396,17 @@ pub fn import_bundle(bundle: &Bundle, opts: &ImportOptions) -> Vec<String> {
                 )),
                 Err(e) => log.push(format!("✗ DB {label}: {}", e.trim())),
             }
+        }
+    }
+
+    // 2-1) DB 사용자 — 비밀번호 해시째 만들고 권한을 준다 (이미 있는 사용자의 비밀번호는 유지)
+    if opts.restore_databases && !bundle.users.is_empty() {
+        match connection_for(DbEngine::MariaDb) {
+            Some(c) => log.extend(super::db_users::apply_users(&bundle.users, &c.user, &c.password)),
+            None => log.push(format!(
+                "✗ {}",
+                trf("DB 사용자 {0}명: 이 PC에 MariaDB/MySQL 접속 정보가 없습니다 (데이터베이스 탭에서 먼저 연결)", &[&bundle.users.len()])
+            )),
         }
     }
 
