@@ -8,7 +8,7 @@ use super::theme::{
 };
 use crate::domain::settings::load_settings;
 use crate::domain::DbEngine;
-use crate::domain::deploy::{DeployTarget, default_target, load_target, preview_files, push_database, save_target, test_connection, upload_files};
+use crate::domain::deploy::{DeployTarget, default_target, load_target, merge_targets, preview_files, push_database, save_target, test_connection, upload_files};
 use crate::domain::ProgressFn;
 use crate::domain::history::{RunLog, list_run_logs, read_run_log, run_log_time, save_run_log};
 use crate::domain::site_config::{self, SiteKind};
@@ -247,6 +247,8 @@ struct DeployForm {
     confirm_db: bool,
     /// 서버에서 가져오기 확인 중 (Some(true): 파일까지 모두)
     confirm_pull: Option<bool>,
+    /// 창을 연(또는 마지막으로 저장한) 때의 값 — 저장할 때 3-way 병합의 기준
+    loaded: DeployTarget,
 }
 
 impl DeployForm {
@@ -278,7 +280,43 @@ impl DeployForm {
             log: Vec::new(),
             confirm_db: false,
             confirm_pull: None,
+            loaded: t.clone(),
         }
+    }
+
+    /// 칸들을 이 값으로 채운다 (진행 상태·로그는 그대로)
+    fn fill(&mut self, t: &DeployTarget) {
+        let fresh = Self::from_target(&self.id, t, t.local_db.clone());
+        self.host = fresh.host;
+        self.port = fresh.port;
+        self.user = fresh.user;
+        self.key = fresh.key;
+        self.path = fresh.path;
+        self.excludes = fresh.excludes;
+        self.db_host = fresh.db_host;
+        self.db_port = fresh.db_port;
+        self.db_user = fresh.db_user;
+        self.db_password = fresh.db_password;
+        self.db_name = fresh.db_name;
+        self.ssh_password = fresh.ssh_password;
+        self.db_via_ssh = fresh.db_via_ssh;
+        self.pull_excludes = fresh.pull_excludes;
+        if !t.local_db.is_empty() {
+            self.local_db = t.local_db.clone();
+        }
+    }
+
+    /// 입력값을 저장한다. 창을 연 뒤 다른 곳에서 바뀐 칸은, 여기서 손대지 않았다면 그 값을 따른다.
+    fn save(&mut self) -> Result<DeployTarget, String> {
+        let ours = self.to_target()?;
+        let merged = match load_target(&self.id) {
+            Some(theirs) => merge_targets(&self.loaded, &ours, &theirs),
+            None => ours,
+        };
+        save_target(&self.id, &merged)?;
+        self.fill(&merged);
+        self.loaded = merged.clone();
+        Ok(merged)
     }
 
     fn to_target(&self) -> Result<DeployTarget, String> {
@@ -491,8 +529,8 @@ impl ProjectsState {
             ProjectsMessage::DeploySave => {
                 if let Some(d) = self.deploy.as_mut() {
                     d.log_at = 0;
-                    d.log = match d.to_target().and_then(|t| save_target(&d.id, &t)) {
-                        Ok(()) => vec![format!("✓ {}", tr("서버 정보를 저장했습니다"))],
+                    d.log = match d.save() {
+                        Ok(_) => vec![format!("✓ {}", tr("서버 정보를 저장했습니다"))],
                         Err(e) => vec![format!("✗ {e}")],
                     };
                 }
@@ -543,18 +581,14 @@ impl ProjectsState {
             | ProjectsMessage::PullConfirm => {
                 let Some(d) = self.deploy.as_mut() else { return Task::none() };
                 let Some(p) = self.projects.iter().find(|p| p.id == d.id).cloned() else { return Task::none() };
-                let t = match d.to_target() {
+                // 실행할 때마다 입력값을 저장해 둔다 (다음에 다시 쓰도록) — 다른 곳에서 바뀐 값은 살린다
+                let t = match d.save() {
                     Ok(t) => t,
                     Err(e) => {
                         d.log = vec![format!("✗ {e}")];
                         return Task::none();
                     }
                 };
-                // 실행할 때마다 입력값을 저장해 둔다 (다음에 다시 쓰도록)
-                if let Err(e) = save_target(&d.id, &t) {
-                    d.log = vec![format!("✗ {e}")];
-                    return Task::none();
-                }
                 d.log_at = match msg {
                     ProjectsMessage::PullPreview | ProjectsMessage::PullFiles | ProjectsMessage::PullConfirm => 1,
                     ProjectsMessage::DeployPreview | ProjectsMessage::DeployUpload | ProjectsMessage::DeployDbConfirm => 2,
@@ -643,10 +677,8 @@ impl ProjectsState {
                     // 찾은 웹 경로로 바꿔 저장해 둔다
                     if let Some(root) = found {
                         d.path = root;
-                        if let Ok(t) = d.to_target() {
-                            if save_target(&d.id, &t).is_ok() {
-                                log.push(format!("✓ {}", trf("웹 경로를 {0}(으)로 바꿔 저장했습니다", &[&d.path])));
-                            }
+                        if d.save().is_ok() {
+                            log.push(format!("✓ {}", trf("웹 경로를 {0}(으)로 바꿔 저장했습니다", &[&d.path])));
                         }
                     }
                     d.log = log;

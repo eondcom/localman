@@ -123,6 +123,25 @@ pub fn load_target(id: &str) -> Option<DeployTarget> {
     load_all().remove(id)
 }
 
+/// 3-way 병합: 창을 연 때의 값(base)·창의 값(ours)·지금 파일의 값(theirs).
+/// 창에서 손대지 않은 칸(ours == base)이 그 사이 다른 곳에서 바뀌었으면(theirs != base) theirs 를 따른다.
+/// 열어 둔 창의 예전 값이 다른 곳(다른 창·MCP·직접 수정)에서 고친 값을 덮지 않게.
+pub fn merge_targets(base: &DeployTarget, ours: &DeployTarget, theirs: &DeployTarget) -> DeployTarget {
+    let (Ok(b), Ok(mut o), Ok(t)) = (serde_json::to_value(base), serde_json::to_value(ours), serde_json::to_value(theirs)) else {
+        return ours.clone();
+    };
+    if let (Some(b), Some(o), Some(t)) = (b.as_object(), o.as_object_mut(), t.as_object()) {
+        for (k, ov) in o.iter_mut() {
+            if b.get(k) == Some(ov) {
+                if let Some(tv) = t.get(k) {
+                    *ov = tv.clone();
+                }
+            }
+        }
+    }
+    serde_json::from_value(o).unwrap_or_else(|_| ours.clone())
+}
+
 pub fn save_target(id: &str, t: &DeployTarget) -> Result<(), String> {
     validate(t)?;
     let mut all = load_all();
@@ -707,6 +726,23 @@ mod tests {
         assert_eq!(a[a.len() - 1], "deploy@example.com:/var/www/site/");
         // 공백 있는 키 경로는 ssh 명령 안에서 따옴표로 감싼다
         assert!(a.iter().any(|x| x.starts_with("ssh -p 2222") && x.contains("'/home/me/.ssh/id ed25519'")));
+    }
+
+    #[test]
+    fn merge_keeps_external_changes_to_untouched_fields() {
+        let base = target();
+        // 창에서는 웹 경로만 고쳤다
+        let mut ours = base.clone();
+        ours.remote_path = "/var/www/new".into();
+        // 그 사이 다른 곳에서 비밀번호를 바꿨다
+        let mut theirs = base.clone();
+        theirs.ssh_password = "fresh".into();
+        let m = merge_targets(&base, &ours, &theirs);
+        assert_eq!(m.remote_path, "/var/www/new", "창에서 고친 칸은 창의 값");
+        assert_eq!(m.ssh_password, "fresh", "창에서 손대지 않은 칸은 새 값");
+        // 둘 다 고쳤으면 창의 값
+        ours.ssh_password = "typed".into();
+        assert_eq!(merge_targets(&base, &ours, &theirs).ssh_password, "typed");
     }
 
     #[test]
