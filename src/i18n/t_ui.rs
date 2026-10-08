@@ -199,4 +199,6 @@ pub const T: &[(&str, &str, &str)] = &[
     ("링크 열기", "Open Link", "リンクを開く"),
     ("링크 복사", "Copy Link", "リンクをコピー"),
     ("복사했습니다 — 카카오톡으로 보내세요", "Copied — send it via KakaoTalk", "コピーしました — KakaoTalkで送ってください"),
+    ("로그 복사", "Copy log", "ログをコピー"),
+    ("Apache 설정 검사 실패 — 저장하지 않았습니다: {0}", "Apache config test failed — not saved: {0}", "Apache 設定チェックに失敗しました — 保存していません: {0}"),
 ];

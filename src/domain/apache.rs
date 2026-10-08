@@ -29,8 +29,8 @@ fn build_vhost_body(p: &VhostProject) -> String {
         ProjectType::Php => format!(
             "<VirtualHost *:80>\n\
              \x20   ServerName {domain}\n\
-             \x20   DocumentRoot {path}\n\
-             \x20   <Directory {path}>\n\
+             \x20   DocumentRoot \"{path}\"\n\
+             \x20   <Directory \"{path}\">\n\
              \x20       AllowOverride All\n\
              \x20       Require all granted\n\
              \x20   </Directory>\n\
@@ -184,10 +184,10 @@ mod tests {
     #[test]
     fn php_vhost_uses_app_dir_as_document_root() {
         let conf = build_vhost_conf(&project(ProjectType::Php, "/srv/laravel", "public", 80));
-        assert!(conf.contains("DocumentRoot /srv/laravel/public"));
+        assert!(conf.contains("DocumentRoot \"/srv/laravel/public\""));
         // 하위 디렉토리가 없으면 경로 그대로
         let conf2 = build_vhost_conf(&project(ProjectType::Php, "/srv/plain", "", 80));
-        assert!(conf2.contains("DocumentRoot /srv/plain\n"));
+        assert!(conf2.contains("DocumentRoot \"/srv/plain\"\n"));
     }
 
     #[test]

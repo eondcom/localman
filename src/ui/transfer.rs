@@ -6,7 +6,7 @@ use iced::{
     Element, Length, Task,
 };
 use super::theme::{
-    self, Icon, Kind, Tone, btn, card, check, chip, icon, input, muted, p, page_header, result_line, section_label,
+    self, Icon, Kind, Tone, btn, card, check, chip, icon, input, muted, p, page_header, section_label,
 };
 use std::fmt;
 use std::net::SocketAddr;
@@ -30,6 +30,7 @@ use crate::domain::{DbEngine, list_databases, load_db_connections};
 
 #[derive(Debug, Clone)]
 pub enum TransferMessage {
+    CopyLog(String),
     LoadDatabases,
     DatabasesLoaded(Vec<(DbEngine, String)>),
     ToggleDb(usize, bool),
@@ -268,6 +269,7 @@ impl TransferState {
 
     pub fn update(&mut self, msg: TransferMessage) -> Task<TransferMessage> {
         match msg {
+            TransferMessage::CopyLog(s) => iced::clipboard::write(s),
             TransferMessage::LoadDatabases => {
                 self.dbs_loading = true;
                 Task::perform(
@@ -651,7 +653,7 @@ impl TransferState {
             card(self.history_view()),
         ]);
         if let Some(e) = &self.error {
-            col = col.push(Space::with_height(12)).push(result_line(format!("✗ {e}")));
+            col = col.push(Space::with_height(12)).push(result_lines(std::iter::once(format!("✗ {e}"))));
         }
         col.into()
     }
@@ -701,7 +703,7 @@ impl TransferState {
         c = c.push(if self.exporting { b } else { b.on_press(TransferMessage::Export) });
         match &self.export_result {
             Some(Ok(s)) => c = c.push(Space::with_height(8)).push(result_lines(s.lines())),
-            Some(Err(e)) => c = c.push(Space::with_height(8)).push(result_line(format!("✗ {e}"))),
+            Some(Err(e)) => c = c.push(Space::with_height(8)).push(result_lines(std::iter::once(format!("✗ {e}")))),
             None => {}
         }
         c.into()
@@ -1022,7 +1024,7 @@ fn job_view(job: &LanJob) -> Element<'_, TransferMessage> {
     }
     match &job.result {
         Some(Ok(lines)) => c = c.push(Space::with_height(4)).push(result_lines(lines.iter().map(|s| s.as_str()))),
-        Some(Err(e)) => c = c.push(Space::with_height(4)).push(result_line(format!("✗ {e}"))),
+        Some(Err(e)) => c = c.push(Space::with_height(4)).push(result_lines(std::iter::once(format!("✗ {e}")))),
         None => {}
     }
     c.into()
@@ -1037,6 +1039,6 @@ fn os_label(os: &str) -> &str {
     }
 }
 
-fn result_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Element<'a, TransferMessage> {
-    lines.fold(column![].spacing(4), |c, l| c.push(result_line(l))).into()
+fn result_lines<'a, S: AsRef<str>>(lines: impl Iterator<Item = S>) -> Element<'a, TransferMessage> {
+    theme::log_block(lines.map(|l| l.as_ref().to_string()).collect(), TransferMessage::CopyLog)
 }

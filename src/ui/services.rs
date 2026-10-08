@@ -4,7 +4,7 @@ use iced::{
 };
 use crate::i18n::{tr, trf};
 use crate::platform::{ServiceStatus, get_service_status, install_service, toggle_service};
-use super::theme::{self, Icon, Kind, Tone, btn, card, chip, group, icon, muted, p, page_header, result_line, section_label, setting_row};
+use super::theme::{self, Icon, Kind, Tone, btn, card, chip, group, icon, muted, p, page_header, section_label, setting_row};
 use crate::domain::tools::{NodeSupport, TOOLS, Tool, install as install_tool, installed_version, latest_lts, node_schedule, node_support, today};
 
 #[derive(Debug, Clone)]
@@ -14,12 +14,13 @@ pub enum ServicesMessage {
     Refresh,
     /// (Apache, DB, PostgreSQL, DB 이름) — 백그라운드에서 확인한 상태
     Refreshed(ServiceStatus, ServiceStatus, ServiceStatus, &'static str),
-    Toggled(String, Result<(), String>),
+    Toggled(Result<(), String>),
     Installed(String, Result<(), String>),
     ToolsChecked(Vec<(Tool, Option<String>)>, bool),
     LtsFetched(Option<(String, String)>, Option<serde_json::Value>),
     InstallTool(Tool),
     ToolInstalled(Result<String, String>),
+    CopyLog(String),
 }
 
 pub struct ServicesState {
@@ -81,7 +82,7 @@ pub fn status_tone(s: &ServiceStatus) -> (&'static str, Tone) {
 
 impl ServicesState {
     pub fn new() -> Self {
-        let mut s = Self {
+        Self {
             apache_status: ServiceStatus::Unknown,
             mariadb_status: ServiceStatus::Unknown,
             postgresql_status: ServiceStatus::Unknown,
@@ -94,8 +95,7 @@ impl ServicesState {
             php_apache: false,
             tool_installing: None,
             tool_log: Vec::new(),
-        };
-        s
+        }
     }
 
     /// 앱 시작 때: 도구 버전과 Node LTS 를 백그라운드로 확인한다
@@ -153,6 +153,7 @@ impl ServicesState {
     pub fn update(&mut self, msg: ServicesMessage) -> Task<ServicesMessage> {
         match msg {
             ServicesMessage::Refresh => self.refresh(),
+            ServicesMessage::CopyLog(s) => iced::clipboard::write(s),
             ServicesMessage::Refreshed(a, m, p, label) => {
                 APACHE_RUNNING.store(a == ServiceStatus::Running, std::sync::atomic::Ordering::Relaxed);
                 self.apache_status = a;
@@ -162,14 +163,13 @@ impl ServicesState {
                 Task::none()
             }
             ServicesMessage::Toggle(name, start) => {
-                let n = name.clone();
                 Task::perform(
                     async move {
-                        tokio::task::spawn_blocking(move || toggle_service(&n, start))
+                        tokio::task::spawn_blocking(move || toggle_service(&name, start))
                             .await
                             .unwrap_or_else(|e| Err(e.to_string()))
                     },
-                    move |r| ServicesMessage::Toggled(name.clone(), r),
+                    ServicesMessage::Toggled,
                 )
             }
             ServicesMessage::Install(name) => {
@@ -184,7 +184,7 @@ impl ServicesState {
                     move |result| ServicesMessage::Installed(name.clone(), result),
                 )
             }
-            ServicesMessage::Toggled(_, result) => match result {
+            ServicesMessage::Toggled(result) => match result {
                 Ok(_) => {
                     self.error = None;
                     self.refresh()
@@ -258,7 +258,7 @@ impl ServicesState {
 
         if let Some(err) = &self.error {
             col = col.push(Space::with_height(16)).push(card(
-                row![icon(Icon::X, 14.0, p().danger_fg), text(err).size(13).color(p().danger_fg)].spacing(8),
+                theme::log_block(vec![format!("✗ {err}")], ServicesMessage::CopyLog),
             ));
         }
         col.into()
@@ -316,7 +316,7 @@ impl ServicesState {
             rows.push(muted(tr("도구 버전을 확인하는 중…")).into());
         }
         if !self.tool_log.is_empty() {
-            rows.push(self.tool_log.iter().fold(column![].spacing(4), |c, l| c.push(result_line(l))).into());
+            rows.push(theme::log_block(self.tool_log.clone(), ServicesMessage::CopyLog));
         }
         group(rows)
     }

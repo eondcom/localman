@@ -5,7 +5,7 @@ use iced::{
     Element, Task,
 };
 
-use super::theme::{self, Icon, Kind, Tone, btn, chip, group, muted, result_line, section_label, segmented, setting_row, switch};
+use super::theme::{self, Icon, Kind, Tone, btn, chip, group, muted, section_label, segmented, setting_row, switch};
 use crate::domain::apache::{renew_certs, set_https};
 use crate::domain::settings::{LangMode, ThemeMode, data_dir, load_settings, save_settings};
 use crate::i18n::{self, Lang, tr};
@@ -29,6 +29,7 @@ pub enum SettingsMessage {
     OpenKakaoPay,
     CopyKakaoPay,
     OpenPayPal,
+    CopyLog(String),
 }
 
 /// 후원 링크 — mac-fan-control 과 같다
@@ -165,6 +166,7 @@ impl SettingsState {
                 self.kakao_copied = true;
                 iced::clipboard::write(KAKAOPAY_URL.to_string())
             }
+            SettingsMessage::CopyLog(s) => iced::clipboard::write(s),
             SettingsMessage::OpenPayPal => {
                 open_url(PAYPAL_URL);
                 Task::none()
@@ -227,8 +229,7 @@ impl SettingsState {
             ));
         }
         if !self.https_log.is_empty() {
-            let lines = self.https_log.iter().fold(column![].spacing(4), |c, l| c.push(result_line(l)));
-            https_rows.push(lines.into());
+            https_rows.push(theme::log_block(self.https_log.clone(), SettingsMessage::CopyLog));
         }
 
         let info = group(vec![

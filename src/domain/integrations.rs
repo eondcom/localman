@@ -43,11 +43,6 @@ pub fn ensure_pma_site(tool: PmaTool) -> Result<String, String> {
     Ok(format!("http://{}", pma.domain))
 }
 
-/// 예전 호출부 호환 — Adminer 로 연다
-pub fn ensure_adminer_site() -> Result<String, String> {
-    ensure_pma_site(PmaTool::Adminer)
-}
-
 /// <데이터 폴더>/pma/index.php 에 Adminer. 최신판을 받고, 못 받으면 앱에 넣어 둔 판을 쓴다.
 fn ensure_adminer() -> Result<PathBuf, String> {
     let dir = data_root().join("pma");

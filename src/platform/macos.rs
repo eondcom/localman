@@ -378,7 +378,19 @@ pub fn write_site(id: &str, conf: &str) -> Result<(), String> {
     ensure_httpd_base()?;
     let path = sites_dir().join(format!("{id}.conf"));
     eprintln!("[localman] vhost 파일 작성: {}", path.display());
+    let previous = fs::read(&path).ok();
     fs::write(&path, conf).map_err(|e| trf("vhost 파일 쓰기 실패: {0}", &[&e]))?;
+    // 설정이 틀리면 Apache 가 다시 켜지지 않는다 — 검사해서 틀리면 원래대로 돌리고 알린다
+    if let Ok(o) = Command::new(format!("{}/bin/httpd", brew_prefix())).arg("-t").output() {
+        if !o.status.success() {
+            match previous {
+                Some(old) => { let _ = fs::write(&path, old); }
+                None => { let _ = fs::remove_file(&path); }
+            }
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            return Err(trf("Apache 설정 검사 실패 — 저장하지 않았습니다: {0}", &[&err]));
+        }
+    }
     reload_httpd();
     Ok(())
 }

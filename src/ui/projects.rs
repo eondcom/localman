@@ -1433,7 +1433,7 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
         ));
     }
     if !d.log.is_empty() {
-        body = body.push(Space::with_height(12)).push(d.log.iter().fold(column![].spacing(4), |c, l| c.push(result_line(l))));
+        body = body.push(Space::with_height(12)).push(theme::log_block(d.log.clone(), ProjectsMessage::CopyText));
     }
     card(body)
 }
