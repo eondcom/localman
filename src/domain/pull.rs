@@ -136,6 +136,10 @@ pub fn pull_files(p: &VhostProject, t: &DeployTarget, progress: &ProgressFn) -> 
     }];
     log.push(format!("· {}", trf("서버 경로 {0} · {1}", &[&root, &how])));
     log.extend(protected_note(&keep));
+    // 서버 설정 파일이 새로 왔으면 거기 적힌 DB 계정을 이 PC 에 만든다 (DB 를 먼저 받았어도 사이트가 바로 열리게)
+    if let Some(c) = load_db_connections().into_iter().find(|c| c.engine == DbEngine::MariaDb) {
+        log.extend(ensure_site_user_for(p, &c.user, &c.password));
+    }
     // 받은 파일 전체 목록 (화면에는 앞부분만, 기록 파일에는 전부 남는다)
     log.extend(files.iter().map(|f| format!("· {f}")));
     record_as(Direction::Pulled, p, t, count, vec![], true, &log);
