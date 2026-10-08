@@ -1,5 +1,7 @@
+mod api;
 mod domain;
 mod i18n;
+mod mcp;
 mod platform;
 mod ui;
 
@@ -14,6 +16,12 @@ fn main() -> iced::Result {
     apply_saved_lang();
     // 앱이 설치한 Node.js(LTS)를 먼저 찾게 한다
     domain::tools::prepend_path(&domain::tools::node_bin_dir());
+
+    // `LocalMan --mcp`: 화면 없이 MCP 서버로 (Claude Code·Claude 데스크톱이 띄운다). 앱과 함께 떠 있어도 된다.
+    if std::env::args().any(|a| a == "--mcp") {
+        mcp::run();
+        return Ok(());
+    }
 
     if !platform::acquire_single_instance() {
         rfd::MessageDialog::new()

@@ -45,6 +45,11 @@ pub struct Settings {
     /// 앱을 켤 때 꺼져 있는 Apache·DB 서버를 켠다
     #[serde(default)]
     pub autostart_services: bool,
+    /// 로컬 HTTP API (127.0.0.1)
+    #[serde(default)]
+    pub api_enabled: bool,
+    #[serde(default)]
+    pub api_token: String,
 }
 
 pub(crate) fn data_dir() -> PathBuf {

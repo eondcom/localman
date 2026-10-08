@@ -32,6 +32,10 @@ pub enum SettingsMessage {
     CopyLog(String),
     SetAutostart(bool),
     SetLaunchAtLogin(bool),
+    SetApi(bool),
+    NewApiToken,
+    /// 클립보드에 넣고 "복사했습니다" 표시
+    Copy(String, &'static str),
 }
 
 /// 후원 링크 — mac-fan-control 과 같다
@@ -49,6 +53,11 @@ pub struct SettingsState {
     launch_at_login: bool,
     /// 로그인 항목 등록 실패 메시지
     startup_error: Option<String>,
+    api_on: bool,
+    api_token: String,
+    api_error: Option<String>,
+    /// 방금 복사한 항목 이름
+    copied: Option<&'static str>,
     ca_trusted: bool,
     https_busy: bool,
     https_log: Vec<String>,
@@ -78,7 +87,17 @@ impl SettingsState {
         let s = load_settings();
         apply_theme(s.theme);
         apply_lang(s.lang);
+        let mut api_error = None;
+        if s.api_enabled && !s.api_token.is_empty() {
+            if let Err(e) = crate::api::start(crate::api::DEFAULT_PORT, s.api_token.clone()) {
+                api_error = Some(e);
+            }
+        }
         Self {
+            api_on: s.api_enabled,
+            api_token: s.api_token.clone(),
+            api_error,
+            copied: None,
             show_kakao_qr: false,
             kakao_copied: false,
             theme: s.theme,
@@ -176,6 +195,42 @@ impl SettingsState {
                 iced::clipboard::write(KAKAOPAY_URL.to_string())
             }
             SettingsMessage::CopyLog(s) => iced::clipboard::write(s),
+            SettingsMessage::SetApi(on) => {
+                let mut s = load_settings();
+                if on && s.api_token.is_empty() {
+                    s.api_token = crate::api::new_token();
+                }
+                self.api_error = None;
+                if on {
+                    if let Err(e) = crate::api::start(crate::api::DEFAULT_PORT, s.api_token.clone()) {
+                        self.api_error = Some(e);
+                    }
+                } else {
+                    crate::api::stop();
+                }
+                s.api_enabled = on && self.api_error.is_none();
+                self.api_on = s.api_enabled;
+                self.api_token = s.api_token.clone();
+                let _ = save_settings(&s);
+                Task::none()
+            }
+            SettingsMessage::NewApiToken => {
+                let mut s = load_settings();
+                s.api_token = crate::api::new_token();
+                if s.api_enabled {
+                    if let Err(e) = crate::api::start(crate::api::DEFAULT_PORT, s.api_token.clone()) {
+                        self.api_error = Some(e);
+                    }
+                }
+                self.api_token = s.api_token.clone();
+                self.copied = None;
+                let _ = save_settings(&s);
+                Task::none()
+            }
+            SettingsMessage::Copy(text, what) => {
+                self.copied = Some(what);
+                iced::clipboard::write(text)
+            }
             SettingsMessage::SetAutostart(on) => {
                 self.autostart = on;
                 let mut s = load_settings();
@@ -239,6 +294,57 @@ impl SettingsState {
         ];
         if let Some(e) = &self.startup_error {
             startup_rows.push(theme::log_block(vec![format!("✗ {e}")], SettingsMessage::CopyLog));
+        }
+
+        // 자동화 — MCP(Claude 등 AI)와 로컬 HTTP API
+        let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "LocalMan".into());
+        let claude_cmd = format!("claude mcp add localman -- \"{exe}\" --mcp");
+        let desktop_json = format!(
+            "{{\n  \"mcpServers\": {{\n    \"localman\": {{ \"command\": {}, \"args\": [\"--mcp\"] }}\n  }}\n}}",
+            serde_json::to_string(&exe).unwrap_or_default()
+        );
+        let copy_btn = |label: &'static str, text: String, what: &'static str| {
+            let shown = if self.copied == Some(what) { tr("복사했습니다") } else { label };
+            btn(shown, Some(Icon::Copy), Kind::Flat).on_press(SettingsMessage::Copy(text, what))
+        };
+        let mut auto_rows = vec![
+            setting_row(
+                tr("MCP (Claude Code · Claude 데스크톱)"),
+                Some(tr("AI가 사이트 목록·서버 켜고 끄기·DB 만들기·백업·서버에서 가져오기를 할 수 있습니다. DB·프로젝트 삭제와 서버로 올리기는 열지 않습니다.")),
+                row![
+                    copy_btn(tr("Claude Code 명령 복사"), claude_cmd, "mcp-cli"),
+                    copy_btn(tr("데스크톱 설정 복사"), desktop_json, "mcp-desktop"),
+                ]
+                .spacing(6)
+                .into(),
+            ),
+            setting_row(
+                tr("로컬 HTTP API"),
+                Some(tr("앱이 켜져 있는 동안 127.0.0.1에서만 듣고, 토큰이 있어야 합니다")),
+                switch(self.api_on).on_toggle(SettingsMessage::SetApi).into(),
+            ),
+        ];
+        if self.api_on {
+            let base = format!("http://127.0.0.1:{}/api", crate::api::DEFAULT_PORT);
+            let curl = format!(
+                "curl -s -H \"Authorization: Bearer {}\" -X POST {base}/tools/list_projects",
+                self.api_token
+            );
+            auto_rows.push(setting_row(
+                tr("주소·토큰"),
+                Some(tr("GET /api/tools 로 도구 목록, POST /api/tools/<이름> 에 JSON 인자")),
+                row![
+                    copy_btn(tr("주소 복사"), base, "api-url"),
+                    copy_btn(tr("토큰 복사"), self.api_token.clone(), "api-token"),
+                    copy_btn(tr("curl 예시 복사"), curl, "api-curl"),
+                    btn(tr("새 토큰"), Some(Icon::Refresh), Kind::Ghost).on_press(SettingsMessage::NewApiToken),
+                ]
+                .spacing(6)
+                .into(),
+            ));
+        }
+        if let Some(e) = &self.api_error {
+            auto_rows.push(theme::log_block(vec![format!("✗ {e}")], SettingsMessage::CopyLog));
         }
 
         let (status, tone) = if !self.https {
@@ -321,13 +427,16 @@ impl SettingsState {
         }
 
         column![
-            theme::page_header(tr("설정"), tr("화면, 시작, HTTPS, 앱 정보"), None),
+            theme::page_header(tr("설정"), tr("화면, 시작, 자동화, HTTPS, 앱 정보"), None),
             Space::with_height(16),
             section_label(tr("화면")),
             screen,
             Space::with_height(14),
             section_label(tr("시작")),
             group(startup_rows),
+            Space::with_height(14),
+            section_label(tr("자동화 (MCP·API)")),
+            group(auto_rows),
             Space::with_height(14),
             section_label("HTTPS"),
             group(https_rows),

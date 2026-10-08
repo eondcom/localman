@@ -1,6 +1,7 @@
 //! OS와 무관한 핵심 로직. OS별 작업은 전부 `crate::platform`을 거친다.
 
 pub mod apache;
+pub mod automation;
 pub mod database;
 pub mod db_users;
 pub mod deploy;

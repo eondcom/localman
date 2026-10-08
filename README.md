@@ -101,18 +101,45 @@ sudo ./scripts/macos/install-sudoers.sh
 - 사이트의 DB는 수정 화면에서 지정한다. 비우면 라이믹스 `files/config/config.php`, `.env`(DB_DATABASE·DATABASE_URL)에서
   자동으로 찾는다 (비밀번호는 읽지 않는다)
 
-## 서버 배포 (SSH)
+## 서버 연결 — 가져오기·배포 (SSH·SFTP)
 
-프로젝트 ⋯ → [서버 배포]. 서버(주소·포트·사용자·웹 경로·SSH 키)와 원격 DB(호스트·포트·이름·사용자·비밀번호)를 넣는다.
+프로젝트 ⋯ → [서버 배포·가져오기]. 서버(주소·포트·사용자·웹 경로, 비밀번호 또는 SSH 키)와 서버 DB(호스트·포트·이름·사용자·비밀번호)를 넣는다.
+호스팅 DB가 외부 접속을 막으면 **[SSH로 서버에 들어가서 접속]**을 켠다 — 서버 안에서 `mysqldump`/`mysql`을 돌린다.
 
-- [연결 시험]: SSH·웹 경로·서버 rsync·원격 DB 접속 확인
+**서버에서 가져오기 (↓)** — 실서버를 로컬로 받아 테스트할 때
+
+- [받을 파일 보기] / [파일 가져오기]: 서버 웹 경로를 프로젝트 폴더로 rsync (서버에 rsync가 없으면 tar로 전부).
+  **로컬에만 있는 파일은 지우지 않고**, 로컬 설정 파일(`files/config/`, `.env`, `wp-config.php` …)이 이미 있으면 덮지 않는다
+- [DB 가져오기]: 서버 DB를 받아(`<데이터 폴더>/pull-backups/`에 보관) 고른 로컬 DB에 넣는다. 같은 이름의 로컬 DB는 먼저 백업한다.
+  사이트에 DB를 연결하고, 사이트 설정에 적힌 DB 계정도 만든다
+- [모두 가져오기]: 파일 → DB 순서로 한 번에
+
+**서버로 올리기 (↑)**
+
+- [연결 시험]: SSH·웹 경로·서버 rsync·서버 DB 접속 확인
 - [미리보기]: 올라갈 파일 목록만 본다 (`rsync --dry-run`)
 - [파일 올리기]: 바뀐 파일만 rsync로 올린다. **서버에만 있는 파일은 지우지 않는다**. `.git/`, `node_modules/`, `.env` 등은
   기본으로 빼며(라이믹스는 `files/config/`·`files/cache/` 등도) 목록은 고칠 수 있다
-- [DB 올리기]: 확인을 한 번 더 받은 뒤, **원격 DB를 이 PC의 `<데이터 폴더>/deploy-backups/`에 먼저 백업**하고 로컬 DB로 덮어쓴다.
+- [DB 올리기]: 확인을 한 번 더 받은 뒤, **서버 DB를 이 PC의 `<데이터 폴더>/deploy-backups/`에 먼저 백업**하고 로컬 DB로 덮어쓴다.
   백업이 실패하면 덮어쓰지 않는다
-- SSH는 키 로그인만 쓴다 (`ssh-copy-id -p 포트 사용자@서버`로 한 번 등록). 접속 정보는 `deploy.json`(권한 600)에 저장되고 백업 묶음에는 담기지 않는다
-- 배포 기록은 프로젝트 줄과 ⋯ 메뉴의 이전 기록에 "↑ 서버에 배포"로 남는다
+
+SSH 비밀번호는 `SSH_ASKPASS`로 넘겨 명령줄에 남기지 않는다. 키 로그인이면 `ssh-copy-id -p 포트 사용자@서버`로 한 번 등록한다.
+접속 정보는 `deploy.json`(권한 600)에 저장되고 백업 묶음에는 담기지 않는다. 기록은 ⋯ 메뉴의 이전 기록에 "↓ 가져옴"·"↑ 배포"로 남는다.
+
+## 자동화 — MCP·HTTP API
+
+설정 → 자동화. AI나 스크립트가 사이트 목록, 서버 켜기·끄기, 프로젝트 추가, DB 목록·만들기·백업, 사이트 DB 계정 만들기,
+서버에서 가져오기를 할 수 있다. **DB·프로젝트 삭제와 서버로 올리기는 열지 않는다.**
+
+```bash
+# Claude Code 에 MCP 서버로 등록 (설정 화면의 [Claude Code 명령 복사]와 같다)
+claude mcp add localman -- /Applications/LocalMan.app/Contents/MacOS/LocalMan --mcp
+
+# HTTP API — 설정에서 켜면 앱이 떠 있는 동안 127.0.0.1:47810 에서만 듣는다 (토큰 필요)
+curl -H "Authorization: Bearer <토큰>" http://127.0.0.1:47810/api/tools
+curl -H "Authorization: Bearer <토큰>" -X POST http://127.0.0.1:47810/api/tools/pull_from_server \
+     -d '{"id":"eond","files":true,"db":true}'
+```
 
 ## HTTPS (로컬 인증기관)
 
