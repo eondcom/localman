@@ -207,6 +207,8 @@ pub enum Icon {
     Download,
     Upload,
     Ellipsis,
+    Eye,
+    EyeOff,
     FileText,
     Pencil,
     Trash,
@@ -252,6 +254,8 @@ impl Icon {
             Icon::Download => 0xe0b6,
             Icon::Upload => 0xe19d,
             Icon::Ellipsis => 0xe0ba,
+            Icon::Eye => 0xe0be,
+            Icon::EyeOff => 0xe0bf,
             Icon::FileText => 0xe0d0,
             Icon::Pencil => 0xe1f8,
             Icon::Trash => 0xe18d,
@@ -604,6 +608,17 @@ pub fn input_style(_: &Theme, status: text_input::Status) -> text_input::Style {
 /// 스타일을 입힌 입력창
 pub fn input<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, M> {
     text_input(placeholder, value).size(13).padding([8, 12]).style(input_style)
+}
+
+/// 비밀번호 칸 + 보기 아이콘(눈). visible 이면 글자를 보여 준다
+pub fn password_field<'a, M: Clone + 'a>(inp: text_input::TextInput<'a, M>, visible: bool, toggle: M) -> Element<'a, M> {
+    row![
+        inp.secure(!visible).width(Length::Fill),
+        icon_btn(if visible { Icon::EyeOff } else { Icon::Eye }, visible).on_press(toggle),
+    ]
+    .spacing(4)
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
 pub fn checkbox_style(_: &Theme, status: checkbox::Status) -> checkbox::Style {

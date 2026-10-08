@@ -71,6 +71,7 @@ pub enum TransferMessage {
     MampUserChanged(String),
     MampPasswordChanged(String),
     MampToggleUsers(bool),
+    MampToggleShowPw,
     MampExport,
     MampEvent(LanEvent),
     /// 방금 만든 MAMP 백업 파일을 이 PC 가져오기로 연다
@@ -183,6 +184,7 @@ pub struct TransferState {
     mamp_user: String,
     mamp_password: String,
     mamp_users: bool,
+    mamp_show_pw: bool,
     mamp_job: LanJob,
     mamp_output: Option<PathBuf>,
 }
@@ -240,6 +242,7 @@ impl TransferState {
             mamp_user: "root".into(),
             mamp_password: "root".into(),
             mamp_users: true,
+            mamp_show_pw: false,
             mamp_job: LanJob::default(),
             mamp_output: None,
         };
@@ -544,6 +547,10 @@ impl TransferState {
             }
             TransferMessage::MampUserChanged(v) => {
                 self.mamp_user = v;
+                Task::none()
+            }
+            TransferMessage::MampToggleShowPw => {
+                self.mamp_show_pw = !self.mamp_show_pw;
                 Task::none()
             }
             TransferMessage::MampToggleUsers(on) => {
@@ -975,7 +982,11 @@ impl TransferState {
                 container(
                     column![
                         label(tr("비밀번호")),
-                        input("root", &self.mamp_password).on_input(TransferMessage::MampPasswordChanged).secure(true),
+                        theme::password_field(
+                            input("root", &self.mamp_password).on_input(TransferMessage::MampPasswordChanged),
+                            self.mamp_show_pw,
+                            TransferMessage::MampToggleShowPw,
+                        ),
                     ]
                     .spacing(4),
                 )

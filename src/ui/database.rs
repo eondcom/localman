@@ -569,17 +569,11 @@ impl DatabaseState {
                     container(field(tr("사용자"), input("root", &self.user).on_input(DatabaseMessage::UserChanged).into())).width(160),
                     container(field(
                         tr("비밀번호"),
-                        row![
-                            input("password", &self.password)
-                                .on_input(DatabaseMessage::PasswordChanged)
-                                .secure(!self.show_password)
-                                .width(Length::Fill),
-                            btn(if self.show_password { tr("숨기기") } else { tr("보기") }, None, Kind::Ghost)
-                                .on_press(DatabaseMessage::TogglePasswordVisibility),
-                        ]
-                        .spacing(4)
-                        .align_y(iced::Alignment::Center)
-                        .into(),
+                        theme::password_field(
+                            input("password", &self.password).on_input(DatabaseMessage::PasswordChanged),
+                            self.show_password,
+                            DatabaseMessage::TogglePasswordVisibility,
+                        ),
                     ))
                     .width(Length::Fill),
                     column![Space::with_height(19), btn(tr("연결"), Some(Icon::Zap), Kind::Primary).on_press(DatabaseMessage::Connect)],
@@ -685,10 +679,11 @@ impl DatabaseState {
                     field(tr("사용자 이름"), input("dbuser", &self.new_user_name).on_input(DatabaseMessage::NewUserNameChanged).into()),
                     field(
                         tr("비밀번호"),
-                        input("password", &self.new_user_password)
-                            .on_input(DatabaseMessage::NewUserPasswordChanged)
-                            .secure(true)
-                            .into(),
+                        theme::password_field(
+                            input("password", &self.new_user_password).on_input(DatabaseMessage::NewUserPasswordChanged),
+                            self.show_password,
+                            DatabaseMessage::TogglePasswordVisibility,
+                        ),
                     ),
                     container(field(tr("호스트"), input("localhost", &self.new_user_host).on_input(DatabaseMessage::NewUserHostChanged).into()))
                         .width(140),
@@ -705,7 +700,7 @@ impl DatabaseState {
             group(
                 self.db_users
                     .iter()
-                    .map(|u| user_row(u, self.editing_user.as_ref(), &self.edit_user_name, &self.edit_user_password))
+                    .map(|u| user_row(u, self.editing_user.as_ref(), &self.edit_user_name, &self.edit_user_password, self.show_password))
                     .collect(),
             )
         };
@@ -837,6 +832,7 @@ fn user_row<'a>(
     editing_user: Option<&'a (String, String)>,
     edit_user_name: &'a str,
     edit_user_password: &'a str,
+    show_password: bool,
 ) -> Element<'a, DatabaseMessage> {
     let is_editing = editing_user.map(|(name, host)| name == &u.username && host == &u.host).unwrap_or(false);
     if is_editing {
@@ -844,10 +840,11 @@ fn user_row<'a>(
             field(tr("사용자 이름"), input(tr("사용자 이름"), edit_user_name).on_input(DatabaseMessage::EditUserNameChanged).into()),
             field(
                 tr("새 비밀번호"),
-                input(tr("비워 두면 그대로"), edit_user_password)
-                    .on_input(DatabaseMessage::EditUserPasswordChanged)
-                    .secure(true)
-                    .into(),
+                theme::password_field(
+                    input(tr("비워 두면 그대로"), edit_user_password).on_input(DatabaseMessage::EditUserPasswordChanged),
+                    show_password,
+                    DatabaseMessage::TogglePasswordVisibility,
+                ),
             ),
             btn(tr("저장"), Some(Icon::Check), Kind::Primary).on_press(DatabaseMessage::SaveUserEdit(u.username.clone(), u.host.clone())),
             btn(tr("취소"), None, Kind::Ghost).on_press(DatabaseMessage::CancelUserEdit),

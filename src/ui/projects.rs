@@ -86,6 +86,7 @@ struct SiteTool {
     on_server: bool,
     /// 서버 비밀번호 바꾸기 확인 중
     confirm_server: bool,
+    show_pw: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +140,8 @@ pub enum ProjectsMessage {
     SiteTarget(bool),
     SiteServerConfirm,
     SiteServerCancel,
+    SiteToggleShowPw,
+    DeployToggleShowPw,
     SiteLocalize,
     SiteRestore,
     SiteToolDone(Result<Vec<String>, String>),
@@ -231,6 +234,8 @@ struct DeployForm {
     progress: Option<(String, Option<(u64, u64)>)>,
     /// 로그를 보일 구역 (0: 위, 1: 가져오기, 2: 올리기)
     log_at: u8,
+    /// 비밀번호 칸 글자 보기
+    show_pw: bool,
     /// 넣을 로컬 DB 가 이미 있는지 (가져오기 확인할 때 확인)
     local_db_exists: Option<bool>,
     /// 지난 작업 기록
@@ -266,6 +271,7 @@ impl DeployForm {
             busy: None,
             progress: None,
             log_at: 0,
+            show_pw: false,
             local_db_exists: None,
             runs: list_run_logs(id),
             log_file: None,
@@ -1067,9 +1073,22 @@ impl ProjectsState {
                     server: load_target(&p.id).filter(|t| t.has_db()),
                     on_server: false,
                     confirm_server: false,
+                    show_pw: false,
                 });
                 if mode == SiteToolMode::Password {
                     return Task::done(ProjectsMessage::SiteTarget(false));
+                }
+                Task::none()
+            }
+            ProjectsMessage::SiteToggleShowPw => {
+                if let Some(m) = self.site_tool.as_mut() {
+                    m.show_pw = !m.show_pw;
+                }
+                Task::none()
+            }
+            ProjectsMessage::DeployToggleShowPw => {
+                if let Some(d) = self.deploy.as_mut() {
+                    d.show_pw = !d.show_pw;
                 }
                 Task::none()
             }
@@ -1721,7 +1740,7 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
             field(tr("웹 경로"), inp("/var/www/site", &d.path, DeployField::Path).into(), None),
             field(
                 tr("비밀번호 (선택)"),
-                inp(tr("비우면 SSH 키로 로그인"), &d.ssh_password, DeployField::SshPassword).secure(true).into(),
+                theme::password_field(inp(tr("비우면 SSH 키로 로그인"), &d.ssh_password, DeployField::SshPassword), d.show_pw, ProjectsMessage::DeployToggleShowPw),
                 None,
             ),
             field(tr("SSH 키 (선택)"), inp(tr("비우면 기본 키 (~/.ssh)"), &d.key, DeployField::Key).into(), None),
@@ -1750,7 +1769,7 @@ fn deploy_panel(d: &DeployForm) -> Element<'_, ProjectsMessage> {
         Space::with_height(8),
         row![
             field(tr("사용자"), inp("site_user", &d.db_user, DeployField::DbUser).into(), None),
-            field(tr("비밀번호"), inp("", &d.db_password, DeployField::DbPassword).secure(true).into(), None),
+            field(tr("비밀번호"), theme::password_field(inp("", &d.db_password, DeployField::DbPassword), d.show_pw, ProjectsMessage::DeployToggleShowPw), None),
         ]
         .spacing(10),
     ];
@@ -1991,7 +2010,7 @@ fn site_tool_panel(m: &SiteTool) -> Element<'_, ProjectsMessage> {
             body = body.push(Space::with_height(12)).push(
                 row![
                     container(field(tr("관리자 ID"), inp("admin", &m.user_id, SiteField::UserId).into(), None)).width(200),
-                    field(tr("새 비밀번호"), inp(tr("새 비밀번호"), &m.new_password, SiteField::NewPassword).secure(true).into(), None),
+                    field(tr("새 비밀번호"), theme::password_field(inp(tr("새 비밀번호"), &m.new_password, SiteField::NewPassword), m.show_pw, ProjectsMessage::SiteToggleShowPw), None),
                     column![
                         Space::with_height(20),
                         run(tr("변경"), Icon::Check, if m.on_server { Kind::Danger } else { Kind::Primary }, ProjectsMessage::SiteSetPassword)
@@ -2026,7 +2045,7 @@ fn site_tool_panel(m: &SiteTool) -> Element<'_, ProjectsMessage> {
                 row![
                     field(tr("DB 이름"), inp("site", &m.db_name, SiteField::DbName).into(), None),
                     field(tr("사용자"), inp("site_user", &m.db_user, SiteField::DbUser).into(), None),
-                    field(tr("비밀번호"), inp("", &m.db_password, SiteField::DbPassword).secure(true).into(), None),
+                    field(tr("비밀번호"), theme::password_field(inp("", &m.db_password, SiteField::DbPassword), m.show_pw, ProjectsMessage::SiteToggleShowPw), None),
                 ]
                 .spacing(10),
             );
