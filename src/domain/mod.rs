@@ -8,6 +8,7 @@ pub mod deploy;
 pub mod detect;
 pub mod eondctl;
 pub mod history;
+pub mod jobs;
 pub mod integrations;
 pub mod lan;
 pub mod mamp;

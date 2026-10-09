@@ -91,7 +91,7 @@ pub fn start() -> Result<(), String> {
     let args = mysqld_args();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let bin = bin_dir().join("mysqld");
-    super::spawn_in_new_group(&bin.to_string_lossy(), &args, &home().to_string_lossy())?;
+    super::spawn_in_new_group(&bin.to_string_lossy(), &args, &home().to_string_lossy(), None)?;
     if wait_until(true) {
         Ok(())
     } else {

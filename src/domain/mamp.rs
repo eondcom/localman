@@ -194,7 +194,7 @@ fn start_socket_only(data_dir: &Path) -> Result<bool, String> {
         format!("--log-error={MAMP_ROOT}/logs/mysql_error.log"),
     ];
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    crate::platform::spawn_in_new_group(&bin("mysqld").to_string_lossy(), &args, MAMP_ROOT)?;
+    crate::platform::spawn_in_new_group(&bin("mysqld").to_string_lossy(), &args, MAMP_ROOT, None)?;
     for _ in 0..60 {
         if alive() {
             return Ok(true);

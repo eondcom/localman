@@ -93,6 +93,23 @@ pub const TOOLS: &[Tool] = &[
         schema: no_args,
     },
     Tool {
+        name: "list_jobs",
+        description: "Scheduled jobs (launchd, macOS) of a site: every <site>/ops/*.plist. Shows on/off, running, schedule, last exit, log path.",
+        schema: || json!({ "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] }),
+    },
+    Tool {
+        name: "set_job",
+        description: "Turn a site's scheduled job on or off (copies the plist to ~/Library/LaunchAgents and loads it, or unloads and removes the copy).",
+        schema: || json!({ "type": "object", "properties": {
+            "id": { "type": "string" }, "label": { "type": "string" }, "enabled": { "type": "boolean" } },
+            "required": ["id", "label", "enabled"] }),
+    },
+    Tool {
+        name: "run_job",
+        description: "Run a site's scheduled job now (launchctl kickstart). The job must be on.",
+        schema: || json!({ "type": "object", "properties": { "id": { "type": "string" }, "label": { "type": "string" } }, "required": ["id", "label"] }),
+    },
+    Tool {
         name: "eondctl",
         description: "eond.com(eondcms) 배포 도구 eondctl 을 부른다. action: full(빌드→rsync→poetry·alembic→restart→헬스체크), backend(빌드 없이), frontend(빌드→rsync), quick(rsync→restart), dry-run(전송 목록만), status(무엇을 배포해야 하나), check, server, logs/nginx(lines 줄), history, local-status/local-start/local-stop(LocalMan 에 되묻는 로컬 서버). eondctl API 가 떠 있으면 API 로, 아니면 eondctl CLI 로 실행.",
         schema: || json!({
@@ -280,7 +297,7 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
                 return Err("php sites are served by Apache directly — start the apache service instead".into());
             }
             let pid = start_server(&p)?;
-            Ok(json!({ "id": p.id, "pid": pid, "url": format!("http://{}", p.domain) }))
+            Ok(json!({ "id": p.id, "pid": pid, "url": format!("http://{}", p.domain), "log": super::server::server_log_path(&p.id) }))
         }
         "stop_project" => {
             let id = required(args, "id")?;
@@ -334,6 +351,31 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
                 log.extend(pull_database(&p, &t, &local, &super::no_progress())?);
             }
             Ok(json!({ "log": log }))
+        }
+        "list_jobs" => {
+            let p = find_project(required(args, "id")?)?;
+            Ok(Value::Array(
+                super::jobs::list_jobs(&p.path)
+                    .iter()
+                    .map(|j| json!({
+                        "label": j.label, "enabled": j.enabled, "running": j.running, "schedule": j.schedule,
+                        "last_exit": j.last_exit, "log": j.log, "source": j.source,
+                    }))
+                    .collect(),
+            ))
+        }
+        "set_job" => {
+            let p = find_project(required(args, "id")?)?;
+            let label = required(args, "label")?;
+            let on = args.get("enabled").and_then(|v| v.as_bool()).ok_or("enabled: true/false")?;
+            super::jobs::set_job(&p.path, label, on)?;
+            Ok(json!({ "label": label, "enabled": on }))
+        }
+        "run_job" => {
+            let p = find_project(required(args, "id")?)?;
+            let label = required(args, "label")?;
+            super::jobs::run_job(&p.path, label)?;
+            Ok(json!({ "label": label, "started": true }))
         }
         "eondctl" => super::eondctl::run(required(args, "action")?, args.get("lines").and_then(Value::as_u64)),
         "eondctl_status" => Ok(super::eondctl::describe()),

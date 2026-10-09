@@ -16,11 +16,17 @@ const DEFAULT_PROTOCOL: &str = "2025-06-18";
 fn protocol_out() -> std::fs::File {
     use std::os::fd::FromRawFd;
     unsafe extern "C" {
-        fn dup(fd: i32) -> i32;
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
         fn dup2(src: i32, dst: i32) -> i32;
     }
+    // close-on-exec 로 떼어 둔다 — 그냥 dup 하면 도구가 띄운 서버가 이 채널을 물려받아,
+    // MCP 가 끝나도 파이프가 안 닫혀 부른 쪽이 멈춘다.
+    #[cfg(target_os = "macos")]
+    const F_DUPFD_CLOEXEC: i32 = 67;
+    #[cfg(not(target_os = "macos"))]
+    const F_DUPFD_CLOEXEC: i32 = 1030;
     unsafe {
-        let fd = dup(1);
+        let fd = fcntl(1, F_DUPFD_CLOEXEC, 3);
         dup2(2, 1);
         std::fs::File::from_raw_fd(fd)
     }

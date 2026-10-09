@@ -16,6 +16,8 @@ use crate::domain::pull::{default_local_db_name, preview_pull, pull_database, pu
 use crate::domain::lan::human_bytes;
 use crate::domain::project::{ProjectDb, set_project_db};
 use crate::domain::usage::{SiteUsage, detect_db, site_usage};
+use crate::domain::jobs::{Job, list_jobs, run_job, set_job};
+use crate::domain::server::server_log_path;
 use std::collections::HashMap;
 use crate::platform::open_url;
 use crate::domain::{
@@ -42,10 +44,23 @@ fn detect_command_for(t: &ProjectType, path: &str, app_dir: &str, port: u16) -> 
 
 /// 프로젝트별 에러 로그 뷰 상태
 struct LogView {
+    /// 에러 로그면 프로젝트 id, 다른 파일이면 그 경로 (LogLoaded 를 맞춰 보는 키)
     id: String,
     name: String,
+    /// 보여 주는 파일. None 이면 Apache 에러 로그(error_log_path(id))
+    file: Option<String>,
     content: String,
     error: Option<String>,
+}
+
+/// 프로젝트 예약 작업(launchd) 패널
+struct JobsPanel {
+    project_id: String,
+    project_name: String,
+    jobs: Vec<Job>,
+    loading: bool,
+    /// 켜기·끄기·실행 중인 작업 label
+    busy: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -188,6 +203,18 @@ pub enum ProjectsMessage {
     OpenFolder(String),
     // 더보기(⋯) 메뉴
     ToggleMenu(String),
+    /// 아무 로그 파일을 패널에 (제목, 경로)
+    ViewFileLog(String, String),
+    /// 예약 작업(launchd): 프로젝트마다 (전체, 켜진 수)
+    ScanJobs,
+    JobsScanned(Vec<(String, usize, usize)>),
+    OpenJobs(String),
+    JobsLoaded(String, Vec<Job>),
+    /// (프로젝트 id, label, 켜기)
+    SetJob(String, String, bool),
+    RunJob(String, String),
+    JobDone(String, Result<String, String>),
+    CloseJobs,
     /// 다른 PC로 보내기 — App 이 백업·이전 탭으로 넘겨 처리한다
     SendToPc(String),
 }
@@ -380,6 +407,9 @@ pub struct ProjectsState {
     deploy: Option<DeployForm>,
     // 더보기 메뉴가 열린 project id
     menu_open: Option<String>,
+    jobs_panel: Option<JobsPanel>,
+    /// project id → (예약 작업 수, 켜진 수). 그릴 때마다 launchctl 을 부르지 않게 미리 센다
+    job_summary: HashMap<String, (usize, usize)>,
     // project id → (마지막 이전 한 줄, 최근 이전 기록 줄들). 그릴 때마다 파일을 읽지 않게 미리 만든다
     transfers: std::collections::HashMap<String, (String, Vec<(bool, String)>)>,
 }
@@ -408,6 +438,8 @@ impl ProjectsState {
         Self {
             transfers: load_transfers(&projects),
             menu_open: None,
+            jobs_panel: None,
+            job_summary: HashMap::new(),
             toasts: Vec::new(),
             adding: false,
             search: String::new(),
@@ -1017,6 +1049,7 @@ impl ProjectsState {
                 self.log_view = Some(LogView {
                     id: id.clone(),
                     name,
+                    file: None,
                     content: String::new(),
                     error: None,
                 });
@@ -1074,6 +1107,112 @@ impl ProjectsState {
             }
             ProjectsMessage::CopyText(s) => {
                 return iced::clipboard::write(s);
+            }
+            ProjectsMessage::ViewFileLog(title, path) => {
+                self.menu_open = None;
+                self.log_view = Some(LogView {
+                    id: path.clone(),
+                    name: title,
+                    file: Some(path.clone()),
+                    content: String::new(),
+                    error: None,
+                });
+                let key = path.clone();
+                Task::perform(async move { read_log(&path, 500) }, move |r| ProjectsMessage::LogLoaded(key.clone(), r))
+            }
+            ProjectsMessage::ScanJobs => {
+                let projects: Vec<(String, String)> = self.projects.iter().map(|p| (p.id.clone(), p.path.clone())).collect();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            projects
+                                .iter()
+                                .filter_map(|(id, path)| {
+                                    let jobs = list_jobs(path);
+                                    (!jobs.is_empty()).then(|| (id.clone(), jobs.len(), jobs.iter().filter(|j| j.enabled).count()))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .await
+                        .unwrap_or_default()
+                    },
+                    ProjectsMessage::JobsScanned,
+                )
+            }
+            ProjectsMessage::JobsScanned(list) => {
+                self.job_summary = list.into_iter().map(|(id, n, on)| (id, (n, on))).collect();
+                Task::none()
+            }
+            ProjectsMessage::OpenJobs(id) => {
+                self.menu_open = None;
+                let Some(p) = self.projects.iter().find(|p| p.id == id) else { return Task::none() };
+                let keep = self.jobs_panel.as_ref().filter(|j| j.project_id == id).map(|j| j.jobs.clone()).unwrap_or_default();
+                self.jobs_panel = Some(JobsPanel { project_id: id.clone(), project_name: p.name.clone(), jobs: keep, loading: true, busy: None });
+                let path = p.path.clone();
+                Task::perform(
+                    async move { tokio::task::spawn_blocking(move || list_jobs(&path)).await.unwrap_or_default() },
+                    move |jobs| ProjectsMessage::JobsLoaded(id.clone(), jobs),
+                )
+            }
+            ProjectsMessage::JobsLoaded(id, jobs) => {
+                let on = jobs.iter().filter(|j| j.enabled).count();
+                if jobs.is_empty() {
+                    self.job_summary.remove(&id);
+                } else {
+                    self.job_summary.insert(id.clone(), (jobs.len(), on));
+                }
+                if let Some(j) = self.jobs_panel.as_mut().filter(|j| j.project_id == id) {
+                    j.jobs = jobs;
+                    j.loading = false;
+                }
+                Task::none()
+            }
+            ProjectsMessage::SetJob(id, label, on) => {
+                let Some(path) = self.projects.iter().find(|p| p.id == id).map(|p| p.path.clone()) else { return Task::none() };
+                if let Some(j) = self.jobs_panel.as_mut() {
+                    j.busy = Some(label.clone());
+                }
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            set_job(&path, &label, on).map(|_| {
+                                if on { trf("{0} 켰습니다", &[&label]) } else { trf("{0} 껐습니다", &[&label]) }
+                            })
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                    },
+                    move |r| ProjectsMessage::JobDone(id.clone(), r),
+                )
+            }
+            ProjectsMessage::RunJob(id, label) => {
+                let Some(path) = self.projects.iter().find(|p| p.id == id).map(|p| p.path.clone()) else { return Task::none() };
+                if let Some(j) = self.jobs_panel.as_mut() {
+                    j.busy = Some(label.clone());
+                }
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || run_job(&path, &label).map(|_| trf("{0} 실행했습니다", &[&label])))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                    },
+                    move |r| ProjectsMessage::JobDone(id.clone(), r),
+                )
+            }
+            ProjectsMessage::JobDone(id, r) => {
+                if let Some(j) = self.jobs_panel.as_mut() {
+                    j.busy = None;
+                }
+                self.toasts.push(r);
+                // 상태(켜짐·실행 중·종료 코드)를 다시 읽는다 — kickstart 직후엔 아직 안 떠 있을 수 있어 잠깐 기다린다
+                Task::perform(
+                    async { tokio::time::sleep(std::time::Duration::from_millis(600)).await },
+                    move |_| ProjectsMessage::OpenJobs(id.clone()),
+                )
+            }
+            ProjectsMessage::CloseJobs => {
+                self.jobs_panel = None;
+                Task::none()
             }
             ProjectsMessage::CloseLog => {
                 self.log_view = None;
@@ -1274,6 +1413,9 @@ impl ProjectsState {
         if let Some(m) = &self.site_tool {
             col = col.push(site_tool_panel(m)).push(Space::with_height(16));
         }
+        if let Some(j) = &self.jobs_panel {
+            col = col.push(jobs_panel(j)).push(Space::with_height(16));
+        }
         if let Some(lv) = &self.log_view {
             col = col.push(log_panel(lv)).push(Space::with_height(16));
         }
@@ -1338,6 +1480,7 @@ impl ProjectsState {
                 transfer.map(|t| t.0.as_str()),
                 menu,
                 self.usage.get(&p_.id),
+                self.job_summary.get(&p_.id).copied(),
             ));
             if let Some(d) = self.deploy.as_ref().filter(|d| d.id == p_.id) {
                 list = list.push(deploy_panel(d));
@@ -1494,6 +1637,7 @@ fn project_row_view_with_state<'a>(
     last_transfer: Option<&'a str>,
     menu: Option<&'a [(bool, String)]>,
     usage: Option<&'a SiteUsage>,
+    jobs: Option<(usize, usize)>,
 ) -> Element<'a, ProjectsMessage> {
     let c = p();
     let id = p_.id.clone();
@@ -1553,6 +1697,18 @@ fn project_row_view_with_state<'a>(
             .align_y(iced::Alignment::Center),
         );
     }
+    if let Some((n, on)) = jobs.filter(|(_, on)| *on > 0) {
+        info = info.push(
+            iced::widget::button(
+                row![icon(Icon::History, 11.0, c.fg3), text(trf("예약 작업 {0}개 켜짐 (전체 {1})", &[&on, &n])).size(11).color(c.fg3)]
+                    .spacing(5)
+                    .align_y(iced::Alignment::Center),
+            )
+            .padding(0)
+            .on_press(ProjectsMessage::OpenJobs(id.clone()))
+            .style(|_, _| iced::widget::button::Style::default()),
+        );
+    }
     if let Some(t) = last_transfer {
         info = info.push(
             row![icon(Icon::History, 11.0, c.fg3), text(t).size(11).color(c.fg3)]
@@ -1600,7 +1756,16 @@ fn project_row_view_with_state<'a>(
         .push(icon_btn(Icon::Ellipsis, menu.is_some()).on_press(ProjectsMessage::ToggleMenu(id.clone())));
 
     let main = row![info, actions].spacing(16).align_y(iced::Alignment::Center);
-    card(with_menu(main.into(), menu, id, p_.path.clone(), site_config::detect(p_)))
+    let extra = MenuExtra { jobs: jobs.map(|j| j.0).unwrap_or(0), server_log: p_.project_type.is_proxied().then(|| p_.name.clone()) };
+    card(with_menu(main.into(), menu, id, p_.path.clone(), site_config::detect(p_), extra))
+}
+
+/// 더보기 메뉴에 붙는, 프로젝트에 따라 생기는 항목
+struct MenuExtra {
+    /// 예약 작업 수 (0 이면 메뉴 없음)
+    jobs: usize,
+    /// 개발 서버가 있는 프로젝트면 그 이름 (서버 출력 로그 제목)
+    server_log: Option<String>,
 }
 
 /// 더보기 메뉴가 열려 있으면 카드 아래에 동작과 최근 이전 기록을 붙인다.
@@ -1610,6 +1775,7 @@ fn with_menu<'a>(
     id: String,
     path: String,
     site: Option<SiteKind>,
+    extra: MenuExtra,
 ) -> Element<'a, ProjectsMessage> {
     let Some(recent) = menu else {
         return main;
@@ -1641,6 +1807,15 @@ fn with_menu<'a>(
             }))
             .push_maybe(site.map(|_| {
                 btn(tr("로컬 DB로 설정 바꾸기"), Some(Icon::Database), Kind::Flat).on_press(ProjectsMessage::OpenSiteTool(id.clone(), SiteToolMode::LocalDb))
+            }))
+            .push_maybe((extra.jobs > 0).then(|| {
+                btn(trf("예약 작업 ({0})", &[&extra.jobs]), Some(Icon::History), Kind::Flat).on_press(ProjectsMessage::OpenJobs(id.clone()))
+            }))
+            .push_maybe(extra.server_log.map(|name| {
+                btn(tr("서버 출력 로그"), Some(Icon::Terminal), Kind::Flat).on_press(ProjectsMessage::ViewFileLog(
+                    trf("서버 출력 · {0}", &[&name]),
+                    server_log_path(&id).to_string_lossy().to_string(),
+                ))
             }))
             .spacing(6),
             Space::with_width(24),
@@ -2097,22 +2272,118 @@ fn site_tool_panel(m: &SiteTool) -> Element<'_, ProjectsMessage> {
     card(body)
 }
 
+/// 일정 값(jobs.rs, 언어 무관)을 화면 문구로
+fn schedule_label(s: &str) -> String {
+    match s {
+        "keepalive" => tr("상주").to_string(),
+        "manual" => tr("수동").to_string(),
+        _ => match s.strip_prefix("every ").and_then(|x| x.strip_suffix('s')) {
+            Some(n) => trf("{0}초마다", &[&n]),
+            None => s.to_string(),
+        },
+    }
+}
+
+// 예약 작업(launchd) 패널 — 작업마다 한 줄: 상태 · label · 일정 · 마지막 종료 · [켜기/끄기] [지금 실행] [로그]
+fn jobs_panel(j: &JobsPanel) -> Element<'_, ProjectsMessage> {
+    let header = row![
+        column![
+            row![icon(Icon::History, 15.0, p().fg2), text(trf("예약 작업 · {0}", &[&j.project_name])).size(15).font(theme::SEMIBOLD).color(p().fg)]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+            muted(tr("프로젝트 ops 폴더의 plist — 켜면 ~/Library/LaunchAgents 에 복사해 올립니다")),
+        ]
+        .spacing(4)
+        .width(Length::Fill),
+        btn(tr("새로고침"), Some(Icon::Refresh), Kind::Flat).on_press(ProjectsMessage::OpenJobs(j.project_id.clone())),
+        btn(tr("닫기"), Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseJobs),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    let mut list = column![].spacing(10);
+    if j.jobs.is_empty() {
+        list = list.push(muted(if j.loading { tr("불러오는 중…") } else { tr("ops 폴더에 plist 가 없습니다") }));
+    }
+    for job in &j.jobs {
+        let busy = j.busy.as_deref() == Some(job.label.as_str());
+        let state = if job.running {
+            status(tr("실행 중"), Tone::Success)
+        } else if job.enabled {
+            status(tr("켜짐"), Tone::Success)
+        } else {
+            status(tr("꺼짐"), Tone::Neutral)
+        };
+        let exit = job.last_exit.map(|c| trf("마지막 종료 {0}", &[&c])).unwrap_or_default();
+        let exit_color = if matches!(job.last_exit, Some(c) if c != 0) { p().warning_fg } else { p().fg3 };
+        let toggle = if job.enabled {
+            btn(tr("끄기"), Some(Icon::Square), Kind::Flat)
+        } else {
+            btn(tr("켜기"), Some(Icon::Play), Kind::Success)
+        };
+        let id = j.project_id.clone();
+        let label = job.label.clone();
+        let mut actions = row![
+            if busy { toggle } else { toggle.on_press(ProjectsMessage::SetJob(id.clone(), label.clone(), !job.enabled)) },
+            {
+                let b = btn(tr("지금 실행"), Some(Icon::Zap), Kind::Flat);
+                if busy || !job.enabled { b } else { b.on_press(ProjectsMessage::RunJob(id.clone(), label.clone())) }
+            },
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        if let Some(log) = &job.log {
+            actions = actions.push(
+                btn(tr("로그"), Some(Icon::FileText), Kind::Flat).on_press(ProjectsMessage::ViewFileLog(trf("작업 로그 · {0}", &[&job.label]), log.clone())),
+            );
+        }
+        list = list.push(
+            row![
+                state,
+                column![
+                    text(&job.label).size(13).font(theme::MEDIUM).color(p().fg),
+                    row![
+                        text(schedule_label(&job.schedule)).size(12).color(p().fg3),
+                        text(exit).size(12).color(exit_color),
+                    ]
+                    .spacing(10),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                actions,
+            ]
+            .spacing(12)
+            .align_y(iced::Alignment::Center),
+        );
+    }
+    card(column![header, Space::with_height(12), list])
+}
+
 // 에러 로그 패널
 fn log_panel(lv: &LogView) -> Element<'_, ProjectsMessage> {
     let header = row![
         column![
-            row![icon(Icon::FileText, 15.0, p().fg2), text(trf("에러 로그 · {0}", &[&lv.name])).size(15).font(theme::SEMIBOLD).color(p().fg)]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
-            muted(error_log_path(&lv.id)),
+            row![
+                icon(Icon::FileText, 15.0, p().fg2),
+                text(if lv.file.is_some() { lv.name.clone() } else { trf("에러 로그 · {0}", &[&lv.name]) })
+                    .size(15)
+                    .font(theme::SEMIBOLD)
+                    .color(p().fg)
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            muted(lv.file.clone().unwrap_or_else(|| error_log_path(&lv.id))),
         ]
         .spacing(4)
         .width(Length::Fill),
         btn(tr("복사"), Some(Icon::Copy), Kind::Flat).on_press(ProjectsMessage::CopyLog),
-        btn(tr("새로고침"), Some(Icon::Refresh), Kind::Flat).on_press(ProjectsMessage::ViewLog(lv.id.clone())),
-        btn(tr("비우기"), Some(Icon::Trash), Kind::Danger).on_press(ProjectsMessage::ClearLog(lv.id.clone())),
-        btn(tr("닫기"), Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseLog),
+        btn(tr("새로고침"), Some(Icon::Refresh), Kind::Flat).on_press(match &lv.file {
+            Some(f) => ProjectsMessage::ViewFileLog(lv.name.clone(), f.clone()),
+            None => ProjectsMessage::ViewLog(lv.id.clone()),
+        }),
     ]
+    .push_maybe(lv.file.is_none().then(|| btn(tr("비우기"), Some(Icon::Trash), Kind::Danger).on_press(ProjectsMessage::ClearLog(lv.id.clone()))))
+    .push(btn(tr("닫기"), Some(Icon::X), Kind::Ghost).on_press(ProjectsMessage::CloseLog))
     .spacing(6)
     .align_y(iced::Alignment::Center);
 

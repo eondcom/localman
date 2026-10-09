@@ -8,10 +8,29 @@ use std::process::Command;
 use crate::i18n::tr;
 
 /// 명령을 새 프로세스 그룹의 리더로 띄우고 detach 한다. 자식 PID 를 돌려준다.
-pub fn spawn_in_new_group(program: &str, args: &[&str], dir: &str) -> Result<u32, String> {
+///
+/// 표준입출력은 물려주지 않는다: 입력은 닫고, 출력은 `log` 파일(덧붙이기)로, 없으면 버린다.
+/// 물려주면 `LocalMan --mcp` 에서 띄운 서버가 MCP 응답 채널에 로그를 섞고(프로토콜 깨짐),
+/// MCP 가 끝나도 파이프를 쥐고 있어 부른 쪽이 끝을 못 받는다(2026-10-09 yasul-web 으로 멈춤).
+pub fn spawn_in_new_group(program: &str, args: &[&str], dir: &str, log: Option<&Path>) -> Result<u32, String> {
+    use std::process::Stdio;
+    let (out, err) = match log {
+        Some(path) => {
+            if let Some(d) = path.parent() {
+                let _ = fs::create_dir_all(d);
+            }
+            let f = fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let f2 = f.try_clone().map_err(|e| e.to_string())?;
+            (Stdio::from(f), Stdio::from(f2))
+        }
+        None => (Stdio::null(), Stdio::null()),
+    };
     let child = Command::new(program)
         .args(args)
         .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(out)
+        .stderr(err)
         // 자식을 새 프로세스 그룹의 리더로 만든다(pgid == 자식 pid).
         // 그래야 나중에 `kill -- -pgid` 한 방으로 그 서버가 파생시킨
         // vite·chromedriver·Chrome, npx 가 띄운 next-server 까지 통째로 정리할 수 있다.
@@ -156,7 +175,7 @@ mod tests {
     /// 다른 명령의 output() 은 종료 코드를 정상으로 받아야 한다.
     #[test]
     fn spawned_server_is_reaped_without_breaking_output() {
-        let pid = spawn_in_new_group("true", &[], "/").unwrap();
+        let pid = spawn_in_new_group("true", &[], "/", None).unwrap();
         let mut reaped = false;
         for _ in 0..100 {
             if !crate::platform::process_alive(pid) {

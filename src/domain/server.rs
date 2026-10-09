@@ -147,7 +147,8 @@ pub fn start_server(project: &VhostProject) -> Result<u32, String> {
         return Err(tr("실행 명령어가 올바르지 않습니다.").to_string());
     }
     eprintln!("[localman] 서버 시작: {command} in {dir}");
-    let pid = platform::spawn_in_new_group(parts[0], &parts[1..], &dir)?;
+    let log = server_log_path(&project.id);
+    let pid = platform::spawn_in_new_group(parts[0], &parts[1..], &dir, Some(&log))?;
 
     // starttime 을 즉시 읽어 기록한다. 이후 이 값이 PID 재사용을 걸러낸다.
     // 못 읽으면(이미 즉사한 경우 등) 0 으로 둔다 — is_alive 가 false 가 되어
@@ -163,6 +164,11 @@ pub fn start_server(project: &VhostProject) -> Result<u32, String> {
 
     eprintln!("[localman] 서버 시작됨 PID={pid} PGID={pgid}");
     Ok(pid)
+}
+
+/// 개발 서버의 표준출력·에러가 쌓이는 파일 (LocalMan 데이터 폴더/server-logs/<id>.log)
+pub fn server_log_path(id: &str) -> std::path::PathBuf {
+    super::settings::data_dir().join("server-logs").join(format!("{}.log", id.replace(['/', '\\', '.'], "_")))
 }
 
 /// 서버를 프로세스 그룹째 정지한다.

@@ -157,6 +157,11 @@ curl -H "Authorization: Bearer <토큰>" -X POST http://127.0.0.1:47810/api/tool
      -d '{"id":"eond","files":true,"db":true}'
 ```
 
+### 예약 작업 (launchd, 맥)
+프로젝트 폴더의 `ops/*.plist` 를 그 프로젝트의 예약 작업으로 보고, 프로젝트 ⋯ → [예약 작업]에서 켜기·끄기·지금 실행·로그를 본다
+(MCP·API: `list_jobs`·`set_job`·`run_job`). 켜면 `~/Library/LaunchAgents` 로 복사해 `launchctl bootstrap`, 끄면 내리고 복사본을 지운다.
+projects.json 은 바꾸지 않는다. 구현: `src/domain/jobs.rs`.
+
 ### eondctl 연동 (2026-10-09)
 `eondctl` 도구로 eond.com 배포 도구를 부른다 — `eondctl(action="status"|"dry-run"|"quick"|"full"|…)`, `eondctl_status` 로 어느 길로 부를지 확인.
 eondctl 로컬 API(127.0.0.1:47811, 토큰은 `~/.config/eondctl/config.json`)가 떠 있으면 API 로, 아니면 설치된 `~/.local/bin/eondctl` CLI 로 실행한다.

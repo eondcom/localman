@@ -31,6 +31,7 @@ claude mcp get localman        # Scope: User config, Status: ✔ Connected 이�
 | 목록 보기 | "LocalMan 사이트 목록 / DB 목록 보여 줘" | `list_projects` · `list_databases` |
 | 백업 | "shop DB 백업해 줘" | `backup_database` |
 | 실서버에서 받기 | "shop 사이트 서버에서 파일이랑 DB 받아 와" | `pull_from_server` |
+| 예약 작업(맥) | "yasul 예약 작업 보여 줘 / 수집기 꺼 줘 / 지금 한 번 돌려 줘" | `list_jobs` · `set_job` · `run_job` |
 | eond.com 배포 | "eondctl 로 status / dry-run 해 줘" | `eondctl` |
 
 "LocalMan" 이라는 말을 넣으면 Claude 가 이 도구를 고른다.
@@ -50,6 +51,13 @@ claude mcp get localman        # Scope: User config, Status: ✔ Connected 이�
   DB 사용자는 만들지 않는다. 사이트 설정 파일(config.php·wp-config.php·.env)에 계정을 적어 두고 `ensure_site_db_users` 를 부르면 그 계정을 만들고 권한을 준다(기존 비밀번호는 안 바꾼다).
 - **start_project / stop_project** — python·nextjs 사이트의 개발 서버만. php 는 `start_service apache`.
 - **pull_from_server** — 앱의 프로젝트 → ⋯ → 서버 연결에 서버 정보가 저장된 사이트만. 로컬 파일은 지우지 않고, DB 를 받기 전 로컬 DB 를 백업한다.
+
+- **list_jobs / set_job / run_job** (맥) — 프로젝트 폴더의 `ops/*.plist` 가 그 프로젝트의 예약 작업이다(launchd).
+  켜기 = `~/Library/LaunchAgents/<Label>.plist` 로 복사 + `launchctl bootstrap`, 끄기 = `bootout` + 복사본 삭제,
+  지금 실행 = `launchctl kickstart -k`(켜져 있을 때만). 원본 plist 를 고쳤으면 끄고 다시 켜면 반영된다.
+  `schedule` 값: `"10:20 · 14:20"`, `"Mon 08:00"`, `"every 300s"`, `"keepalive"`(상주), `"manual"`.
+  앱에서는 프로젝트 ⋯ → [예약 작업].
+- **start_project** 의 결과에 `log` — 개발 서버의 출력은 LocalMan 데이터 폴더 `server-logs/<id>.log` 로 간다(앱: ⋯ → [서버 출력 로그]).
 
 ## 4. 열지 않은 것
 
