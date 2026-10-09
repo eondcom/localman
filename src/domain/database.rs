@@ -655,6 +655,16 @@ fn run_postgres_sql(user: &str, password: &str, db_name: &str, sql: &str) -> Res
     }
 }
 
+/// 이 계정으로 PostgreSQL 에 붙는지. 비밀번호를 묻지 않게(-w) 하고 입력은 닫는다 — 막히면 false.
+pub fn postgres_can_connect(user: &str, password: &str) -> bool {
+    postgres_command(user, password, "postgres")
+        .args(["-w", "-At", "-c", "SELECT 1"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 fn postgres_command(user: &str, password: &str, db_name: &str) -> Command {
     let mut cmd = Command::new("psql");
     cmd.args(["-h", "127.0.0.1", "-U", user, "-d", db_name]);

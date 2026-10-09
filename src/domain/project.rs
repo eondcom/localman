@@ -93,7 +93,21 @@ pub fn auto_assign_port() -> u16 {
         .iter()
         .map(|p| p.port)
         .collect();
-    (5001u16..6000).find(|p| !used.contains(p)).unwrap_or(5001)
+    // 등록된 프로젝트 포트뿐 아니라, 등록 안 된 프로그램이 실제로 듣고 있는 포트도 건너뛴다
+    (5001u16..6000).find(|p| !used.contains(p) && port_is_free(*p)).unwrap_or(5001)
+}
+
+/// 이 포트에 지금 아무도 듣고 있지 않은지.
+/// macOS 는 SO_REUSEADDR 때문에 0.0.0.0 에서 듣는 포트도 127.0.0.1 로 bind 가 될 수 있어서,
+/// bind 와 함께 127.0.0.1·::1 로 실제 접속이 되는지도 본다(접속되면 누가 듣고 있다).
+pub fn port_is_free(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    let t = std::time::Duration::from_millis(200);
+    let answers = |a: SocketAddr| TcpStream::connect_timeout(&a, t).is_ok();
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
+        && TcpListener::bind(("0.0.0.0", port)).is_ok()
+        && !answers(([127, 0, 0, 1], port).into())
+        && !answers((std::net::Ipv6Addr::LOCALHOST, port).into())
 }
 
 pub fn add_project(mut project: VhostProject) -> Result<(), String> {
@@ -194,6 +208,17 @@ fn save_projects(list: &[VhostProject]) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::domain::test_util::project;
+
+    #[test]
+    fn port_is_free_sees_listeners_on_any_address() {
+        // 0.0.0.0 에서 듣는 포트 — macOS 에선 127.0.0.1 bind 만으로는 못 잡는 경우
+        let l = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert!(!port_is_free(port));
+        drop(l);
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        assert!(!port_is_free(l.local_addr().unwrap().port()));
+    }
 
     #[test]
     fn join_dir_handles_empty_and_slashes() {

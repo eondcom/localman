@@ -6,9 +6,9 @@
 use serde_json::{Value, json};
 use std::path::Path;
 
-use super::database::{DbEngine, backup_database, create_database, list_databases, load_db_connections};
+use super::database::{DbEngine, backup_database, create_database, list_databases, load_db_connections, postgres_can_connect};
 use super::deploy::load_target;
-use super::project::{ProjectType, VhostProject, add_project, auto_assign_port, list_projects};
+use super::project::{ProjectType, VhostProject, add_project, auto_assign_port, list_projects, port_is_free};
 use super::pull::{default_local_db_name, pull_database, pull_files};
 use super::server::{ServerStatus, server_status, start_server, stop_server};
 use super::settings::data_dir;
@@ -56,7 +56,8 @@ pub const TOOLS: &[Tool] = &[
                 "path": { "type": "string", "description": "absolute folder path" },
                 "name": { "type": "string" },
                 "type": { "type": "string", "enum": ["php", "python", "nextjs"] },
-                "start_command": { "type": "string", "description": "python/nextjs only; auto-detected if empty" }
+                "start_command": { "type": "string", "description": "python/nextjs only; auto-detected if empty. {port} is replaced with the assigned port" },
+                "port": { "type": "integer", "description": "python/nextjs only; dev server port. Auto-assigned (5001~5999, skipping ports in use) if empty" }
             },
             "required": ["id", "path"]
         }),
@@ -171,11 +172,18 @@ fn find_project(id: &str) -> Result<VhostProject, String> {
 }
 
 fn creds(engine: DbEngine) -> Result<(String, String), String> {
-    load_db_connections()
-        .into_iter()
-        .find(|c| c.engine == engine)
-        .map(|c| (c.user, c.password))
-        .ok_or_else(|| "no saved DB connection — connect once in LocalMan's Database tab".to_string())
+    if let Some(c) = load_db_connections().into_iter().find(|c| c.engine == engine) {
+        return Ok((c.user, c.password));
+    }
+    // Homebrew PostgreSQL 은 기본으로 현재 OS 사용자가 비밀번호 없이 슈퍼유저다
+    if engine == DbEngine::PostgreSql {
+        if let Some(user) = std::env::var("USER").ok().or_else(|| std::env::var("LOGNAME").ok()).filter(|u| !u.is_empty()) {
+            if postgres_can_connect(&user, "") {
+                return Ok((user, String::new()));
+            }
+        }
+    }
+    Err("no saved DB connection — connect once in LocalMan's Database tab".to_string())
 }
 
 /// DB·폴더 이름에 쓸 수 있는 글자인지
@@ -233,9 +241,22 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
                 "nextjs" | "next" => ProjectType::NextJs,
                 o => return Err(format!("unknown type: {o}")),
             };
-            let port = if project_type.is_proxied() { auto_assign_port() } else { 80 };
+            let port = match (project_type.is_proxied(), args.get("port").and_then(|v| v.as_u64())) {
+                (false, _) => 80,
+                (true, None) => auto_assign_port(),
+                (true, Some(p)) => {
+                    let p = u16::try_from(p).ok().filter(|p| *p >= 1024).ok_or("port: 1024~65535")?;
+                    if let Some(o) = list_projects().iter().find(|o| o.port == p) {
+                        return Err(format!("port {p} is already used by project {}", o.id));
+                    }
+                    if !port_is_free(p) {
+                        return Err(format!("port {p} is in use by another program"));
+                    }
+                    p
+                }
+            };
             let start_command = match str_arg(args, "start_command") {
-                Some(c) => c.to_string(),
+                Some(c) => c.replace("{port}", &port.to_string()),
                 None if project_type.is_proxied() => super::detect::auto_detect_start_command(path, port),
                 None => String::new(),
             };

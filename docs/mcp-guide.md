@@ -37,13 +37,16 @@ claude mcp get localman        # Scope: User config, Status: ✔ Connected 이�
 
 ## 3. 도구별 알아 둘 것
 
-- **add_project** `{id, path, type?, name?, start_command?}`
+- **add_project** `{id, path, type?, name?, start_command?, port?}`
   - `id` 는 소문자·숫자·`-` — 주소가 `http://<id>.localhost` 가 된다. 이미 있는 id 면 실패.
   - `path` 는 **이미 있는 절대 경로 폴더**. 폴더를 새로 만들지는 않는다(먼저 만든다).
   - `type`: `php`(기본, Apache 가 바로 서빙) · `python` · `nextjs`(개발 서버를 Apache 가 프록시, 포트·실행 명령 자동).
+  - `port`(python·nextjs): 비우면 5001~5999 중 **등록된 프로젝트도, 다른 프로그램도 안 쓰는** 포트를 고른다. 직접 주면 1024 이상, 겹치면 실패.
+  - `start_command` 의 `{port}` 는 배정된 포트로 바뀐다 — 예: `"target/release/yasul-web --bind 0.0.0.0:{port}"`.
   - DB 를 프로젝트에 연결하지는 않는다 — DB 는 `create_database` 로 따로.
 - **create_database** `{name, engine?}` — 빈 DB(utf8mb4). `engine`: `mariadb`(기본, MySQL 포함) · `postgresql`.
-  LocalMan 에 저장된 DB 접속 정보(데이터베이스 탭)로 만든다 — 저장된 게 없으면 실패하니 앱에서 한 번 접속해 둔다.
+  LocalMan 에 저장된 DB 접속 정보(데이터베이스 탭)로 만든다. PostgreSQL 은 저장된 게 없으면 현재 OS 사용자로
+  비밀번호 없이 붙어 본다(Homebrew 기본 설정). MariaDB/MySQL 은 앱에서 한 번 접속해 둬야 한다.
   DB 사용자는 만들지 않는다. 사이트 설정 파일(config.php·wp-config.php·.env)에 계정을 적어 두고 `ensure_site_db_users` 를 부르면 그 계정을 만들고 권한을 준다(기존 비밀번호는 안 바꾼다).
 - **start_project / stop_project** — python·nextjs 사이트의 개발 서버만. php 는 `start_service apache`.
 - **pull_from_server** — 앱의 프로젝트 → ⋯ → 서버 연결에 서버 정보가 저장된 사이트만. 로컬 파일은 지우지 않고, DB 를 받기 전 로컬 DB 를 백업한다.
