@@ -105,16 +105,19 @@ pub fn update_hosts(domain: &str, add: bool) -> Result<(), String> {
 /// 권한 문제로 직접 읽기에 실패하면 `sudo tail`로 한 번 더 시도한다.
 pub fn read_log(path: &str, max_lines: usize) -> Result<String, String> {
     if !Path::new(path).exists() {
-        return Err(format!(
-            "{}\n{path}\n\n{}",
-            tr("로그 파일이 아직 없습니다:"),
-            tr("(프로젝트를 한 번 '수정 → 저장'하면 vhost에 전용 ErrorLog가 추가됩니다.)")
-        ));
+        // vhost ErrorLog 안내는 Apache 에러 로그에만 (서버 출력·예약 작업 로그는 실행해야 생긴다)
+        let hint = if path.ends_with(".error.log") {
+            format!("\n\n{}", tr("(프로젝트를 한 번 '수정 → 저장'하면 vhost에 전용 ErrorLog가 추가됩니다.)"))
+        } else {
+            String::new()
+        };
+        return Err(format!("{}\n{path}{hint}", tr("로그 파일이 아직 없습니다:")));
     }
 
     // 1) 직접 읽기 시도
     match std::fs::read(path) {
-        Ok(bytes) => Ok(tail_lines(&String::from_utf8_lossy(&bytes), max_lines)),
+        // 색을 쓰는 프로그램(spoofdpi 등)의 로그는 ESC 코드가 섞여 읽기 어렵다
+        Ok(bytes) => Ok(crate::domain::eondctl::strip_ansi(&tail_lines(&String::from_utf8_lossy(&bytes), max_lines))),
         Err(_) => {
             // 2) 권한 문제 → sudo tail 폴백
             let out = Command::new("sudo")
@@ -122,7 +125,7 @@ pub fn read_log(path: &str, max_lines: usize) -> Result<String, String> {
                 .output()
                 .map_err(|e| e.to_string())?;
             if out.status.success() {
-                Ok(String::from_utf8_lossy(&out.stdout).to_string())
+                Ok(crate::domain::eondctl::strip_ansi(&String::from_utf8_lossy(&out.stdout)))
             } else {
                 Err(format!(
                     "{}\n{}",

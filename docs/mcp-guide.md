@@ -32,6 +32,7 @@ claude mcp get localman        # Scope: User config, Status: ✔ Connected 이�
 | 백업 | "shop DB 백업해 줘" | `backup_database` |
 | 실서버에서 받기 | "shop 사이트 서버에서 파일이랑 DB 받아 와" | `pull_from_server` |
 | 예약 작업(맥) | "yasul 예약 작업 보여 줘 / 수집기 꺼 줘 / 지금 한 번 돌려 줘" | `list_jobs` · `set_job` · `run_job` |
+| 로그 보기 | "yasul 서버 로그 / 수집기 작업 로그 / 에러 로그 끝부분 보여 줘" | `read_log` |
 | eond.com 배포 | "eondctl 로 status / dry-run 해 줘" | `eondctl` |
 
 "LocalMan" 이라는 말을 넣으면 Claude 가 이 도구를 고른다.
@@ -57,6 +58,8 @@ claude mcp get localman        # Scope: User config, Status: ✔ Connected 이�
   지금 실행 = `launchctl kickstart -k`(켜져 있을 때만). 원본 plist 를 고쳤으면 끄고 다시 켜면 반영된다.
   `schedule` 값: `"10:20 · 14:20"`, `"Mon 08:00"`, `"every 300s"`, `"keepalive"`(상주), `"manual"`.
   앱에서는 프로젝트 ⋯ → [예약 작업].
+- **read_log** `{id, kind, label?, lines?}` — `kind`: `server`(개발 서버 출력) · `error`(Apache 에러 로그) · `job`(예약 작업 로그, `label` 필요).
+  경로는 받지 않고 프로젝트·작업에 정해진 로그만 읽는다(읽기 전용, 기본 끝 100줄·최대 2000줄, 색 코드 제거).
 - **start_project** 의 결과에 `log` — 개발 서버의 출력은 LocalMan 데이터 폴더 `server-logs/<id>.log` 로 간다(앱: ⋯ → [서버 출력 로그]).
 
 ## 4. 열지 않은 것

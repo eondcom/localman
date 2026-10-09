@@ -110,6 +110,16 @@ pub const TOOLS: &[Tool] = &[
         schema: || json!({ "type": "object", "properties": { "id": { "type": "string" }, "label": { "type": "string" } }, "required": ["id", "label"] }),
     },
     Tool {
+        name: "read_log",
+        description: "Read the end of a site's log. kind: server (dev server output, python/nextjs), error (Apache error log), job (a scheduled job's log; needs label). Read-only.",
+        schema: || json!({ "type": "object", "properties": {
+            "id": { "type": "string" },
+            "kind": { "type": "string", "enum": ["server", "error", "job"] },
+            "label": { "type": "string", "description": "job label (kind=job)" },
+            "lines": { "type": "integer", "description": "last N lines (default 100, max 2000)" } },
+            "required": ["id", "kind"] }),
+    },
+    Tool {
         name: "eondctl",
         description: "eond.com(eondcms) 배포 도구 eondctl 을 부른다. action: full(빌드→rsync→poetry·alembic→restart→헬스체크), backend(빌드 없이), frontend(빌드→rsync), quick(rsync→restart), dry-run(전송 목록만), status(무엇을 배포해야 하나), check, server, logs/nginx(lines 줄), history, local-status/local-start/local-stop(LocalMan 에 되묻는 로컬 서버). eondctl API 가 떠 있으면 API 로, 아니면 eondctl CLI 로 실행.",
         schema: || json!({
@@ -376,6 +386,23 @@ pub fn call(name: &str, args: &Value) -> Result<Value, String> {
             let label = required(args, "label")?;
             super::jobs::run_job(&p.path, label)?;
             Ok(json!({ "label": label, "started": true }))
+        }
+        "read_log" => {
+            let p = find_project(required(args, "id")?)?;
+            let lines = args.get("lines").and_then(Value::as_u64).unwrap_or(100).clamp(1, 2000) as usize;
+            // 경로는 받지 않는다 — 프로젝트·작업에 정해진 로그만 읽는다
+            let path = match required(args, "kind")? {
+                "server" => super::server::server_log_path(&p.id).to_string_lossy().to_string(),
+                "error" => crate::platform::error_log_path(&p.id),
+                "job" => {
+                    let label = required(args, "label")?;
+                    let job = super::jobs::list_jobs(&p.path).into_iter().find(|j| j.label == label).ok_or_else(|| format!("no such job: {label}"))?;
+                    job.log.ok_or("this job has no StandardOutPath/StandardErrorPath")?
+                }
+                o => return Err(format!("unknown kind: {o}")),
+            };
+            let text = crate::platform::read_log(&path, lines)?;
+            Ok(json!({ "path": path, "text": text }))
         }
         "eondctl" => super::eondctl::run(required(args, "action")?, args.get("lines").and_then(Value::as_u64)),
         "eondctl_status" => Ok(super::eondctl::describe()),

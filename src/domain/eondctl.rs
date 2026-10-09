@@ -73,7 +73,7 @@ fn api() -> Option<(u16, String)> {
 }
 
 /// ANSI 색상 코드 제거 — CLI 출력은 색이 섞여 있다.
-fn strip_ansi(s: &str) -> String {
+pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
