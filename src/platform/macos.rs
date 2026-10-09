@@ -478,23 +478,21 @@ pub fn process_alive(pid: u32) -> bool {
 /// Finder·Dock 으로 실행한 앱은 PATH 가 `/usr/bin:/bin:/usr/sbin:/sbin` 뿐이라
 /// brew·psql·npm·node 를 찾지 못한다. 로그인 셸의 PATH 를 가져오고,
 /// keg-only 라 링크되지 않는 클라이언트(postgresql@N, mysql-client) 경로를 덧붙인다.
+///
+/// 터미널에서 띄운 경우(Claude Code 가 `--mcp` 로 띄울 때 포함)는 PATH 를 이미 셸에서 물려받았으므로
+/// 대화형 셸을 띄우지 않는다. `zsh -i` 는 물려받은 터미널의 전면 프로세스 그룹을 가져가고 돌려주지 않아
+/// 부모(claude)가 `suspended (tty input)` 으로 멈춘다 (2026-10-09).
 pub fn init_env() {
+    let has_tty = std::fs::File::open("/dev/tty").is_ok();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let mut paths: Vec<String> = Command::new(&shell)
-        // -i: nvm 등은 .zshrc 에서 PATH 를 잡으므로 대화형 설정까지 읽는다
-        .args(["-ilc", "printf '__LM__%s__LM__' \"$PATH\""])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).to_string();
-            let start = s.find("__LM__")? + 6;
-            let end = s[start..].find("__LM__")? + start;
-            Some(s[start..end].split(':').map(String::from).collect())
-        })
-        .unwrap_or_else(|| {
-            std::env::var("PATH").unwrap_or_default().split(':').map(String::from).collect()
-        });
+    let login_path = if has_tty {
+        None
+    } else {
+        login_shell_path(&shell)
+    };
+    let mut paths: Vec<String> = login_path.unwrap_or_else(|| {
+        std::env::var("PATH").unwrap_or_default().split(':').map(String::from).collect()
+    });
 
     // 앱이 설치한 MySQL 클라이언트를 가장 먼저 찾게 한다 (서버와 같은 판)
     let mysql_bin = macos_mysql::bin_dir().to_string_lossy().to_string();
@@ -512,6 +510,22 @@ pub fn init_env() {
     }
     // SAFETY: main 시작 직후, 다른 스레드가 생기기 전에 한 번만 호출된다.
     unsafe { std::env::set_var("PATH", paths.join(":")) };
+}
+
+/// 로그인 셸의 PATH. 터미널이 없는 상태(Finder·Dock 실행)에서만 부른다.
+fn login_shell_path(shell: &str) -> Option<Vec<String>> {
+    Command::new(shell)
+        // -i: nvm 등은 .zshrc 에서 PATH 를 잡으므로 대화형 설정까지 읽는다
+        .args(["-ilc", "printf '__LM__%s__LM__' \"$PATH\""])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            let start = s.find("__LM__")? + 6;
+            let end = s[start..].find("__LM__")? + start;
+            Some(s[start..end].split(':').map(String::from).collect())
+        })
 }
 
 /// OS 가 다크 모드인지 (시스템 설정 > 화면 모드)
