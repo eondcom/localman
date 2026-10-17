@@ -1,12 +1,42 @@
 //! MCP 서버 (stdio). `LocalMan --mcp` 로 실행한다.
 //!
-//! Claude Code: `claude mcp add -s user localman -- /Applications/LocalMan.app/Contents/MacOS/LocalMan --mcp`
+//! Claude Code 등록: `LocalMan --mcp-install` (지금 실행한 파일의 경로로 `claude mcp add -s user` 를 돌린다 — 맥·리눅스 공통).
+//! 손으로 하면 `claude mcp add -s user localman -- <LocalMan 실행 파일 경로> --mcp`
 //! 표준입출력으로 한 줄에 JSON-RPC 메시지 하나씩 주고받는다. 도구는 domain::automation 과 같다.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
 use crate::domain::automation::{TOOLS, call};
+
+/// `--mcp-install`: 현재 실행 파일 경로로 Claude Code 에 user 범위 등록. 종료 코드를 돌려준다.
+pub fn install() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("실행 파일 경로를 알 수 없습니다: {e}");
+            return 1;
+        }
+    };
+    // 이미 등록돼 있으면 경로가 바뀐 것일 수 있으니 지우고 다시 건다 (없으면 실패해도 무시)
+    let _ = std::process::Command::new("claude").args(["mcp", "remove", "localman", "-s", "user"]).output();
+    match std::process::Command::new("claude")
+        .args(["mcp", "add", "-s", "user", "localman", "--"])
+        .arg(&exe)
+        .arg("--mcp")
+        .status()
+    {
+        Ok(s) if s.success() => {
+            println!("등록 완료: {} --mcp  (확인: claude mcp get localman)", exe.display());
+            0
+        }
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("claude 명령을 실행하지 못했습니다 ({e}). Claude Code 가 설치돼 있고 PATH 에 있는지 확인하세요.");
+            1
+        }
+    }
+}
 
 const DEFAULT_PROTOCOL: &str = "2025-06-18";
 

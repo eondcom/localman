@@ -17,6 +17,11 @@ fn main() -> iced::Result {
     // 앱이 설치한 Node.js(LTS)를 먼저 찾게 한다
     domain::tools::prepend_path(&domain::tools::node_bin_dir());
 
+    // `LocalMan --mcp-install`: 지금 실행 중인 이 파일의 경로로 Claude Code 에 MCP 를 등록한다 (맥·리눅스 공통)
+    if std::env::args().any(|a| a == "--mcp-install") {
+        std::process::exit(mcp::install());
+    }
+
     // `LocalMan --mcp`: 화면 없이 MCP 서버로 (Claude Code·Claude 데스크톱이 띄운다). 앱과 함께 떠 있어도 된다.
     if std::env::args().any(|a| a == "--mcp") {
         mcp::run();

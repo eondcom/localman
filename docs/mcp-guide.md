@@ -6,7 +6,9 @@ Claude 가 LocalMan 의 MCP 도구로 처리한다. 이 문서는 그 준비와 
 ## 1. 한 번만 — 등록
 
 ```bash
-claude mcp add -s user localman -- /Applications/LocalMan.app/Contents/MacOS/LocalMan --mcp
+# 맥·리눅스 공통 — 지금 실행하는 LocalMan 의 경로로 알아서 등록한다
+/Applications/LocalMan.app/Contents/MacOS/LocalMan --mcp-install      # 맥 (Homebrew·앱 설치)
+~/.local/share/localman/localman --mcp-install      # 리눅스 (설치 위치 또는 cargo build --release 로 만든 target/release/localman)
 claude mcp get localman        # Scope: User config, Status: ✔ Connected 이면 된다
 ```
 
@@ -14,7 +16,8 @@ claude mcp get localman        # Scope: User config, Status: ✔ Connected 이�
   — 다른 프로젝트에서 "LocalMan 으로 만들어 줘"라고 해도 Claude 가 도구를 못 찾는 이유가 이것이다.
   이미 local 로 등록했다면: `claude mcp remove localman -s local` 후 위 명령.
 - 설정 → 자동화의 [Claude Code 명령 복사]도 같은 명령을 복사한다.
-- 리눅스는 실행 파일 경로만 다르다(`which localman`).
+- 손으로 하려면 `claude mcp add -s user localman -- <LocalMan 실행 파일 경로> --mcp`. 경로는 맥 `/Applications/LocalMan.app/Contents/MacOS/LocalMan`, 리눅스는 실제 실행 파일 위치다.
+- 실행 파일을 옮기거나 다시 빌드한 위치가 바뀌면 `--mcp-install` 을 다시 돌린다 (기존 등록을 지우고 새로 건다).
 - **등록 후 새로 연 Claude Code 세션부터** 도구가 보인다. 이미 열려 있던 세션은 `/mcp` 로 확인하거나 다시 연다.
 - LocalMan 앱이 꺼져 있어도 된다 — MCP 는 실행 파일을 따로 띄워 같은 설정 파일(projects.json 등)을 읽고 쓴다.
   화면에 바로 안 보이면 앱의 프로젝트 탭을 한 번 눌러 새로 고친다.
@@ -71,7 +74,7 @@ DB·프로젝트 삭제, 서버로 올리기(배포), 비밀번호 바꾸기는 
 | 증상 | 확인 |
 |---|---|
 | Claude 가 "LocalMan 도구가 없다"고 한다 | `claude mcp get localman` 의 Scope 가 *Local* 이면 1번대로 user 로 다시 등록. 등록 후 세션을 새로 연다 |
-| `Status: ✗ Failed` | 경로 확인(`ls /Applications/LocalMan.app/Contents/MacOS/LocalMan`), Homebrew 로 다시 설치했으면 경로가 같은지 |
+| `Status: ✗ Failed` | 등록된 경로가 이 OS 의 실제 실행 파일인지 `claude mcp get localman` 으로 보고, 아니면 그 파일로 `--mcp-install` 다시 실행 (맥 경로를 리눅스에 등록하면 ENOENT) |
 | create_database 실패 | LocalMan 데이터베이스 탭에서 접속 정보 저장, DB 서버 켜짐(`service_status`) |
 | 사이트 주소가 안 열림 | Apache 켜짐, 맥 Safari 면 `sudo killall mDNSResponder` 후 다시 |
 
