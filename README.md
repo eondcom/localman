@@ -97,6 +97,9 @@ sudo ./scripts/macos/install-sudoers.sh
 ## 사이트 찾기·용량
 
 - 프로젝트 탭 위 검색창에서 도메인·이름·ID로 걸러낸다
+- 분류 버튼: 언어(전체·PHP·Python·Node)와 PHP 사이트의 CMS(WordPress·Gnuboard·Zeroboard·Rhymix/XE·기타). 버튼마다 사이트 수.
+  CMS 는 사이트 폴더(또는 public_html·www·html)의 표식 파일로 판별한다 — `wp-config.php`, `common/autoload.php`·`files/config/db.config.php`,
+  `bbs/board.php`+`lib/common.lib.php`, `zboard.php`. 카드 이름 옆에도 표시
 - [용량 계산]: 사이트마다 파일(그중 node_modules·venv 등 의존성 몫)·DB·합계, 맨 위에 전체 합계. 앱을 켤 때 한 번 잰다
 - 사이트의 DB는 수정 화면에서 지정한다. 비우면 라이믹스 `files/config/config.php`, `.env`(DB_DATABASE·DATABASE_URL)에서
   자동으로 찾는다 (비밀번호는 읽지 않는다)
@@ -203,7 +206,9 @@ eondctl 로컬 API(127.0.0.1:47811, 토큰은 `~/.config/eondctl/config.json`)�
 ### MAMP에서 옮기기 (맥)
 
 MAMP가 있으면 [백업·이전]에 나타난다. MAMP의 가상호스트(폴더가 남은 것)와 MySQL DB를 골라
-**로컬맨 백업 파일과 같은 형식**으로 만든다 → [이 PC로 바로 가져오기] 또는 리눅스로 옮겨 가져오기.
+- **[로컬맨으로 바로 가져오기]**: 백업 파일 없이 MAMP DB를 로컬맨 DB로 넣고 사이트를 등록한다. 덤프는 임시 폴더에만 두고
+  [파일에서 가져오기]와 같은 규칙(collation 치환·DB 사용자 옮기기)을 쓴다. 같은 이름 DB·사이트는 기본 건너뜀(덮어쓰기 체크 가능)
+- **[MAMP 백업 파일 만들기]**: **로컬맨 백업 파일과 같은 형식**으로 만든다 → 리눅스 등 다른 PC로 옮겨 가져오기
 
 - DB 크기는 MAMP 데이터 폴더에서 바로 잰다 (MySQL을 켜지 않는다)
 - MAMP MySQL이 꺼져 있으면 덤프하는 동안만 포트 없이 소켓으로 띄웠다가 다시 내린다 (로컬맨 MySQL 3306과 충돌 없음)
