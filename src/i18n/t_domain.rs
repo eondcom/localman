@@ -26,6 +26,7 @@ pub const T: &[(&str, &str, &str)] = &[
     // mamp.rs
     ("MAMP MySQL을 띄우지 못했습니다. 로그: {0}", "Could not start MAMP MySQL. Log: {0}", "MAMP MySQL を起動できませんでした。ログ: {0}"),
     ("MAMP를 찾지 못했습니다.", "MAMP was not found.", "MAMP が見つかりませんでした。"),
+    ("로컬맨으로 가져오는 중…", "Importing into LocalMan…", "LocalMan に取り込んでいます…"),
     ("MAMP MySQL 준비 중…", "Preparing MAMP MySQL…", "MAMP MySQL を準備しています…"),
     ("DB 덤프 {0}/{1} · {2}", "Dumping database {0}/{1} · {2}", "DB をダンプ中 {0}/{1} · {2}"),
     ("MAMP MySQL 로그인 실패 — 사용자·비밀번호를 확인하세요 (MAMP 기본 root/root): {0}", "MAMP MySQL login failed — check the user and password (MAMP default: root/root): {0}", "MAMP MySQL へのログインに失敗しました — ユーザー名とパスワードを確認してください（MAMP の既定値: root/root）: {0}"),

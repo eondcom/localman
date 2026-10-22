@@ -1,7 +1,7 @@
 //! MAMP 이전 도구: MAMP 의 가상호스트와 MySQL DB 를 로컬맨 백업 묶음으로 만든다.
 //!
 //! 만든 묶음은 transfer.rs 의 백업 파일과 같은 형식이라, 이 PC 의 [파일에서 가져오기]로
-//! 바로 복원하거나 리눅스로 옮겨 가져올 수 있다.
+//! 바로 복원하거나 리눅스로 옮겨 가져올 수 있다. 백업 파일 없이 이 PC 로컬맨으로 곧장 가져올 수도 있다(import_direct).
 //!
 //! MAMP MySQL 이 꺼져 있으면 덤프하는 동안만 띄운다. 이때 포트를 열지 않고 소켓으로만 띄워
 //! 로컬맨 MySQL(3306)과 부딪치지 않게 하고, 끝나면 우리가 띄운 경우에만 내린다.
@@ -15,7 +15,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::database::DbEngine;
 use crate::i18n::{tr, trf};
 use super::project::{ProjectType, VhostProject};
-use super::transfer::{DbDump, FORMAT_VERSION, Manifest, engine_dir, home_dir, hostname, json, pack_dir, scratch_dir};
+use super::transfer::{
+    Bundle, DbDump, FORMAT_VERSION, ImportOptions, Manifest, engine_dir, home_dir, hostname, import_bundle, json, pack_dir, scratch_dir,
+};
 
 pub const MAMP_ROOT: &str = "/Applications/MAMP";
 const SOCKET: &str = "/Applications/MAMP/tmp/mysql/mysql.sock";
@@ -227,67 +229,104 @@ pub struct MampExport {
     pub users: bool,
 }
 
+/// MAMP 자료를 work 폴더에 백업 묶음 형식으로 풀어 둔다 (manifest·projects·DB 덤프·사용자). 결과 줄을 돌려준다.
+fn dump_to_dir(work: &Path, info: &MampInfo, opts: &MampExport, progress: &impl Fn(String)) -> Result<(Vec<String>, Manifest), String> {
+    let mut log = Vec::new();
+    let mut dumps = Vec::new();
+    if !opts.databases.is_empty() || opts.users {
+        progress(tr("MAMP MySQL 준비 중…").into());
+        let started = start_socket_only(&info.data_dir)?;
+        let dump_all = (|| -> Result<(), String> {
+            fs::create_dir_all(work.join("databases").join(engine_dir(DbEngine::MariaDb))).map_err(|e| e.to_string())?;
+            for (i, db) in opts.databases.iter().enumerate() {
+                progress(trf("DB 덤프 {0}/{1} · {2}", &[&(i + 1), &opts.databases.len(), db]));
+                let rel = format!("databases/{}/{db}.sql", engine_dir(DbEngine::MariaDb));
+                let out = mamp_mysql("mysqldump", &opts.user, &opts.password)
+                    .args(["--single-transaction", "--routines", "--triggers", "--default-character-set=utf8mb4", db])
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                if out.status.success() {
+                    fs::write(work.join(&rel), &out.stdout).map_err(|e| e.to_string())?;
+                    dumps.push(DbDump { engine: DbEngine::MariaDb, name: db.clone(), file: rel });
+                } else {
+                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    if err.contains("Access denied") {
+                        return Err(trf("MAMP MySQL 로그인 실패 — 사용자·비밀번호를 확인하세요 (MAMP 기본 root/root): {0}", &[&err]));
+                    }
+                    log.push(format!("✗ DB {db}: {err}"));
+                }
+            }
+            if opts.users {
+                progress(tr("DB 사용자·권한 읽는 중…").into());
+                let users = crate::domain::db_users::dump_users(|| mamp_mysql("mysql", &opts.user, &opts.password))?;
+                fs::write(work.join(crate::domain::db_users::USERS_FILE), json(&users)?).map_err(|e| e.to_string())?;
+                log.push(format!("✓ {}", trf("DB 사용자 {0}명 (비밀번호 해시·권한)", &[&users.len()])));
+            }
+            Ok(())
+        })();
+        if started {
+            progress(tr("MAMP MySQL 내리는 중…").into());
+            stop_ours();
+        }
+        dump_all?;
+        log.insert(0, format!("✓ {}", trf("MAMP DB {0}개 덤프", &[&dumps.len()])));
+    }
+
+    let manifest = Manifest {
+        format: FORMAT_VERSION,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        created_at: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        source_os: std::env::consts::OS.to_string(),
+        source_home: home_dir(),
+        hostname: format!("{} (MAMP)", hostname()),
+        databases: dumps,
+        includes_credentials: false,
+    };
+    fs::write(work.join("manifest.json"), json(&manifest)?).map_err(|e| e.to_string())?;
+    fs::write(work.join("projects.json"), json(&opts.projects)?).map_err(|e| e.to_string())?;
+    Ok((log, manifest))
+}
+
 /// MAMP 자료로 로컬맨 백업 묶음을 만든다. 결과 줄을 돌려준다.
 pub fn export_bundle(dest: &Path, opts: &MampExport, progress: impl Fn(String)) -> Result<Vec<String>, String> {
     let info = detect().ok_or(tr("MAMP를 찾지 못했습니다."))?;
     let work = scratch_dir("mamp")?;
     let result = (|| -> Result<Vec<String>, String> {
-        let mut log = Vec::new();
-        let mut dumps = Vec::new();
-        if !opts.databases.is_empty() || opts.users {
-            progress(tr("MAMP MySQL 준비 중…").into());
-            let started = start_socket_only(&info.data_dir)?;
-            let dump_all = (|| -> Result<(), String> {
-                fs::create_dir_all(work.join("databases").join(engine_dir(DbEngine::MariaDb))).map_err(|e| e.to_string())?;
-                for (i, db) in opts.databases.iter().enumerate() {
-                    progress(trf("DB 덤프 {0}/{1} · {2}", &[&(i + 1), &opts.databases.len(), db]));
-                    let rel = format!("databases/{}/{db}.sql", engine_dir(DbEngine::MariaDb));
-                    let out = mamp_mysql("mysqldump", &opts.user, &opts.password)
-                        .args(["--single-transaction", "--routines", "--triggers", "--default-character-set=utf8mb4", db])
-                        .output()
-                        .map_err(|e| e.to_string())?;
-                    if out.status.success() {
-                        fs::write(work.join(&rel), &out.stdout).map_err(|e| e.to_string())?;
-                        dumps.push(DbDump { engine: DbEngine::MariaDb, name: db.clone(), file: rel });
-                    } else {
-                        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                        if err.contains("Access denied") {
-                            return Err(trf("MAMP MySQL 로그인 실패 — 사용자·비밀번호를 확인하세요 (MAMP 기본 root/root): {0}", &[&err]));
-                        }
-                        log.push(format!("✗ DB {db}: {err}"));
-                    }
-                }
-                if opts.users {
-                    progress(tr("DB 사용자·권한 읽는 중…").into());
-                    let users = crate::domain::db_users::dump_users(|| mamp_mysql("mysql", &opts.user, &opts.password))?;
-                    fs::write(work.join(crate::domain::db_users::USERS_FILE), json(&users)?).map_err(|e| e.to_string())?;
-                    log.push(format!("✓ {}", trf("DB 사용자 {0}명 (비밀번호 해시·권한)", &[&users.len()])));
-                }
-                Ok(())
-            })();
-            if started {
-                progress(tr("MAMP MySQL 내리는 중…").into());
-                stop_ours();
-            }
-            dump_all?;
-            log.insert(0, format!("✓ {}", trf("MAMP DB {0}개 덤프", &[&dumps.len()])));
-        }
-
-        let manifest = Manifest {
-            format: FORMAT_VERSION,
-            app_version: env!("CARGO_PKG_VERSION").to_string(),
-            created_at: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-            source_os: std::env::consts::OS.to_string(),
-            source_home: home_dir(),
-            hostname: format!("{} (MAMP)", hostname()),
-            databases: dumps,
-            includes_credentials: false,
-        };
-        fs::write(work.join("manifest.json"), json(&manifest)?).map_err(|e| e.to_string())?;
-        fs::write(work.join("projects.json"), json(&opts.projects)?).map_err(|e| e.to_string())?;
+        let (mut log, _) = dump_to_dir(&work, &info, opts, &progress)?;
         progress(tr("묶는 중…").into());
         pack_dir(&work, dest)?;
         log.push(format!("✓ {}", trf("사이트 {0}개 · 백업 파일: {1}", &[&opts.projects.len(), &dest.display()])));
+        Ok(log)
+    })();
+    let _ = fs::remove_dir_all(&work);
+    result
+}
+
+/// 백업 파일을 만들지 않고 MAMP 의 DB·사이트를 곧장 로컬맨으로 가져온다.
+/// 덤프는 임시 폴더에만 두고, 가져오기는 [파일에서 가져오기]와 같은 규칙(import_bundle)을 쓴다.
+pub fn import_direct(opts: &MampExport, overwrite: bool, progress: impl Fn(String)) -> Result<Vec<String>, String> {
+    let info = detect().ok_or(tr("MAMP를 찾지 못했습니다."))?;
+    let work = scratch_dir("mamp-direct")?;
+    let result = (|| -> Result<Vec<String>, String> {
+        let (mut log, manifest) = dump_to_dir(&work, &info, opts, &progress)?;
+        let users = if opts.users {
+            fs::read_to_string(work.join(crate::domain::db_users::USERS_FILE))
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let bundle = Bundle { dir: work.clone(), manifest, projects: opts.projects.clone(), credentials: Vec::new(), users };
+        progress(tr("로컬맨으로 가져오는 중…").into());
+        let import = ImportOptions {
+            path_from: String::new(),
+            path_to: String::new(),
+            overwrite,
+            restore_databases: true,
+            import_credentials: false,
+        };
+        log.extend(import_bundle(&bundle, &import));
         Ok(log)
     })();
     let _ = fs::remove_dir_all(&work);

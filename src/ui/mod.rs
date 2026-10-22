@@ -264,6 +264,7 @@ impl App {
                     TransferMessage::Imported(_)
                         | TransferMessage::RecvEvent(crate::domain::lan::LanEvent::Done(_))
                         | TransferMessage::SendEvent(crate::domain::lan::LanEvent::Done(_))
+                        | TransferMessage::MampEvent(crate::domain::lan::LanEvent::Done(_))
                 );
                 let task = self.transfer.update(msg).map(Message::Transfer);
                 if imported {

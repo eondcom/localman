@@ -20,7 +20,7 @@ use crate::domain::lan::{
     LanEvent, Peer, ReceiveOptions, SendPlan, TRANSFER_PORT, discover, human_bytes, receive, send,
 };
 use crate::domain::list_projects;
-use crate::domain::mamp::{MampExport, MampInfo, detect as detect_mamp, export_bundle as export_mamp, vhost_to_project};
+use crate::domain::mamp::{MampExport, MampInfo, detect as detect_mamp, export_bundle as export_mamp, import_direct as import_mamp_direct, vhost_to_project};
 
 use crate::domain::transfer::{
     Bundle, ExportOptions, ImportOptions, PlannedProject, default_bundle_name, export_bundle,
@@ -73,6 +73,9 @@ pub enum TransferMessage {
     MampToggleUsers(bool),
     MampToggleShowPw,
     MampExport,
+    /// 백업 파일 없이 로컬맨으로 바로 가져오기
+    MampImportDirect,
+    MampToggleOverwrite(bool),
     MampEvent(LanEvent),
     /// 방금 만든 MAMP 백업 파일을 이 PC 가져오기로 연다
     MampImportHere,
@@ -187,6 +190,8 @@ pub struct TransferState {
     mamp_show_pw: bool,
     mamp_job: LanJob,
     mamp_output: Option<PathBuf>,
+    /// 바로 가져오기에서 같은 이름의 DB·사이트를 덮어쓸지
+    mamp_overwrite: bool,
 }
 
 fn recent_history() -> Vec<(String, bool)> {
@@ -245,6 +250,7 @@ impl TransferState {
             mamp_show_pw: false,
             mamp_job: LanJob::default(),
             mamp_output: None,
+            mamp_overwrite: false,
         };
         (
             s,
@@ -269,6 +275,24 @@ impl TransferState {
             restore_databases: self.restore_dbs,
             import_credentials: self.import_credentials,
         }
+    }
+
+    /// MAMP 화면에서 고른 사이트·DB
+    fn mamp_options(&self) -> Option<MampExport> {
+        let info = self.mamp.as_ref()?;
+        Some(MampExport {
+            databases: info.databases.iter().zip(&self.mamp_dbs).filter(|(_, on)| **on).map(|(d, _)| d.name.clone()).collect(),
+            projects: info
+                .vhosts
+                .iter()
+                .zip(&self.mamp_vhosts)
+                .filter(|(_, on)| **on)
+                .filter_map(|(v, _)| vhost_to_project(v))
+                .collect(),
+            user: self.mamp_user.clone(),
+            password: self.mamp_password.clone(),
+            users: self.mamp_users,
+        })
     }
 
     fn replan(&mut self) {
@@ -566,21 +590,32 @@ impl TransferState {
                 self.mamp_password = v;
                 Task::none()
             }
+            TransferMessage::MampToggleOverwrite(on) => {
+                self.mamp_overwrite = on;
+                Task::none()
+            }
+            TransferMessage::MampImportDirect => {
+                let Some(opts) = self.mamp_options() else { return Task::none() };
+                let overwrite = self.mamp_overwrite;
+                self.mamp_job.start();
+                self.mamp_output = None;
+                Task::run(
+                    {
+                        let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+                        std::thread::spawn(move || {
+                            let tx2 = tx.clone();
+                            let r = import_mamp_direct(&opts, overwrite, move |m| {
+                                let _ = tx2.unbounded_send(LanEvent::Status(m));
+                            });
+                            let _ = tx.unbounded_send(LanEvent::Done(r));
+                        });
+                        rx
+                    },
+                    TransferMessage::MampEvent,
+                )
+            }
             TransferMessage::MampExport => {
-                let Some(info) = &self.mamp else { return Task::none() };
-                let opts = MampExport {
-                    databases: info.databases.iter().zip(&self.mamp_dbs).filter(|(_, on)| **on).map(|(d, _)| d.name.clone()).collect(),
-                    projects: info
-                        .vhosts
-                        .iter()
-                        .zip(&self.mamp_vhosts)
-                        .filter(|(_, on)| **on)
-                        .filter_map(|(v, _)| vhost_to_project(v))
-                        .collect(),
-                    user: self.mamp_user.clone(),
-                    password: self.mamp_password.clone(),
-                    users: self.mamp_users,
-                };
+                let Some(opts) = self.mamp_options() else { return Task::none() };
                 self.mamp_job.start();
                 self.mamp_output = None;
                 let name = default_bundle_name().replace("localman-backup-", "localman-mamp-");
@@ -922,7 +957,7 @@ impl TransferState {
         let busy = self.mamp_job.running;
         let mut c = column![
             card_title(Icon::Database, tr("MAMP 자료 백업·이전")),
-            muted(tr("MAMP의 사이트와 MySQL DB를 로컬맨 백업 파일로 만듭니다. 이 PC로 바로 가져오거나 리눅스로 옮길 수 있습니다. MAMP 폴더는 읽기만 합니다.")),
+            muted(tr("MAMP의 사이트와 MySQL DB를 이 PC 로컬맨으로 바로 가져오거나, 백업 파일로 만들어 리눅스로 옮깁니다. MAMP 폴더는 읽기만 합니다.")),
             Space::with_height(10),
         ]
         .spacing(4);
@@ -998,15 +1033,27 @@ impl TransferState {
                 .width(160),
                 column![
                     Space::with_height(19),
-                    {
-                        let b = btn(if busy { tr("만드는 중…") } else { tr("MAMP 백업 파일 만들기") }, Some(Icon::HardDrive), Kind::Primary);
-                        if busy { b } else { b.on_press(TransferMessage::MampExport) }
-                    },
+                    row![
+                        {
+                            let b = btn(if busy { tr("진행 중…") } else { tr("로컬맨으로 바로 가져오기") }, Some(Icon::Download), Kind::Primary);
+                            if busy { b } else { b.on_press(TransferMessage::MampImportDirect) }
+                        },
+                        {
+                            let b = btn(tr("MAMP 백업 파일 만들기"), Some(Icon::HardDrive), Kind::Flat);
+                            if busy { b } else { b.on_press(TransferMessage::MampExport) }
+                        },
+                    ]
+                    .spacing(8),
                 ],
             ]
             .spacing(10)
             .align_y(iced::Alignment::End),
         );
+        c = c.push(Space::with_height(4)).push(
+            check(tr("로컬맨에 같은 이름의 DB·사이트가 있으면 덮어쓰기 (끄면 건너뜀)"), self.mamp_overwrite)
+                .on_toggle(TransferMessage::MampToggleOverwrite),
+        );
+        c = c.push(muted(tr("[로컬맨으로 바로 가져오기]는 백업 파일 없이 MAMP DB를 로컬맨 DB로 옮기고 사이트를 등록합니다. 다른 PC로 옮길 때는 [MAMP 백업 파일 만들기]를 쓰세요.")));
         c = c.push(muted(tr("MAMP MySQL이 꺼져 있으면 덤프하는 동안만 포트 없이 띄웠다가 다시 내립니다 (로컬맨 MySQL과 부딪치지 않음).")));
         c = c.push(job_view(&self.mamp_job));
         if self.mamp_output.is_some() && !busy {
