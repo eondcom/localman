@@ -3,7 +3,7 @@ use iced::{
     Background, Element, Length, Task,
 };
 use super::theme::{
-    self, Icon, Kind, Tone, btn, card, chip, icon, icon_btn, input, muted, p, page_header, result_line,
+    self, Icon, Kind, Tone, btn, card, chip, chip_btn, icon, icon_btn, input, muted, p, page_header, result_line,
     segmented, status,
 };
 use crate::domain::settings::load_settings;
@@ -14,6 +14,7 @@ use crate::domain::history::{RunLog, list_run_logs, read_run_log, run_log_time, 
 use crate::domain::site_config::{self, SiteKind};
 use crate::domain::pull::{default_local_db_name, preview_pull, pull_database, pull_files};
 use crate::domain::lan::human_bytes;
+use crate::domain::detect::{Cms, detect_cms};
 use crate::domain::project::{ProjectDb, set_project_db};
 use crate::domain::usage::{SiteUsage, detect_db, site_usage};
 use crate::domain::jobs::{Job, list_jobs, run_job, set_job};
@@ -104,8 +105,60 @@ struct SiteTool {
     show_pw: bool,
 }
 
+/// 프로젝트 목록 언어 분류 (Node 는 Next.js 등 node 로 띄우는 프로젝트)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LangFilter {
+    All,
+    Php,
+    Python,
+    Node,
+}
+
+impl LangFilter {
+    fn matches(self, t: &ProjectType) -> bool {
+        match self {
+            LangFilter::All => true,
+            LangFilter::Php => *t == ProjectType::Php,
+            LangFilter::Python => *t == ProjectType::Python,
+            LangFilter::Node => *t == ProjectType::NextJs,
+        }
+    }
+}
+
+/// 프로젝트 목록 CMS 분류
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmsFilter {
+    All,
+    Is(Cms),
+    /// 감지된 CMS 가 없는 사이트
+    None,
+}
+
+impl CmsFilter {
+    fn matches(self, c: Option<Cms>) -> bool {
+        match self {
+            CmsFilter::All => true,
+            CmsFilter::Is(k) => c == Some(k),
+            CmsFilter::None => c.is_none(),
+        }
+    }
+}
+
+fn load_cms(projects: &[VhostProject]) -> HashMap<String, Option<Cms>> {
+    projects
+        .iter()
+        .map(|p| {
+            let c = if p.project_type == ProjectType::Php { detect_cms(&[&p.work_dir(), &p.path]) } else { None };
+            (p.id.clone(), c)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub enum ProjectsMessage {
+    // 목록 분류
+    LangFilterChanged(LangFilter),
+    CmsFilterChanged(CmsFilter),
     // 신규 추가 폼
     OpenFilePicker,
     PathSelected(Option<String>),
@@ -400,6 +453,10 @@ pub struct ProjectsState {
     // 새 프로젝트 폼이 펼쳐져 있는지
     adding: bool,
     search: String,
+    lang_filter: LangFilter,
+    cms_filter: CmsFilter,
+    /// project id → 감지한 CMS. 그릴 때마다 파일을 보지 않게 미리 만든다
+    cms: HashMap<String, Option<Cms>>,
     usage: HashMap<String, SiteUsage>,
     usage_loading: bool,
     edit_db_name: String,
@@ -443,6 +500,9 @@ impl ProjectsState {
             toasts: Vec::new(),
             adding: false,
             search: String::new(),
+            lang_filter: LangFilter::All,
+            cms_filter: CmsFilter::All,
+            cms: load_cms(&projects),
             usage: HashMap::new(),
             usage_loading: false,
             edit_db_name: String::new(),
@@ -475,7 +535,13 @@ impl ProjectsState {
 
     /// 인라인 오류 표시와 함께 토스트도 띄운다.
     /// 오류 문구는 목록 위쪽에 찍혀, 목록이 길면 편집 중인 행에서 보이지 않는다.
-    fn set_error(&mut self, e: String) {
+/// 저장된 프로젝트 목록을 다시 읽고 CMS 분류도 새로 만든다
+    fn reload_projects(&mut self) {
+        self.projects = list_projects();
+        self.cms = load_cms(&self.projects);
+    }
+
+        fn set_error(&mut self, e: String) {
         self.toasts.push(Err(e.clone()));
         self.error = Some(e);
     }
@@ -483,8 +549,20 @@ impl ProjectsState {
     pub fn update(&mut self, msg: ProjectsMessage) -> Task<ProjectsMessage> {
         match msg {
             ProjectsMessage::Refresh => {
-                self.projects = list_projects();
+                self.reload_projects();
                 self.transfers = load_transfers(&self.projects);
+                Task::none()
+            }
+            ProjectsMessage::LangFilterChanged(f) => {
+                self.lang_filter = f;
+                // PHP 가 아닌 분류로 바꾸면 CMS 분류는 의미가 없다
+                if !matches!(f, LangFilter::All | LangFilter::Php) {
+                    self.cms_filter = CmsFilter::All;
+                }
+                Task::none()
+            }
+            ProjectsMessage::CmsFilterChanged(f) => {
+                self.cms_filter = f;
                 Task::none()
             }
             ProjectsMessage::SearchChanged(v) => {
@@ -753,7 +831,7 @@ impl ProjectsState {
                     d.runs = list_run_logs(&d.id);
                 }
                 // 가져오기로 사이트에 DB 가 연결됐을 수 있다
-                self.projects = list_projects();
+                self.reload_projects();
                 self.transfers = load_transfers(&self.projects);
                 Task::none()
             }
@@ -869,7 +947,7 @@ impl ProjectsState {
                         self.new_start_command = "python app.py".to_string();
                         self.new_type = ProjectType::Php;
                         self.adding = false;
-                        self.projects = list_projects();
+                        self.reload_projects();
                         // Python/Next.js면 의존성 자동 설치 시작
                         if needs_deps {
                             return Task::done(ProjectsMessage::SetupDeps(added_id));
@@ -885,7 +963,7 @@ impl ProjectsState {
                     self.editing_id = None;
                 }
                 match remove_project(&id) {
-                    Ok(_) => { self.error = None; self.projects = list_projects(); }
+                    Ok(_) => { self.error = None; self.reload_projects(); }
                     Err(e) => self.set_error(e),
                 }
                 Task::none()
@@ -995,7 +1073,7 @@ impl ProjectsState {
                             .then(|| ProjectDb { engine: self.edit_db_engine, name: self.edit_db_name.trim().to_string() });
                         self.editing_id = None;
                         self.error = None;
-                        self.projects = list_projects();
+                        self.reload_projects();
                         if let Err(e) = set_project_db(&id, db) {
                             self.set_error(trf("{0} DB 연결 저장 실패: {1}", &[&id, &e]));
                         } else {
@@ -1032,7 +1110,7 @@ impl ProjectsState {
             }
             ProjectsMessage::DepsSetupDone(id, result) => {
                 self.setting_up.remove(&id);
-                self.projects = list_projects();
+                self.reload_projects();
                 match result {
                     Ok(msg) => self.server_message = Some(Ok(format!("{id}: {msg}"))),
                     Err(e) => {
@@ -1452,9 +1530,15 @@ impl ProjectsState {
             .projects
             .iter()
             .filter(|p| q.is_empty() || [&p.domain, &p.name, &p.id].iter().any(|s| s.to_lowercase().contains(&q)))
+            .filter(|p| self.lang_filter.matches(&p.project_type))
+            .filter(|p| self.cms_filter.matches(self.cms.get(&p.id).copied().flatten()))
             .collect();
         if shown.is_empty() {
-            col = col.push(card(muted(trf("'{0}'에 맞는 사이트가 없습니다", &[&self.search.trim()]))));
+            col = col.push(card(muted(if q.is_empty() {
+                tr("이 분류에 맞는 사이트가 없습니다").to_string()
+            } else {
+                trf("'{0}'에 맞는 사이트가 없습니다", &[&self.search.trim()])
+            })));
         }
         let mut list = column![].spacing(10);
         for p_ in shown {
@@ -1481,6 +1565,7 @@ impl ProjectsState {
                 menu,
                 self.usage.get(&p_.id),
                 self.job_summary.get(&p_.id).copied(),
+                self.cms.get(&p_.id).copied().flatten(),
             ));
             if let Some(d) = self.deploy.as_ref().filter(|d| d.id == p_.id) {
                 list = list.push(deploy_panel(d));
@@ -1520,13 +1605,57 @@ impl ProjectsState {
                 ]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
+                Space::with_height(10),
+                self.filters(),
                 Space::with_height(14),
                 summary,
             ],
         )
     }
 
-    fn add_form(&self) -> Element<'_, ProjectsMessage> {
+/// 언어(전체·PHP·Python·Node)와 CMS 분류 버튼. 각 버튼에 해당 사이트 수를 붙인다
+    fn filters(&self) -> Element<'_, ProjectsMessage> {
+        let langs = [
+            (LangFilter::All, tr("전체")),
+            (LangFilter::Php, "PHP"),
+            (LangFilter::Python, "Python"),
+            (LangFilter::Node, "Node"),
+        ];
+        let mut lang_row = row![].spacing(6).align_y(iced::Alignment::Center);
+        for (f, name) in langs {
+            let n = self.projects.iter().filter(|p| f.matches(&p.project_type)).count();
+            let kind = if self.lang_filter == f { Kind::Primary } else { Kind::Surface };
+            lang_row = lang_row.push(chip_btn(format!("{name} {n}"), kind).on_press(ProjectsMessage::LangFilterChanged(f)));
+        }
+        let mut c = column![lang_row].spacing(8);
+
+        // CMS 분류는 PHP 사이트에만 있다
+        if matches!(self.lang_filter, LangFilter::All | LangFilter::Php) {
+            let php: Vec<Option<Cms>> = self
+                .projects
+                .iter()
+                .filter(|p| p.project_type == ProjectType::Php)
+                .map(|p| self.cms.get(&p.id).copied().flatten())
+                .collect();
+            let mut cms_row = row![muted("CMS")].spacing(6).align_y(iced::Alignment::Center);
+            let mut opts = vec![(CmsFilter::All, tr("전체").to_string())];
+            opts.extend(Cms::ALL.iter().map(|k| (CmsFilter::Is(*k), k.label().to_string())));
+            opts.push((CmsFilter::None, tr("기타").to_string()));
+            for (f, name) in opts {
+                let n = php.iter().filter(|c| f.matches(**c)).count();
+                // 하나도 없는 CMS 는 숨긴다 (고른 상태면 보여 줘야 풀 수 있다)
+                if n == 0 && f != CmsFilter::All && self.cms_filter != f {
+                    continue;
+                }
+                let kind = if self.cms_filter == f { Kind::Primary } else { Kind::Surface };
+                cms_row = cms_row.push(chip_btn(format!("{name} {n}"), kind).on_press(ProjectsMessage::CmsFilterChanged(f)));
+            }
+            c = c.push(cms_row.wrap());
+        }
+        c.into()
+    }
+
+        fn add_form(&self) -> Element<'_, ProjectsMessage> {
         let needs_server = self.new_type.is_proxied();
         let mut form = column![
             row![
@@ -1638,15 +1767,20 @@ fn project_row_view_with_state<'a>(
     menu: Option<&'a [(bool, String)]>,
     usage: Option<&'a SiteUsage>,
     jobs: Option<(usize, usize)>,
+    cms: Option<Cms>,
 ) -> Element<'a, ProjectsMessage> {
     let c = p();
     let id = p_.id.clone();
+    let mut title = row![text(&p_.name).size(15).font(theme::SEMIBOLD).color(c.fg), type_chip(&p_.project_type)]
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+    if let Some(k) = cms {
+        title = title.push(chip(k.label(), Tone::Warning));
+    }
 
     // 왼쪽: 이름·타입, 도메인(누르면 열림), 경로·명령, 마지막 이전
     let mut info = column![
-        row![text(&p_.name).size(15).font(theme::SEMIBOLD).color(c.fg), type_chip(&p_.project_type)]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
+        title,
         iced::widget::button(
             row![icon(Icon::Globe, 12.0, c.primary_fg), text(&p_.domain).size(13).color(c.primary_fg)]
                 .spacing(5)

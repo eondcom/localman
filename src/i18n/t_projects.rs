@@ -12,6 +12,8 @@ pub const T: &[(&str, &str, &str)] = &[
     ("복사", "Copy", "コピー"),
 
     // ── 검색·용량 ──
+    ("이 분류에 맞는 사이트가 없습니다", "No sites in this category", "この分類に一致するサイトはありません"),
+    ("기타", "Other", "その他"),
     ("도메인·이름으로 찾기", "Search by domain or name", "ドメイン・名前で検索"),
     ("용량 계산", "Measure usage", "容量を計算"),
     ("재는 중…", "Measuring…", "計測中…"),

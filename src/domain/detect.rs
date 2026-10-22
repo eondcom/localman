@@ -154,12 +154,91 @@ pub(crate) fn detect_package_manager(dir: &str) -> &'static str {
         "npm"
     }
 }
+/// 프로젝트 폴더에 깔린 PHP CMS 종류 (프로젝트 목록 분류용)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Cms {
+    WordPress,
+    Gnuboard,
+    Zeroboard,
+    /// 라이믹스와 XE 는 한 갈래로 묶는다
+    RhymixXe,
+}
+
+impl Cms {
+    pub const ALL: [Cms; 4] = [Cms::WordPress, Cms::Gnuboard, Cms::Zeroboard, Cms::RhymixXe];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Cms::WordPress => "WordPress",
+            Cms::Gnuboard => "Gnuboard",
+            Cms::Zeroboard => "Zeroboard",
+            Cms::RhymixXe => "Rhymix/XE",
+        }
+    }
+}
+
+/// 폴더의 표식 파일로 CMS 를 알아낸다. 파일 몇 개의 존재만 보므로 가볍다.
+/// 사이트 폴더 바로 아래와, DocumentRoot 로 흔히 쓰는 public_html·www·html 하위를 본다.
+pub fn detect_cms(dirs: &[&str]) -> Option<Cms> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for d in dirs.iter().filter(|d| !d.is_empty()) {
+        let base = Path::new(d);
+        roots.push(base.to_path_buf());
+        for sub in ["public_html", "www", "html"] {
+            roots.push(base.join(sub));
+        }
+    }
+    roots.iter().find_map(|r| cms_at(r))
+}
+
+fn cms_at(root: &Path) -> Option<Cms> {
+    let has = |f: &str| root.join(f).exists();
+    if has("wp-config.php") || has("wp-load.php") || has("wp-includes/version.php") {
+        Some(Cms::WordPress)
+    } else if has("common/autoload.php") || has("files/config/db.config.php") || has("config/config.inc.php") {
+        Some(Cms::RhymixXe)
+    } else if has("bbs/board.php") && (has("lib/common.lib.php") || has("data/dbconfig.php") || has("dbconfig.php")) {
+        // 그누보드 4·5 — bbs/ 와 공용 함수 파일
+        Some(Cms::Gnuboard)
+    } else if has("zboard.php") {
+        // 제로보드 4 (제로보드XE 는 XE 표식으로 위에서 잡힌다)
+        Some(Cms::Zeroboard)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::test_util::TmpDir;
 
     const NEXT_PKG: &str = r#"{"dependencies":{"next":"16.3.0","react":"19.2.6"}}"#;
+
+    #[test]
+    fn detects_cms_kinds() {
+        let t = TmpDir::new("cms-wp");
+        t.write("wp-config.php", "<?php");
+        assert_eq!(detect_cms(&[&t.path()]), Some(Cms::WordPress));
+
+        let t = TmpDir::new("cms-rx");
+        t.write("common/autoload.php", "<?php");
+        assert_eq!(detect_cms(&[&t.path()]), Some(Cms::RhymixXe));
+
+        let t = TmpDir::new("cms-g5");
+        t.write("bbs/board.php", "<?php");
+        t.write("lib/common.lib.php", "<?php");
+        assert_eq!(detect_cms(&[&t.path()]), Some(Cms::Gnuboard));
+
+        // 제로보드는 public_html 아래에 있어도 잡는다
+        let t = TmpDir::new("cms-zb");
+        t.write("public_html/zboard.php", "<?php");
+        assert_eq!(detect_cms(&["", &t.path()]), Some(Cms::Zeroboard));
+
+        let t = TmpDir::new("cms-none");
+        t.write("index.php", "<?php");
+        assert_eq!(detect_cms(&[&t.path()]), None);
+    }
 
     #[test]
     fn sync_port_rewrites_existing_flags() {
